@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+target/
+dist/
+dist-electron/
+release/
+
+# Rust
+Cargo.lock
+*.pdb
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.temp
+
+# Archives
+*.zip
+*.tgz
+
+# Config with secrets
+config.toml
