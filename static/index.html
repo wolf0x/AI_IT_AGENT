@@ -195,17 +195,18 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .think-text{font-size:12px;color:var(--t2);font-style:italic;line-height:1.5;white-space:pre-wrap}
 
 /* 鈹€鈹€ Tool Block 鈹€鈹€ */
-.tool-block{border-radius:var(--rs);margin:6px 0;overflow:hidden;transition:all .3s}
-.tool-block.active{border:1px solid rgba(26,188,156,.3);background:rgba(26,188,156,.06);animation:pulseC 2s infinite}
-.tool-block.done{border:1px solid rgba(26,188,156,.2);background:rgba(26,188,156,.04)}
+.tool-block{border-radius:var(--rs);margin:6px 0;transition:all .3s}
+.tool-block.active{border:1px solid rgba(52,152,219,.3);background:rgba(52,152,219,.06)}
+.tool-block.done{border:1px solid rgba(52,152,219,.2);background:rgba(52,152,219,.04)}
 .tool-hdr{display:flex;align-items:center;gap:6px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--cyan);font-weight:500;user-select:none;transition:background .2s}
-.tool-hdr:hover{background:rgba(26,188,156,.08)}
+.tool-hdr:hover{background:rgba(52,152,219,.08)}
 .tool-hdr .arrow{margin-left:auto;transition:transform .3s;font-size:10px}
 .tool-hdr .arrow.open{transform:rotate(180deg)}
 .tool-body{overflow:hidden;transition:max-height .4s ease;padding:0 12px}
-.tool-body:not(.open){max-height:0;padding:0 12px;overflow:hidden}
 .tool-body.open{max-height:2000px;padding:0 12px 10px;overflow-y:auto}
+.tool-body:not(.open){max-height:0;padding:0 12px;overflow:hidden}
 .tool-body pre{background:#1e1e1e;border-radius:4px;padding:8px;font-size:11px;font-family:var(--mono);color:#d4d4d4;overflow-x:auto;white-space:pre-wrap;margin:4px 0}
+.tool-summary{font-size:11px;color:var(--t3);margin-left:8px;font-weight:400;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 @keyframes pulseP{0%,100%{box-shadow:0 0 0 0 rgba(118,75,162,0)}50%{box-shadow:0 0 10px 2px rgba(118,75,162,.15)}}
 @keyframes pulseC{0%,100%{box-shadow:0 0 0 0 rgba(26,188,156,0)}50%{box-shadow:0 0 10px 2px rgba(26,188,156,.15)}}
@@ -381,7 +382,7 @@ let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false
 
 // Permission categories with defaults
 const PERM_CATEGORIES=[
-  {id:'read',name:'Read',tools:'file_read, file_list, sys_info, sys_eventlog, browser_open',def:true},
+  {id:'read',name:'Read',tools:'file_read, file_list, sys_info, sys_eventlog, browser_open, web_fetch',def:true},
   {id:'write',name:'Write',tools:'file_write',def:true},
   {id:'delete',name:'Delete',tools:'file_delete',def:false},
   {id:'modify',name:'Modify',tools:'file_modify, sys_process, sys_service',def:true},
@@ -459,7 +460,9 @@ function handleMsg(msg){
       renderPermRequest(msg);
       break;
     case 'done':
-      hideTyping();finalizeThink();finalizeTextBlock();
+      hideTyping();finalizeThink();
+      if(textAccum){msgHist.push({role:'assistant',text:textAccum.trim(),time:new Date().toLocaleTimeString()});saveHist()}
+      finalizeTextBlock();
       curToolMap={};
       setAgentRunning(false);
       scrollBottom();break;
@@ -539,7 +542,17 @@ function finalizeThink(){
 // 鈹€鈹€ Tool Block 鈹€鈹€
 function createToolBlock(name,callId,args){
   const d=document.createElement('div');d.className='tool-block active';
-  d.innerHTML='<div class="tool-hdr" onclick="toggleBlock(this)">&#9881; '+esc(name)+' <span class="arrow">&#9660;</span></div><div class="tool-body"><div style="font-size:11px;color:var(--t3);margin-bottom:4px">Arguments</div><pre>'+esc(JSON.stringify(args,null,2))+'</pre><div class="tool-result" style="display:none"><div style="font-size:11px;color:var(--t3);margin-bottom:4px">Result</div><pre class="tool-res"></pre></div></div>';
+  let summary='';
+  try{
+    const a=typeof args==='string'?JSON.parse(args):args;
+    if(a.command)summary=a.command.substring(0,60);
+    else if(a.path)summary=a.path;
+    else if(a.url)summary=a.url;
+    else if(a.app||a.program)summary=a.app||a.program;
+    else{const k=Object.keys(a);if(k.length)summary=k.map(k=>k+':'+JSON.stringify(a[k]).substring(0,20)).join(', ').substring(0,60)}
+  }catch(e){}
+  const argsStr=typeof args==='string'?args:JSON.stringify(args,null,2);
+  d.innerHTML='<div class="tool-hdr" onclick="toggleBlock(this)">&#9881; '+esc(name)+(summary?' <span class="tool-summary">'+esc(summary)+'</span>':'')+' <span class="arrow">&#9660;</span></div><div class="tool-body"><div style="font-size:11px;color:var(--t3);margin-bottom:4px">Arguments</div><pre>'+esc(argsStr)+'</pre><div class="tool-result" style="display:none"><div style="font-size:11px;color:var(--t3);margin-bottom:4px">Result</div><pre class="tool-res"></pre></div></div>';
   d.dataset.callId=callId;
   return d;
 }
@@ -700,7 +713,22 @@ function addCopyBtns(container){
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function scrollBottom(){requestAnimationFrame(()=>{const a=document.getElementById('convArea');if(a)a.scrollTo({top:a.scrollHeight,behavior:'smooth'});const l=document.getElementById('logArea');if(l)l.scrollTop=l.scrollHeight})}
 function saveHist(){try{localStorage.setItem('ra_msgs',JSON.stringify(msgHist.slice(-200)));localStorage.setItem('ra_logs',JSON.stringify(logHist.slice(-200)))}catch(e){}}
-function loadHist(){try{const m=JSON.parse(localStorage.getItem('ra_msgs')||'[]');const l=JSON.parse(localStorage.getItem('ra_logs')||'[]');m.forEach(x=>{if(x.role==='user')showUserMsg(x.text)});l.forEach(x=>addLog(x.text,x.cls));msgHist=m;logHist=l}catch(e){}}
+function showAssistantMsg(txt,time){
+  const d=document.createElement('div');d.className='msg assistant';
+  d.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+renderMd(esc(txt))+'</div><div class="msg-time">'+(time||'')+'</div></div>';
+  document.getElementById('convArea').appendChild(d);
+}
+function loadHist(){try{
+  const m=JSON.parse(localStorage.getItem('ra_msgs')||'[]');
+  const l=JSON.parse(localStorage.getItem('ra_logs')||'[]');
+  m.forEach(x=>{
+    if(x.role==='user')showUserMsg(x.text);
+    else if(x.role==='assistant')showAssistantMsg(x.text,x.time);
+  });
+  l.forEach(x=>addLog(x.text,x.cls));
+  msgHist=m;logHist=l;
+  if(m.length)scrollBottom();
+}catch(e){}}
 
 // 鈹€鈹€ Permissions 鈹€鈹€
 function renderPerms(){

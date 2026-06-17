@@ -7,6 +7,7 @@ pub mod sys_service;
 pub mod app_launch;
 pub mod browser_open;
 pub mod mcp_client;
+pub mod web_fetch;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -205,6 +206,7 @@ impl ToolRegistry {
         registry.register(Arc::new(sys_service::SysServiceTool));
         registry.register(Arc::new(app_launch::AppLaunchTool));
         registry.register(Arc::new(browser_open::BrowserOpenTool));
+        registry.register(Arc::new(web_fetch::WebFetchTool));
         let _ = working_dir;
         registry
     }

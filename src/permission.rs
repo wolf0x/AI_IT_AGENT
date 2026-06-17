@@ -17,7 +17,7 @@ use crate::error::AgentResult;
 pub fn tool_category(name: &str) -> &'static str {
     match name {
         // Read
-        "file_read" | "file_list" | "sys_info" | "sys_eventlog" | "browser_open" => "read",
+        "file_read" | "file_list" | "sys_info" | "sys_eventlog" | "browser_open" | "web_fetch" => "read",
         // Write
         "file_write" => "write",
         // Delete
