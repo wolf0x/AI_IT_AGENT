@@ -206,34 +206,32 @@ impl Agent for LlmAgent {
                             if content.len() < 100 {
                                 info!("Short response content: {}", content);
                             }
-                            // Handle empty response - generate summary from tool results in history
+                            // Handle empty response - request a final summary from LLM
                             let final_content = if content.trim().is_empty() && iteration > 0 {
-                                warn!("LLM returned empty response after {} iterations", iteration + 1);
-                                // Summarize tool execution results from history
-                                let mut summary_parts: Vec<String> = Vec::new();
-                                let mut tool_results: Vec<(String, String)> = Vec::new();
-                                for msg in history.iter() {
-                                    if msg.role == "tool" {
-                                        let content_str = msg.content.as_deref().unwrap_or("");
-                                        let name = msg.name.as_deref().unwrap_or("tool");
-                                        let preview: String = content_str.chars().take(150).collect();
-                                        tool_results.push((name.to_string(), preview));
+                                warn!("LLM returned empty response after {} iterations, requesting summary", iteration + 1);
+                                // Add a summary request to history and ask LLM one more time
+                                let summary_prompt = "Please provide a final summary of the task. Include:\n\
+                                    1. Whether the task succeeded or failed\n\
+                                    2. If succeeded: summarize what was accomplished\n\
+                                    3. If failed: explain what went wrong and what additional conditions, tools, or information would be needed to retry\n\
+                                    Be specific and helpful.".to_string();
+                                history.push(ChatMessage::user(&summary_prompt));
+                                let mut summary_msgs = vec![ChatMessage::system(&system_prompt)];
+                                summary_msgs.extend(history.clone());
+                                // One more LLM call for summary (no tools)
+                                match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
+                                    Ok((summary_content, _)) => {
+                                        if summary_content.trim().is_empty() {
+                                            generate_static_summary(&history, iteration + 1)
+                                        } else {
+                                            summary_content
+                                        }
+                                    }
+                                    Err(e2) => {
+                                        warn!("Summary request also failed: {}", e2);
+                                        generate_static_summary(&history, iteration + 1)
                                     }
                                 }
-                                if tool_results.is_empty() {
-                                    summary_parts.push("The task was processed but the model returned no summary.".to_string());
-                                } else {
-                                    summary_parts.push(format!("Task processed across {} iterations with {} tool call(s). Here is what happened:\n", iteration + 1, tool_results.len()));
-                                    for (i, (name, preview)) in tool_results.iter().enumerate() {
-                                        summary_parts.push(format!("{}. **{}**: {}", i + 1, name, preview));
-                                    }
-                                    // Check if any tool results contain errors
-                                    let has_errors = tool_results.iter().any(|(_, r)| r.contains("error") || r.contains("Error") || r.contains("denied"));
-                                    if has_errors {
-                                        summary_parts.push("\nSome operations encountered errors. Please review the results above.".to_string());
-                                    }
-                                }
-                                summary_parts.join("\n")
                             } else {
                                 content
                             };
@@ -338,7 +336,34 @@ impl Agent for LlmAgent {
                 }
             }
 
-            let _ = tx.send(Ok(AgentEvent::error("Max iterations reached", &invocation_id, &author))).await;
+            // Max iterations reached - request final summary
+            warn!("Max iterations ({}) reached", max_iter);
+            let summary_prompt = format!(
+                "The agent has reached the maximum number of iterations ({}) without completing. \
+                 Please provide a final summary:\n\
+                 1. What was accomplished so far\n\
+                 2. What remains to be done\n\
+                 3. What additional conditions, tools, or information would be needed to complete the task\n\
+                 Be specific and helpful.",
+                max_iter
+            );
+            history.push(ChatMessage::user(&summary_prompt));
+            let mut summary_msgs = vec![ChatMessage::system(&system_prompt)];
+            summary_msgs.extend(history.clone());
+            match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
+                Ok((summary_content, _)) => {
+                    if !summary_content.trim().is_empty() {
+                        let _ = tx.send(Ok(AgentEvent::text(&summary_content, &invocation_id, &author))).await;
+                    } else {
+                        let fallback = generate_static_summary(&[], max_iter);
+                        let _ = tx.send(Ok(AgentEvent::text(&fallback, &invocation_id, &author))).await;
+                    }
+                }
+                Err(_) => {
+                    let fallback = generate_static_summary(&[], max_iter);
+                    let _ = tx.send(Ok(AgentEvent::text(&fallback, &invocation_id, &author))).await;
+                }
+            }
             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
         });
 
@@ -396,4 +421,59 @@ async fn execute_tool_call(
     // Add to history
     let result_str = serde_json::to_string(&result).unwrap_or_default();
     history.push(ChatMessage::tool_result(&tc.id, tool_name, &result_str));
+}
+
+/// Generate a static summary from tool results in history (fallback when LLM summary also fails).
+fn generate_static_summary(history: &[ChatMessage], iterations: usize) -> String {
+    let mut tool_results: Vec<(String, String)> = Vec::new();
+    let mut has_errors = false;
+    let mut has_denied = false;
+
+    for msg in history {
+        if msg.role == "tool" {
+            let content_str = msg.content.as_deref().unwrap_or("");
+            let name = msg.name.as_deref().unwrap_or("tool");
+            let preview: String = content_str.chars().take(200).collect();
+            if content_str.contains("error") || content_str.contains("Error") {
+                has_errors = true;
+            }
+            if content_str.contains("denied") || content_str.contains("Denied") {
+                has_denied = true;
+            }
+            tool_results.push((name.to_string(), preview));
+        }
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+
+    if tool_results.is_empty() {
+        parts.push(format!("**Task Status: Incomplete** — Processed {} iterations with no tool activity.\n\nThe task could not be completed. You may need to:\n- Provide more specific instructions\n- Check that the required tools are available\n- Verify API connectivity", iterations));
+    } else {
+        // Determine overall status
+        if has_errors || has_denied {
+            parts.push("## \u{274c} Task Failed\n".to_string());
+            parts.push(format!("The task was not completed successfully after {} iterations and {} tool call(s).\n", iterations, tool_results.len()));
+            parts.push("### What happened:\n".to_string());
+            for (i, (name, preview)) in tool_results.iter().enumerate() {
+                parts.push(format!("{}. **{}**: {}", i + 1, name, preview));
+            }
+            parts.push("\n### What you may need to retry:\n".to_string());
+            if has_errors {
+                parts.push("- Some tool executions returned errors. Review the results above for specific failure reasons.".to_string());
+            }
+            if has_denied {
+                parts.push("- Some operations were denied by permission settings. Adjust permissions in Settings if needed.".to_string());
+            }
+            parts.push("- Consider providing more context or breaking the task into smaller steps.".to_string());
+        } else {
+            parts.push("## \u{2705} Task Completed\n".to_string());
+            parts.push(format!("Processed across {} iterations with {} tool call(s).\n", iterations, tool_results.len()));
+            parts.push("### Results:\n".to_string());
+            for (i, (name, preview)) in tool_results.iter().enumerate() {
+                parts.push(format!("{}. **{}**: {}", i + 1, name, preview));
+            }
+        }
+    }
+
+    parts.join("\n")
 }
