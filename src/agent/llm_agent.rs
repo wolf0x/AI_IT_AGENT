@@ -239,7 +239,7 @@ impl Agent for LlmAgent {
                                 info!("Short response content: {}", content);
                             }
                             // Handle empty response - request a final summary from LLM
-                            let final_content = if content.trim().is_empty() && iteration > 0 {
+                            let (final_content, already_streamed) = if content.trim().is_empty() && iteration > 0 {
                                 warn!("LLM returned empty response after {} iterations, requesting summary", iteration + 1);
                                 // Add a summary request to history and ask LLM one more time
                                 let summary_prompt = "Please provide a final summary of the task. Include:\n\
@@ -250,26 +250,26 @@ impl Agent for LlmAgent {
                                 history.push(ChatMessage::user(&summary_prompt));
                                 let mut summary_msgs = vec![ChatMessage::system(&system_prompt)];
                                 summary_msgs.extend(history.clone());
-                                // One more LLM call for summary (no tools)
+                                // One more LLM call for summary (no tools) - streams to client
                                 match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
                                     Ok((summary_content, _)) => {
                                         if summary_content.trim().is_empty() {
-                                            generate_static_summary(&history, iteration + 1)
+                                            (generate_static_summary(&history, iteration + 1), false)
                                         } else {
-                                            summary_content
+                                            (summary_content, true) // already streamed
                                         }
                                     }
                                     Err(e2) => {
                                         warn!("Summary request also failed: {}", e2);
-                                        generate_static_summary(&history, iteration + 1)
+                                        (generate_static_summary(&history, iteration + 1), false)
                                     }
                                 }
                             } else {
-                                content
+                                (content, true) // normal response, already streamed
                             };
                             history.push(ChatMessage::assistant(&final_content));
-                            // Send the content as a text event if it's non-empty
-                            if !final_content.trim().is_empty() {
+                            // Only send text event if NOT already streamed to client
+                            if !already_streamed && !final_content.trim().is_empty() {
                                 let _ = tx.send(Ok(AgentEvent::text(&final_content, &invocation_id, &author))).await;
                             }
                             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
@@ -384,15 +384,15 @@ impl Agent for LlmAgent {
             summary_msgs.extend(history.clone());
             match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
                 Ok((summary_content, _)) => {
-                    if !summary_content.trim().is_empty() {
-                        let _ = tx.send(Ok(AgentEvent::text(&summary_content, &invocation_id, &author))).await;
-                    } else {
-                        let fallback = generate_static_summary(&[], max_iter);
+                    if summary_content.trim().is_empty() {
+                        // LLM returned empty, send static summary
+                        let fallback = generate_static_summary(&history, max_iter);
                         let _ = tx.send(Ok(AgentEvent::text(&fallback, &invocation_id, &author))).await;
                     }
+                    // else: non-empty content was already streamed via chat_stream, don't re-send
                 }
                 Err(_) => {
-                    let fallback = generate_static_summary(&[], max_iter);
+                    let fallback = generate_static_summary(&history, max_iter);
                     let _ = tx.send(Ok(AgentEvent::text(&fallback, &invocation_id, &author))).await;
                 }
             }

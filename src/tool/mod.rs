@@ -4,6 +4,7 @@ pub mod sys_info;
 pub mod sys_eventlog;
 pub mod sys_process;
 pub mod sys_service;
+pub mod sys_remind;
 pub mod app_launch;
 pub mod browser_open;
 pub mod mcp_client;
@@ -204,6 +205,7 @@ impl ToolRegistry {
         registry.register(Arc::new(sys_eventlog::SysEventLogTool));
         registry.register(Arc::new(sys_process::SysProcessTool));
         registry.register(Arc::new(sys_service::SysServiceTool));
+        registry.register(Arc::new(sys_remind::SysRemindTool));
         registry.register(Arc::new(app_launch::AppLaunchTool));
         registry.register(Arc::new(browser_open::BrowserOpenTool));
         registry.register(Arc::new(web_fetch::WebFetchTool));
