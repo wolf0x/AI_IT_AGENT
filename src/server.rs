@@ -4,7 +4,7 @@ use axum::{
         Path, Query, State,
     },
     response::Response,
-    routing::{get, post},
+    routing::{get, post, put, delete},
     Json, Router,
 };
 use futures::StreamExt;
@@ -20,6 +20,7 @@ use crate::log::ConversationLogger;
 use crate::model::ChatMessage;
 use crate::permission::{PermissionResolver, PendingMap};
 use crate::runner::Runner;
+use crate::scheduler::{Scheduler, CronTask};
 use crate::skill::SkillManager;
 use crate::tool::mcp_client::McpClientManager;
 use crate::web::StaticServer;
@@ -32,6 +33,7 @@ pub struct AppState {
     pub password: String,
     pub model_names: Vec<String>,
     pub max_iterations: usize,
+    pub rabbit_hole_threshold: usize,
     /// Per-session conversation history for multi-turn context
     pub sessions: Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>,
     /// Permission settings (category -> allowed), shared across connections
@@ -40,6 +42,8 @@ pub struct AppState {
     pub permission_resolver: PermissionResolver,
     /// Shared pending map for permission requests
     pub permission_pending: PendingMap,
+    /// CRON task scheduler
+    pub scheduler: Arc<Mutex<Scheduler>>,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -54,6 +58,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/mcp", get(mcp_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/logs/dates", get(log_dates_handler))
+        .route("/api/cron", get(cron_list_handler))
+        .route("/api/cron", post(cron_create_handler))
+        .route("/api/cron/{id}", put(cron_update_handler))
+        .route("/api/cron/{id}", delete(cron_delete_handler))
+        .route("/api/cron/{id}/toggle", post(cron_toggle_handler))
         .with_state(state)
 }
 
@@ -110,6 +119,75 @@ async fn logs_handler(
 async fn log_dates_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let dates = state.logger.available_dates();
     Json(json!({ "dates": dates }))
+}
+
+// ============================================================
+// CRON Task Handlers
+// ============================================================
+
+async fn cron_list_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let scheduler = state.scheduler.lock().await;
+    let tasks = scheduler.list();
+    Json(json!({ "tasks": tasks, "count": tasks.len() }))
+}
+
+async fn cron_create_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let task = CronTask {
+        id: String::new(),
+        name: body["name"].as_str().unwrap_or("Unnamed").to_string(),
+        schedule: body["schedule"].as_str().unwrap_or("every 1h").to_string(),
+        message: body["message"].as_str().unwrap_or("").to_string(),
+        model: body["model"].as_str().unwrap_or("").to_string(),
+        enabled: body["enabled"].as_bool().unwrap_or(true),
+        last_run: None,
+        next_run: None,
+        interval_secs: 0,
+    };
+    let mut scheduler = state.scheduler.lock().await;
+    let created = scheduler.create(task);
+    Json(json!({ "task": created }))
+}
+
+async fn cron_update_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let mut scheduler = state.scheduler.lock().await;
+    let ok = scheduler.update(
+        &id,
+        body["name"].as_str().map(|s| s.to_string()),
+        body["schedule"].as_str().map(|s| s.to_string()),
+        body["message"].as_str().map(|s| s.to_string()),
+        body["model"].as_str().map(|s| s.to_string()),
+    );
+    Json(json!({ "success": ok }))
+}
+
+async fn cron_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    let mut scheduler = state.scheduler.lock().await;
+    let ok = scheduler.delete(&id);
+    Json(json!({ "success": ok }))
+}
+
+async fn cron_toggle_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    let mut scheduler = state.scheduler.lock().await;
+    let ok = scheduler.toggle(&id);
+    let enabled = if ok {
+        scheduler.list().iter().find(|t| t.id == id).map(|t| t.enabled)
+    } else {
+        None
+    };
+    Json(json!({ "success": ok, "enabled": enabled }))
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
@@ -213,6 +291,18 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         .unwrap_or("gpt-4o"),
                                 )
                                 .to_string();
+                            let max_iter = parsed["max_iterations"]
+                                .as_u64()
+                                .map(|v| v as usize)
+                                .unwrap_or(state.max_iterations);
+                            let fallback_model = parsed["fallback_model"]
+                                .as_str()
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string());
+                            let rabbit_hole = parsed["rabbit_hole_threshold"]
+                                .as_u64()
+                                .map(|v| v as usize)
+                                .unwrap_or(state.rabbit_hole_threshold);
 
                             if content.is_empty() {
                                 continue;
@@ -229,8 +319,9 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
 
                             // Run via Runner
                             match state.runner.run(
-                                &content, &session_id, &model, state.max_iterations, history,
+                                &content, &session_id, &model, max_iter, history,
                                 state.permissions.clone(), state.permission_pending.clone(),
+                                fallback_model, rabbit_hole,
                             ).await {
                                 Ok(mut event_stream) => {
                                     let mut assistant_text = String::new();

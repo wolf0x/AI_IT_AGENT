@@ -102,7 +102,9 @@ pub struct InvocationContext {
     pub base: ReadonlyContext,
     pub agent_name: String,
     pub model_name: String,
+    pub fallback_model: Option<String>,
     pub max_iterations: usize,
+    pub rabbit_hole_threshold: usize,
     pub conversation_history: Vec<ChatMessage>,
     pub shared_state: HashMap<String, Value>,
     /// Permission settings (category -> allowed)
@@ -125,7 +127,9 @@ impl InvocationContext {
             base,
             agent_name,
             model_name,
+            fallback_model: None,
             max_iterations,
+            rabbit_hole_threshold: 5,
             conversation_history: Vec::new(),
             shared_state: HashMap::new(),
             permissions: Arc::new(Mutex::new(crate::permission::default_permissions())),
@@ -149,6 +153,18 @@ impl InvocationContext {
     /// Set conversation history for multi-turn context.
     pub fn with_history(mut self, history: Vec<ChatMessage>) -> Self {
         self.conversation_history = history;
+        self
+    }
+
+    /// Set fallback model name.
+    pub fn with_fallback_model(mut self, model: Option<String>) -> Self {
+        self.fallback_model = model;
+        self
+    }
+
+    /// Set rabbit hole detection threshold.
+    pub fn with_rabbit_hole_threshold(mut self, threshold: usize) -> Self {
+        self.rabbit_hole_threshold = threshold;
         self
     }
 

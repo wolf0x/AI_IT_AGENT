@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use async_trait::async_trait;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::agent::{Agent, AgentEvent, EventStream};
 use crate::callbacks::AgentCallbacks;
@@ -57,7 +57,7 @@ impl LlmAgentBuilder {
             provider: None,
             tools: None,
             skill_manager: None,
-            max_iterations: 20,
+            max_iterations: 100,
             working_dir: ".".to_string(),
             model_configs: Vec::new(),
             callbacks: AgentCallbacks::new(),
@@ -174,20 +174,28 @@ impl Agent for LlmAgent {
         let prev_history = ctx.conversation_history.clone();
         let permissions = ctx.permissions.clone();
         let permission_pending: PendingMap = ctx.permission_pending.clone();
+        let fallback_model = ctx.fallback_model.clone();
+        let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
 
         tokio::spawn(async move {
             let mut history: Vec<ChatMessage> = prev_history;
             history.push(ChatMessage::user(&user_message));
 
+            // Rabbit hole detection: track tool call counts
+            let mut tool_call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            // Track which model we're using (for fallback)
+            let mut active_model = model.clone();
+            let mut used_fallback = false;
+
             for iteration in 0..max_iter {
-                info!("Agent loop iteration {}", iteration + 1);
+                info!("Agent loop iteration {} (model: {})", iteration + 1, active_model);
 
                 let mut messages = vec![ChatMessage::system(&system_prompt)];
                 messages.extend(history.clone());
 
                 // Call LLM via legacy chat_stream (uses mpsc for text deltas)
                 let result = provider
-                    .chat_stream(&model, &messages, &tool_defs, tx.clone(), &invocation_id, &author)
+                    .chat_stream(&active_model, &messages, &tool_defs, tx.clone(), &invocation_id, &author)
                     .await;
 
                 match result {
@@ -198,7 +206,18 @@ impl Agent for LlmAgent {
                             if content.len() < 100 {
                                 info!("Short response content: {}", content);
                             }
-                            history.push(ChatMessage::assistant(&content));
+                            // Handle empty response - provide a fallback message
+                            let final_content = if content.trim().is_empty() && iteration > 0 {
+                                warn!("LLM returned empty response after {} iterations", iteration + 1);
+                                "I've completed the task, but I don't have a summary to provide.".to_string()
+                            } else {
+                                content
+                            };
+                            history.push(ChatMessage::assistant(&final_content));
+                            // Send the content as a text event if it's non-empty
+                            if !final_content.trim().is_empty() {
+                                let _ = tx.send(Ok(AgentEvent::text(&final_content, &invocation_id, &author))).await;
+                            }
                             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
                             return;
                         }
@@ -220,14 +239,51 @@ impl Agent for LlmAgent {
                         match strategy {
                             ToolExecutionStrategy::Sequential => {
                                 for tc in &tool_calls {
+                                    let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
+                                    // Rabbit hole detection: check before executing
+                                    let count = tool_call_counts.entry(tool_name.to_string()).or_insert(0);
+                                    *count += 1;
+                                    if *count >= rabbit_hole_threshold {
+                                        warn!("Rabbit hole detected: tool '{}' called {} times", tool_name, *count);
+                                        let warning_msg = format!(
+                                            "WARNING: You have called {} {} times without completing the task. \
+                                             Consider a different approach or explain why this tool is still needed.",
+                                            tool_name, *count
+                                        );
+                                        // Inject warning as system message into history
+                                        history.push(ChatMessage::system(&warning_msg));
+                                        // Send warning to UI
+                                        let _ = tx.send(Ok(AgentEvent::text(
+                                            &format!("\n\n*[Rabbit hole warning: {} called {} times]*\n\n", tool_name, *count),
+                                            &invocation_id, &author
+                                        ))).await;
+                                        // Reset counter for this tool (give one more chance)
+                                        *count = 0;
+                                    }
                                     execute_tool_call(
                                         &tools, tc, &working_dir, &invocation_id, &author, &tx, &mut history, &checker,
                                     ).await;
                                 }
                             }
                             ToolExecutionStrategy::Parallel | ToolExecutionStrategy::Auto => {
-                                // For simplicity, still sequential but could be parallelized
                                 for tc in &tool_calls {
+                                    let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
+                                    let count = tool_call_counts.entry(tool_name.to_string()).or_insert(0);
+                                    *count += 1;
+                                    if *count >= rabbit_hole_threshold {
+                                        warn!("Rabbit hole detected: tool '{}' called {} times", tool_name, *count);
+                                        let warning_msg = format!(
+                                            "WARNING: You have called {} {} times without completing the task. \
+                                             Consider a different approach or explain why this tool is still needed.",
+                                            tool_name, *count
+                                        );
+                                        history.push(ChatMessage::system(&warning_msg));
+                                        let _ = tx.send(Ok(AgentEvent::text(
+                                            &format!("\n\n*[Rabbit hole warning: {} called {} times]*\n\n", tool_name, *count),
+                                            &invocation_id, &author
+                                        ))).await;
+                                        *count = 0;
+                                    }
                                     execute_tool_call(
                                         &tools, tc, &working_dir, &invocation_id, &author, &tx, &mut history, &checker,
                                     ).await;
@@ -236,7 +292,20 @@ impl Agent for LlmAgent {
                         }
                     }
                     Err(e) => {
-                        error!("LLM error: {}", e);
+                        error!("LLM error (model: {}): {}", active_model, e);
+                        // Try fallback model if available and not already used
+                        if !used_fallback {
+                            if let Some(ref fb) = fallback_model {
+                                warn!("Switching to fallback model: {}", fb);
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("\n\n*[Primary model failed, switching to {}]*\n\n", fb),
+                                    &invocation_id, &author
+                                ))).await;
+                                active_model = fb.clone();
+                                used_fallback = true;
+                                continue; // Retry with fallback model
+                            }
+                        }
                         let _ = tx.send(Ok(AgentEvent::error(&e, &invocation_id, &author))).await;
                         let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
                         return;

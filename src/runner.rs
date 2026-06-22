@@ -95,6 +95,8 @@ impl Runner {
         history: Vec<ChatMessage>,
         permissions: Arc<Mutex<HashMap<String, bool>>>,
         permission_pending: PendingMap,
+        fallback_model: Option<String>,
+        rabbit_hole_threshold: usize,
     ) -> AgentResult<EventStream> {
         info!("Runner dispatching to agent '{}' (session: {})", self.agent.name(), session_id);
 
@@ -112,7 +114,9 @@ impl Runner {
             max_iterations,
         ).with_history(history)
          .with_permissions(permissions)
-         .with_permission_pending(permission_pending);
+         .with_permission_pending(permission_pending)
+         .with_fallback_model(fallback_model)
+         .with_rabbit_hole_threshold(rabbit_hole_threshold);
 
         // Log user message
         self.logger.log_user_message(session_id, user_message);

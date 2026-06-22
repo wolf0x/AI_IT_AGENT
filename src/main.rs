@@ -12,6 +12,7 @@ mod model;
 mod permission;
 #[allow(dead_code)]
 mod runner;
+mod scheduler;
 mod server;
 #[allow(dead_code)]
 mod session;
@@ -31,6 +32,7 @@ use crate::log::ConversationLogger;
 use crate::model::openai::OpenAiProvider;
 use crate::runner::Runner;
 use crate::permission::{PermissionResolver, default_permissions};
+use crate::scheduler::Scheduler;
 use crate::server::AppState;
 use crate::skill::SkillManager;
 use crate::tool::mcp_client::McpClientManager;
@@ -110,24 +112,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .app_name("rust-agent")
         .build()
         .map_err(|e| format!("Failed to build runner: {}", e))?;
+    let runner = Arc::new(runner);
 
     // Build permission state
     let (permission_resolver, permission_pending) = PermissionResolver::new();
     let permissions = Arc::new(Mutex::new(default_permissions()));
 
+    // Build scheduler
+    let scheduler = Arc::new(Mutex::new(Scheduler::new(
+        "cron_tasks.json",
+        runner.clone(),
+        model_names.clone(),
+        permissions.clone(),
+        permission_pending.clone(),
+        config.agent.max_iterations,
+        config.agent.rabbit_hole_threshold,
+    )));
+
+    // Spawn scheduler background loop
+    let scheduler_loop = scheduler.clone();
+    tokio::spawn(async move {
+        Scheduler::run_loop(scheduler_loop).await;
+    });
+
     // Build app state
     let state = Arc::new(AppState {
-        runner: Arc::new(runner),
+        runner: runner.clone(),
         skill_manager,
         mcp_manager: Arc::new(Mutex::new(mcp_manager)),
         logger,
         password: config.server.password.clone(),
         model_names,
         max_iterations: config.agent.max_iterations,
+        rabbit_hole_threshold: config.agent.rabbit_hole_threshold,
         sessions: Mutex::new(std::collections::HashMap::new()),
         permissions,
         permission_resolver,
         permission_pending,
+        scheduler,
     });
 
     // Create router and start server

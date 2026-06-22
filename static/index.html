@@ -288,6 +288,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
       <button class="nav-tab" onclick="switchPage('settings',this)">&#9881; <span>Settings</span></button>
       <button class="nav-tab" onclick="switchPage('skills',this)">&#129504; <span>Skills</span></button>
       <button class="nav-tab" onclick="switchPage('mcp',this)">&#128268; <span>MCP</span></button>
+      <button class="nav-tab" onclick="switchPage('cron',this)">&#9200; <span>CRON</span></button>
     </div>
     <div class="sidebar-ftr">
       <span class="status-dot" id="statusDot"></span>
@@ -317,8 +318,23 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
         <div class="settings-section">
           <h3>&#129302; Model</h3>
           <div class="form-group">
-            <label>Model (from dropdown after connect)</label>
+            <label>Primary Model</label>
             <select id="modelSel"><option>Connect first...</option></select>
+          </div>
+          <div class="form-group">
+            <label>Fallback Model (used if primary fails)</label>
+            <select id="fallbackSel"><option>None</option></select>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>&#9881; Agent</h3>
+          <div class="form-group">
+            <label>Max Iterations</label>
+            <input type="number" id="maxIterInput" value="100" min="1" max="1000">
+          </div>
+          <div class="form-group">
+            <label>Rabbit Hole Threshold</label>
+            <input type="number" id="rabbitHoleInput" value="5" min="1" max="50">
           </div>
         </div>
         <div class="settings-section">
@@ -351,6 +367,35 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
         <div class="settings-section">
           <h3>&#128268; MCP Servers</h3>
           <div id="mcpList" style="font-size:13px;color:var(--t2)">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CRON Page -->
+    <div id="cron" class="page">
+      <div class="settings-scroll">
+        <div class="settings-section">
+          <h3>&#9200; CRON Tasks</h3>
+          <div id="cronAddForm" style="margin-bottom:16px">
+            <div class="form-group">
+              <label>Task Name</label>
+              <input type="text" id="cronName" placeholder="e.g. System Health Check">
+            </div>
+            <div class="form-group">
+              <label>Schedule (e.g. every 5m, every 1h, every 30s)</label>
+              <input type="text" id="cronSchedule" placeholder="every 1h" value="every 1h">
+            </div>
+            <div class="form-group">
+              <label>Message (what to ask the agent)</label>
+              <textarea id="cronMessage" rows="3" style="width:100%;padding:10px 12px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);color:var(--t1);font-size:14px;font-family:inherit;resize:vertical" placeholder="e.g. Check system health and report any issues"></textarea>
+            </div>
+            <div class="form-group">
+              <label>Model</label>
+              <select id="cronModel"><option value="">Default</option></select>
+            </div>
+            <button class="btn btn-p" onclick="createCronTask()">Add Task</button>
+          </div>
+          <div id="cronTaskList" style="font-size:13px;color:var(--t2)">Loading...</div>
         </div>
       </div>
     </div>
@@ -403,6 +448,7 @@ function switchPage(name,btn){
   if(btn)btn.classList.add('active');
   if(name==='skills')loadSkills();
   if(name==='mcp')loadMcp();
+  if(name==='cron')loadCron();
   if(name==='chat')scrollBottom();
 }
 
@@ -490,17 +536,22 @@ function appendTextContent(el,chunk){
 function finalizeTextBlock(){
   if(curTextEl){
     if(textAccum){
-      // Re-render final accumulated text to ensure complete markdown (tables etc) renders correctly
+      const cleaned=textAccum.replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'').trim();
       const content=curTextEl.querySelector('.msg-content');
       if(content){
-        const cleaned=textAccum.replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'').trim();
-        content.innerHTML=renderMd(cleaned);
-        addCopyBtns(content);
+        if(cleaned){
+          content.innerHTML=renderMd(cleaned);
+          addCopyBtns(content);
+        } else {
+          content.innerHTML='<span style="color:var(--t3);font-style:italic">Thinking...</span>';
+        }
       }
       const t=curTextEl.querySelector('.msg-time');if(t)t.textContent=new Date().toLocaleTimeString()
     } else {
-      // Remove empty text block (no content accumulated)
-      curTextEl.remove();
+      // No text accumulated - show thinking placeholder
+      const content=curTextEl.querySelector('.msg-content');
+      if(content)content.innerHTML='<span style="color:var(--t3);font-style:italic">Thinking...</span>';
+      const t=curTextEl.querySelector('.msg-time');if(t)t.textContent=new Date().toLocaleTimeString()
     }
   }
   curTextEl=null;textAccum='';
@@ -574,8 +625,11 @@ function sendMsg(){
   if(!txt||!connected)return;
   showUserMsg(txt);inp.value='';
   const model=document.getElementById('modelSel').value;
+  const fallback=document.getElementById('fallbackSel').value;
+  const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
+  const rabbitHole=parseInt(document.getElementById('rabbitHoleInput').value)||5;
   sendPerms();
-  ws.send(JSON.stringify({type:'chat',content:txt,model:model||''}));
+  ws.send(JSON.stringify({type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole}));
   showTyping();
   setAgentRunning(true);
   msgHist.push({role:'user',text:txt,time:new Date().toLocaleTimeString()});saveHist();
@@ -631,7 +685,11 @@ function addLog(text,cls){
 async function loadModels(){
   try{const r=await fetch('/api/models');const d=await r.json();
     const sel=document.getElementById('modelSel');sel.innerHTML='';
-    (d.models||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o)});
+    const fbSel=document.getElementById('fallbackSel');fbSel.innerHTML='<option value="">None</option>';
+    (d.models||[]).forEach(m=>{
+      const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);
+      const o2=document.createElement('option');o2.value=m;o2.textContent=m;fbSel.appendChild(o2);
+    });
   }catch(e){addLog('Load models failed','error')}
 }
 async function loadSkills(){
@@ -647,6 +705,49 @@ async function loadMcp(){
     if(servers.length)el.innerHTML=servers.map(s=>'<div style="padding:6px 0;border-bottom:1px solid var(--border)"><strong>'+esc(s.name||'?')+'</strong><br><span style="color:var(--t3)">'+(s.tools||[]).map(t=>t.name).join(', ')+'</span></div>').join('');
     else el.innerHTML='<span style="color:var(--t3)">No MCP servers</span>';
   }catch(e){document.getElementById('mcpList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
+}
+
+// 鈹€鈹€ CRON Tasks 鈹€鈹€
+async function loadCron(){
+  try{
+    const r=await fetch('/api/cron');const d=await r.json();
+    const el=document.getElementById('cronTaskList');
+    const tasks=d.tasks||[];
+    // Populate cron model dropdown
+    const cmSel=document.getElementById('cronModel');
+    const mSel=document.getElementById('modelSel');
+    cmSel.innerHTML='<option value="">Default</option>';
+    for(const opt of mSel.options){
+      if(opt.value){const o=document.createElement('option');o.value=opt.value;o.textContent=opt.value;cmSel.appendChild(o)}
+    }
+    if(!tasks.length){el.innerHTML='<span style="color:var(--t3)">No scheduled tasks</span>';return}
+    el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Schedule</th><th>Message</th><th>Status</th><th>Last Run</th><th>Actions</th></tr></thead><tbody>'+tasks.map(t=>{
+      const status=t.enabled?'<span style="color:var(--green)">&#9679; Active</span>':'<span style="color:var(--t3)">&#9679; Disabled</span>';
+      const lastRun=t.last_run?new Date(t.last_run).toLocaleString():'Never';
+      const msgPreview=(t.message||'').substring(0,40)+(t.message&&t.message.length>40?'...':'');
+      return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(t.name)+'</strong></td><td>'+esc(t.schedule)+'</td><td style="color:var(--t3)">'+esc(msgPreview)+'</td><td>'+status+'</td><td style="font-size:11px;color:var(--t3)">'+lastRun+'</td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleCron(\''+t.id+'\')">'+(t.enabled?'Disable':'Enable')+'</button> <button class="btn btn-d" style="padding:4px 8px;font-size:11px" onclick="deleteCron(\''+t.id+'\')">Delete</button></td></tr>';
+    }).join('')+'</tbody></table>';
+  }catch(e){document.getElementById('cronTaskList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
+}
+async function createCronTask(){
+  const name=document.getElementById('cronName').value.trim();
+  const schedule=document.getElementById('cronSchedule').value.trim();
+  const message=document.getElementById('cronMessage').value.trim();
+  const model=document.getElementById('cronModel').value;
+  if(!name||!message){alert('Name and message are required');return}
+  try{
+    await fetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule,message,model})});
+    document.getElementById('cronName').value='';
+    document.getElementById('cronMessage').value='';
+    loadCron();
+  }catch(e){alert('Failed to create task')}
+}
+async function toggleCron(id){
+  try{await fetch('/api/cron/'+id+'/toggle',{method:'POST'});loadCron()}catch(e){alert('Failed')}
+}
+async function deleteCron(id){
+  if(!confirm('Delete this task?'))return;
+  try{await fetch('/api/cron/'+id,{method:'DELETE'});loadCron()}catch(e){alert('Failed')}
 }
 
 // 鈹€鈹€ Markdown Renderer (local marked.js with GFM, robust fallback) 鈹€鈹€

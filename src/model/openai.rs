@@ -66,6 +66,7 @@ impl OpenAiProvider {
     pub fn new(models: Vec<ModelConfig>) -> Self {
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(180))  // 3 minute timeout for LLM requests
             .build()
             .expect("Failed to create HTTP client");
         Self { client, models }

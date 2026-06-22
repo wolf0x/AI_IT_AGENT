@@ -29,6 +29,8 @@ pub struct AgentConfig {
     pub working_dir: String,
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
+    #[serde(default = "default_rabbit_hole_threshold")]
+    pub rabbit_hole_threshold: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +75,7 @@ impl Default for Config {
             agent: AgentConfig {
                 working_dir: default_working_dir(),
                 max_iterations: default_max_iterations(),
+                rabbit_hole_threshold: default_rabbit_hole_threshold(),
             },
             models: vec![],
             mcp_servers: vec![],
@@ -85,7 +88,8 @@ fn default_port() -> u16 { 7788 }
 fn default_password() -> String { "123".to_string() }
 fn default_log_dir() -> String { "logs".to_string() }
 fn default_working_dir() -> String { ".".to_string() }
-fn default_max_iterations() -> usize { 20 }
+fn default_max_iterations() -> usize { 100 }
+fn default_rabbit_hole_threshold() -> usize { 5 }
 
 impl Config {
     pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
