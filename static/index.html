@@ -836,19 +836,21 @@ function showAssistantMsg(txt,time){
 }
 function showNotification(message, timestamp){
   const conv=document.getElementById('convArea');
-  // Create notification card
+  // Create notification card with Markdown rendering
   const d=document.createElement('div');d.className='msg notification-msg';
   const time=new Date(timestamp||Date.now()).toLocaleTimeString();
-  d.innerHTML='<div class="msg-avatar" style="background:var(--orange,#f39c12)">&#128276;</div><div class="msg-body"><div class="msg-role" style="color:var(--orange,#f39c12)">&#128276; Reminder</div><div class="msg-content" style="background:#fef9e7;border:1px solid #f9e79f;border-radius:14px;color:#7d6608">'+esc(message)+'</div><div class="msg-time">'+time+'</div></div>';
+  d.innerHTML='<div class="msg-avatar" style="background:var(--orange,#f39c12)">&#128276;</div><div class="msg-body"><div class="msg-role" style="color:var(--orange,#f39c12)">&#128276; Reminder</div><div class="msg-content" style="background:#fef9e7;border:1px solid #f9e79f;border-radius:14px;color:#7d6608">'+renderMd(message)+'</div><div class="msg-time">'+time+'</div></div>';
   conv.appendChild(d);
   scrollBottom();
-  // Also try browser native notification
+  // Also try browser native notification (plain text only)
+  const plainText = message.replace(/[*#_~`\[\]]/g, '').substring(0, 200);
   if('Notification' in window && Notification.permission==='granted'){
-    new Notification('RustAgent Reminder',{body:message,icon:''});
+    new Notification('RustAgent Reminder',{body:plainText,icon:''});
   } else if('Notification' in window && Notification.permission!=='denied'){
-    Notification.requestPermission().then(p=>{if(p==='granted')new Notification('RustAgent Reminder',{body:message})});
+    Notification.requestPermission().then(p=>{if(p==='granted')new Notification('RustAgent Reminder',{body:plainText})});
   }
-  addLog('Reminder: '+message,'info');
+  // Only log a brief system action, not the full content
+  addLog('Reminder delivered','info');
 }
 function loadHist(){try{
   const m=JSON.parse(localStorage.getItem('ra_msgs')||'[]');

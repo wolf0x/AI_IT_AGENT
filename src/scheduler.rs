@@ -122,23 +122,31 @@ impl Scheduler {
     }
 
     /// Parse schedule expression into interval seconds.
+    /// Supports: "every 10m", "every 10 min", "every 10 mins", "every 10 minutes",
+    /// "every 1h", "every 1 hour", "every 2 hours", "every 30s", "every 30 sec", etc.
     pub fn parse_interval(schedule: &str) -> u64 {
         let s = schedule.trim().to_lowercase();
 
-        // "every Ns/Nm/Nh" syntax
+        // "every N..." syntax
         if let Some(rest) = s.strip_prefix("every ") {
             let rest = rest.trim();
-            if let Some(num_str) = rest.strip_suffix('s') {
-                if let Ok(n) = num_str.trim().parse::<u64>() {
+            // Extract the number and the unit
+            let (num_str, unit) = rest.split_at(
+                rest.find(|c: char| c.is_alphabetic()).unwrap_or(rest.len())
+            );
+            let num_str = num_str.trim();
+            let unit = unit.trim();
+
+            if let Ok(n) = num_str.parse::<u64>() {
+                // Match unit: seconds, minutes, hours (and abbreviations)
+                if unit.is_empty() || unit == "s" || unit.starts_with("sec") {
                     return n;
-                }
-            } else if let Some(num_str) = rest.strip_suffix('m') {
-                if let Ok(n) = num_str.trim().parse::<u64>() {
+                } else if unit == "m" || unit.starts_with("min") {
                     return n * 60;
-                }
-            } else if let Some(num_str) = rest.strip_suffix('h') {
-                if let Ok(n) = num_str.trim().parse::<u64>() {
+                } else if unit == "h" || unit.starts_with("hour") || unit.starts_with("hr") {
                     return n * 3600;
+                } else if unit == "d" || unit.starts_with("day") {
+                    return n * 86400;
                 }
             }
             // Try parsing as plain number (seconds)
@@ -303,10 +311,7 @@ impl Scheduler {
                         let summary = if text.trim().is_empty() {
                             format!("⚙️ CRON task '{}' completed (no output)", task_name)
                         } else {
-                            // Truncate long outputs for notification
-                            let preview: String = text.chars().take(2000).collect();
-                            let suffix = if text.len() > 2000 { "\n\n... (truncated)" } else { "" };
-                            format!("⚙️ **CRON: {}** ({}s)\n\n{}{}", task_name, elapsed, preview, suffix)
+                            format!("⚙️ **CRON: {}** ({}s)\n\n{}", task_name, elapsed, text)
                         };
                         let ws_msg = serde_json::json!({
                             "type": "notification",
