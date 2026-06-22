@@ -181,8 +181,8 @@ impl Agent for LlmAgent {
             let mut history: Vec<ChatMessage> = prev_history;
             history.push(ChatMessage::user(&user_message));
 
-            // Rabbit hole detection: track tool call counts
-            let mut tool_call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            // Rabbit hole detection: track identical tool calls (same name + same args)
+            let mut call_signatures: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             // Track which model we're using (for fallback)
             let mut active_model = model.clone();
             let mut used_fallback = false;
@@ -206,10 +206,34 @@ impl Agent for LlmAgent {
                             if content.len() < 100 {
                                 info!("Short response content: {}", content);
                             }
-                            // Handle empty response - provide a fallback message
+                            // Handle empty response - generate summary from tool results in history
                             let final_content = if content.trim().is_empty() && iteration > 0 {
                                 warn!("LLM returned empty response after {} iterations", iteration + 1);
-                                "I've completed the task, but I don't have a summary to provide.".to_string()
+                                // Summarize tool execution results from history
+                                let mut summary_parts: Vec<String> = Vec::new();
+                                let mut tool_results: Vec<(String, String)> = Vec::new();
+                                for msg in history.iter() {
+                                    if msg.role == "tool" {
+                                        let content_str = msg.content.as_deref().unwrap_or("");
+                                        let name = msg.name.as_deref().unwrap_or("tool");
+                                        let preview: String = content_str.chars().take(150).collect();
+                                        tool_results.push((name.to_string(), preview));
+                                    }
+                                }
+                                if tool_results.is_empty() {
+                                    summary_parts.push("The task was processed but the model returned no summary.".to_string());
+                                } else {
+                                    summary_parts.push(format!("Task processed across {} iterations with {} tool call(s). Here is what happened:\n", iteration + 1, tool_results.len()));
+                                    for (i, (name, preview)) in tool_results.iter().enumerate() {
+                                        summary_parts.push(format!("{}. **{}**: {}", i + 1, name, preview));
+                                    }
+                                    // Check if any tool results contain errors
+                                    let has_errors = tool_results.iter().any(|(_, r)| r.contains("error") || r.contains("Error") || r.contains("denied"));
+                                    if has_errors {
+                                        summary_parts.push("\nSome operations encountered errors. Please review the results above.".to_string());
+                                    }
+                                }
+                                summary_parts.join("\n")
                             } else {
                                 content
                             };
@@ -240,24 +264,23 @@ impl Agent for LlmAgent {
                             ToolExecutionStrategy::Sequential => {
                                 for tc in &tool_calls {
                                     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
-                                    // Rabbit hole detection: check before executing
-                                    let count = tool_call_counts.entry(tool_name.to_string()).or_insert(0);
+                                    let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
+                                    // Build signature: tool_name + args (identifies duplicate calls)
+                                    let sig = format!("{}:{}", tool_name, args_str);
+                                    let count = call_signatures.entry(sig.clone()).or_insert(0);
                                     *count += 1;
                                     if *count >= rabbit_hole_threshold {
-                                        warn!("Rabbit hole detected: tool '{}' called {} times", tool_name, *count);
+                                        warn!("Rabbit hole: '{}' called with same args {} times: {}", tool_name, *count, args_str);
                                         let warning_msg = format!(
-                                            "WARNING: You have called {} {} times without completing the task. \
-                                             Consider a different approach or explain why this tool is still needed.",
+                                            "WARNING: You have called {} with the SAME arguments {} times and the task is not completing. \
+                                             You must try a DIFFERENT approach, use different arguments, or explain what went wrong and stop.",
                                             tool_name, *count
                                         );
-                                        // Inject warning as system message into history
                                         history.push(ChatMessage::user(&warning_msg));
-                                        // Send warning to UI
                                         let _ = tx.send(Ok(AgentEvent::text(
-                                            &format!("\n\n*[Rabbit hole warning: {} called {} times]*\n\n", tool_name, *count),
+                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, *count),
                                             &invocation_id, &author
                                         ))).await;
-                                        // Reset counter for this tool (give one more chance)
                                         *count = 0;
                                     }
                                     execute_tool_call(
@@ -268,18 +291,20 @@ impl Agent for LlmAgent {
                             ToolExecutionStrategy::Parallel | ToolExecutionStrategy::Auto => {
                                 for tc in &tool_calls {
                                     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
-                                    let count = tool_call_counts.entry(tool_name.to_string()).or_insert(0);
+                                    let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
+                                    let sig = format!("{}:{}", tool_name, args_str);
+                                    let count = call_signatures.entry(sig.clone()).or_insert(0);
                                     *count += 1;
                                     if *count >= rabbit_hole_threshold {
-                                        warn!("Rabbit hole detected: tool '{}' called {} times", tool_name, *count);
+                                        warn!("Rabbit hole: '{}' called with same args {} times: {}", tool_name, *count, args_str);
                                         let warning_msg = format!(
-                                            "WARNING: You have called {} {} times without completing the task. \
-                                             Consider a different approach or explain why this tool is still needed.",
+                                            "WARNING: You have called {} with the SAME arguments {} times and the task is not completing. \
+                                             You must try a DIFFERENT approach, use different arguments, or explain what went wrong and stop.",
                                             tool_name, *count
                                         );
                                         history.push(ChatMessage::user(&warning_msg));
                                         let _ = tx.send(Ok(AgentEvent::text(
-                                            &format!("\n\n*[Rabbit hole warning: {} called {} times]*\n\n", tool_name, *count),
+                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, *count),
                                             &invocation_id, &author
                                         ))).await;
                                         *count = 0;
