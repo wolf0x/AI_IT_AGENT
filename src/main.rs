@@ -118,6 +118,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (permission_resolver, permission_pending) = PermissionResolver::new();
     let permissions = Arc::new(Mutex::new(default_permissions()));
 
+    // Build notification broadcast channel (before scheduler)
+    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+
     // Build scheduler
     let scheduler = Arc::new(Mutex::new(Scheduler::new(
         "cron_tasks.json",
@@ -129,6 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.agent.rabbit_hole_threshold,
         128000,  // default context window for CRON tasks
         config.agent.context_window_threshold,
+        notify_tx.clone(),
     )));
 
     // Spawn scheduler background loop
@@ -141,7 +145,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_context_windows: std::collections::HashMap<String, usize> = config.models.iter()
         .map(|m| (m.name.clone(), m.context_window))
         .collect();
-    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
     let state = Arc::new(AppState {
         runner: runner.clone(),
         skill_manager,

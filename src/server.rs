@@ -92,7 +92,12 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         let ctx_window = state.model_context_windows.get(name).copied().unwrap_or(128000);
         json!({ "name": name, "context_window": ctx_window })
     }).collect();
-    Json(json!({ "models": models, "context_window_threshold": state.context_window_threshold }))
+    Json(json!({
+        "models": models,
+        "context_window_threshold": state.context_window_threshold,
+        "max_iterations": state.max_iterations,
+        "rabbit_hole_threshold": state.rabbit_hole_threshold,
+    }))
 }
 
 async fn skills_handler(State(state): State<Arc<AppState>>) -> Json<Value> {

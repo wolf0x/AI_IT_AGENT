@@ -703,6 +703,8 @@ async function loadModels(){
       const o2=document.createElement('option');o2.value=name;o2.textContent=name+ctx;fbSel.appendChild(o2);
     });
     if(d.context_window_threshold) document.getElementById('ctxWindowThreshold').value = d.context_window_threshold;
+    if(d.max_iterations) document.getElementById('maxIterInput').value = d.max_iterations;
+    if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
   }catch(e){addLog('Load models failed','error')}
 }
 async function loadSkills(){

@@ -13,6 +13,7 @@ use tracing::{info, warn, error};
 use crate::agent::AgentEvent;
 use crate::permission::PendingMap;
 use crate::runner::Runner;
+use crate::server::NotifyTx;
 
 use std::collections::HashMap;
 
@@ -56,6 +57,7 @@ pub struct Scheduler {
     rabbit_hole_threshold: usize,
     context_window: usize,
     context_window_threshold: usize,
+    notify_tx: NotifyTx,
 }
 
 impl Scheduler {
@@ -69,6 +71,7 @@ impl Scheduler {
         rabbit_hole_threshold: usize,
         context_window: usize,
         context_window_threshold: usize,
+        notify_tx: NotifyTx,
     ) -> Self {
         let mut scheduler = Self {
             tasks: Vec::new(),
@@ -81,6 +84,7 @@ impl Scheduler {
             rabbit_hole_threshold,
             context_window,
             context_window_threshold,
+            notify_tx,
         };
         scheduler.load();
         scheduler
@@ -261,10 +265,12 @@ impl Scheduler {
             let ctx_window = self.context_window;
             let ctx_window_threshold = self.context_window_threshold;
             let task_name = task.name.clone();
+            let notify_tx = self.notify_tx.clone();
 
-            // Execute the task in a background task
+            // Execute the task as an independent sub-agent (own session, empty history)
             tokio::spawn(async move {
                 let session_id = format!("cron-{}", uuid::Uuid::new_v4());
+                let start = std::time::Instant::now();
                 match runner.run(
                     &message, &session_id, &model, max_iter, vec![],
                     permissions, permission_pending,
@@ -290,10 +296,33 @@ impl Scheduler {
                                 }
                             }
                         }
-                        info!("CRON task '{}' completed ({} chars output)", task_name, text.len());
+                        let elapsed = start.elapsed().as_secs();
+                        info!("CRON task '{}' completed in {}s ({} chars output)", task_name, elapsed, text.len());
+
+                        // Broadcast summary to all connected web chat clients
+                        let summary = if text.trim().is_empty() {
+                            format!("⚙️ CRON task '{}' completed (no output)", task_name)
+                        } else {
+                            // Truncate long outputs for notification
+                            let preview: String = text.chars().take(2000).collect();
+                            let suffix = if text.len() > 2000 { "\n\n... (truncated)" } else { "" };
+                            format!("⚙️ **CRON: {}** ({}s)\n\n{}{}", task_name, elapsed, preview, suffix)
+                        };
+                        let ws_msg = serde_json::json!({
+                            "type": "notification",
+                            "message": summary,
+                            "timestamp": chrono::Utc::now().to_rfc3339()
+                        }).to_string();
+                        let _ = notify_tx.send(ws_msg);
                     }
                     Err(e) => {
                         error!("CRON task '{}' failed to start: {}", task_name, e);
+                        let ws_msg = serde_json::json!({
+                            "type": "notification",
+                            "message": format!("❌ CRON task '{}' failed: {}", task_name, e),
+                            "timestamp": chrono::Utc::now().to_rfc3339()
+                        }).to_string();
+                        let _ = notify_tx.send(ws_msg);
                     }
                 }
             });
