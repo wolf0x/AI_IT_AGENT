@@ -251,7 +251,7 @@ impl Agent for LlmAgent {
                                             tool_name, *count
                                         );
                                         // Inject warning as system message into history
-                                        history.push(ChatMessage::system(&warning_msg));
+                                        history.push(ChatMessage::user(&warning_msg));
                                         // Send warning to UI
                                         let _ = tx.send(Ok(AgentEvent::text(
                                             &format!("\n\n*[Rabbit hole warning: {} called {} times]*\n\n", tool_name, *count),
@@ -277,7 +277,7 @@ impl Agent for LlmAgent {
                                              Consider a different approach or explain why this tool is still needed.",
                                             tool_name, *count
                                         );
-                                        history.push(ChatMessage::system(&warning_msg));
+                                        history.push(ChatMessage::user(&warning_msg));
                                         let _ = tx.send(Ok(AgentEvent::text(
                                             &format!("\n\n*[Rabbit hole warning: {} called {} times]*\n\n", tool_name, *count),
                                             &invocation_id, &author
