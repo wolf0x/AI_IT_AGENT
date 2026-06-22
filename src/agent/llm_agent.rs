@@ -176,6 +176,10 @@ impl Agent for LlmAgent {
         let permission_pending: PendingMap = ctx.permission_pending.clone();
         let fallback_model = ctx.fallback_model.clone();
         let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
+                let context_window = ctx.context_window;
+                let context_window_threshold = ctx.context_window_threshold;
+                // Calculate max history chars: context_window (tokens) * threshold% * ~4 chars/token
+                let max_history_chars: usize = context_window * context_window_threshold * 4 / 100;
 
         tokio::spawn(async move {
             let mut history: Vec<ChatMessage> = prev_history;
@@ -190,12 +194,11 @@ impl Agent for LlmAgent {
             for iteration in 0..max_iter {
                 info!("Agent loop iteration {} (model: {})", iteration + 1, active_model);
 
-                // Trim history if approaching context limit (~4 chars/token, target < 60% of context window)
-                // Max ~48000 tokens of history = 192000 chars
-                let max_history_chars: usize = 192_000;
+                // Trim history if approaching context limit
                 let total_chars: usize = history.iter().map(|m| m.content.as_deref().unwrap_or("").len()).sum();
                 if total_chars > max_history_chars {
-                    warn!("History too large ({} chars), trimming old tool results", total_chars);
+                    warn!("History too large ({} chars, limit: {} = {}% of {} tokens), trimming old results",
+                          total_chars, max_history_chars, context_window_threshold, context_window);
                     // Replace old tool results with summaries, keeping the latest 3 iterations worth
                     let keep_recent = (history.len().saturating_sub(20)).max(6);
                     for i in 0..history.len() {

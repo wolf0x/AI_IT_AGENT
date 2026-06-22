@@ -127,6 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         permission_pending.clone(),
         config.agent.max_iterations,
         config.agent.rabbit_hole_threshold,
+        128000,  // default context window for CRON tasks
+        config.agent.context_window_threshold,
     )));
 
     // Spawn scheduler background loop
@@ -136,6 +138,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Build app state
+    let model_context_windows: std::collections::HashMap<String, usize> = config.models.iter()
+        .map(|m| (m.name.clone(), m.context_window))
+        .collect();
     let state = Arc::new(AppState {
         runner: runner.clone(),
         skill_manager,
@@ -143,8 +148,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         logger,
         password: config.server.password.clone(),
         model_names,
+        model_context_windows,
         max_iterations: config.agent.max_iterations,
         rabbit_hole_threshold: config.agent.rabbit_hole_threshold,
+        context_window_threshold: config.agent.context_window_threshold,
         sessions: Mutex::new(std::collections::HashMap::new()),
         permissions,
         permission_resolver,

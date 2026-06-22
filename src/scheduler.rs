@@ -54,6 +54,8 @@ pub struct Scheduler {
     permission_pending: PendingMap,
     max_iterations: usize,
     rabbit_hole_threshold: usize,
+    context_window: usize,
+    context_window_threshold: usize,
 }
 
 impl Scheduler {
@@ -65,6 +67,8 @@ impl Scheduler {
         permission_pending: PendingMap,
         max_iterations: usize,
         rabbit_hole_threshold: usize,
+        context_window: usize,
+        context_window_threshold: usize,
     ) -> Self {
         let mut scheduler = Self {
             tasks: Vec::new(),
@@ -75,6 +79,8 @@ impl Scheduler {
             permission_pending,
             max_iterations,
             rabbit_hole_threshold,
+            context_window,
+            context_window_threshold,
         };
         scheduler.load();
         scheduler
@@ -252,6 +258,8 @@ impl Scheduler {
             let permission_pending = self.permission_pending.clone();
             let max_iter = self.max_iterations;
             let rabbit_hole = self.rabbit_hole_threshold;
+            let ctx_window = self.context_window;
+            let ctx_window_threshold = self.context_window_threshold;
             let task_name = task.name.clone();
 
             // Execute the task in a background task
@@ -261,6 +269,7 @@ impl Scheduler {
                     &message, &session_id, &model, max_iter, vec![],
                     permissions, permission_pending,
                     None, rabbit_hole,
+                    ctx_window, ctx_window_threshold,
                 ).await {
                     Ok(mut stream) => {
                         use futures::StreamExt;

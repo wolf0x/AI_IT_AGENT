@@ -97,6 +97,8 @@ impl Runner {
         permission_pending: PendingMap,
         fallback_model: Option<String>,
         rabbit_hole_threshold: usize,
+        context_window: usize,
+        context_window_threshold: usize,
     ) -> AgentResult<EventStream> {
         info!("Runner dispatching to agent '{}' (session: {})", self.agent.name(), session_id);
 
@@ -116,7 +118,9 @@ impl Runner {
          .with_permissions(permissions)
          .with_permission_pending(permission_pending)
          .with_fallback_model(fallback_model)
-         .with_rabbit_hole_threshold(rabbit_hole_threshold);
+         .with_rabbit_hole_threshold(rabbit_hole_threshold)
+         .with_context_window(context_window)
+         .with_context_window_threshold(context_window_threshold);
 
         // Log user message
         self.logger.log_user_message(session_id, user_message);

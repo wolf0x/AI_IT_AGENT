@@ -32,8 +32,10 @@ pub struct AppState {
     pub logger: Arc<ConversationLogger>,
     pub password: String,
     pub model_names: Vec<String>,
+    pub model_context_windows: std::collections::HashMap<String, usize>,
     pub max_iterations: usize,
     pub rabbit_hole_threshold: usize,
+    pub context_window_threshold: usize,
     /// Per-session conversation history for multi-turn context
     pub sessions: Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>,
     /// Permission settings (category -> allowed), shared across connections
@@ -79,7 +81,11 @@ async fn health_handler() -> Json<Value> {
 }
 
 async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
-    Json(json!({ "models": state.model_names }))
+    let models: Vec<Value> = state.model_names.iter().map(|name| {
+        let ctx_window = state.model_context_windows.get(name).copied().unwrap_or(128000);
+        json!({ "name": name, "context_window": ctx_window })
+    }).collect();
+    Json(json!({ "models": models, "context_window_threshold": state.context_window_threshold }))
 }
 
 async fn skills_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -303,6 +309,11 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 .as_u64()
                                 .map(|v| v as usize)
                                 .unwrap_or(state.rabbit_hole_threshold);
+                            let ctx_window_threshold = parsed["context_window_threshold"]
+                                .as_u64()
+                                .map(|v| v as usize)
+                                .unwrap_or(state.context_window_threshold);
+                            let ctx_window = state.model_context_windows.get(&model).copied().unwrap_or(128000);
 
                             if content.is_empty() {
                                 continue;
@@ -322,6 +333,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 &content, &session_id, &model, max_iter, history,
                                 state.permissions.clone(), state.permission_pending.clone(),
                                 fallback_model, rabbit_hole,
+                                ctx_window, ctx_window_threshold,
                             ).await {
                                 Ok(mut event_stream) => {
                                     let mut assistant_text = String::new();

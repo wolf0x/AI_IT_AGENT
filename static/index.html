@@ -336,6 +336,11 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             <label>Rabbit Hole Threshold</label>
             <input type="number" id="rabbitHoleInput" value="5" min="1" max="50">
           </div>
+          <div class="form-group">
+            <label>Context Window Threshold (%)</label>
+            <input type="number" id="ctxWindowThreshold" value="80" min="10" max="99">
+            <small style="color:var(--t3)">Trim history when usage reaches this % of model's context window</small>
+          </div>
         </div>
         <div class="settings-section">
           <h3>&#128190; Session</h3>
@@ -628,8 +633,9 @@ function sendMsg(){
   const fallback=document.getElementById('fallbackSel').value;
   const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
   const rabbitHole=parseInt(document.getElementById('rabbitHoleInput').value)||5;
+  const ctxThreshold=parseInt(document.getElementById('ctxWindowThreshold').value)||80;
   sendPerms();
-  ws.send(JSON.stringify({type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole}));
+  ws.send(JSON.stringify({type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold}));
   showTyping();
   setAgentRunning(true);
   msgHist.push({role:'user',text:txt,time:new Date().toLocaleTimeString()});saveHist();
@@ -687,9 +693,12 @@ async function loadModels(){
     const sel=document.getElementById('modelSel');sel.innerHTML='';
     const fbSel=document.getElementById('fallbackSel');fbSel.innerHTML='<option value="">None</option>';
     (d.models||[]).forEach(m=>{
-      const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);
-      const o2=document.createElement('option');o2.value=m;o2.textContent=m;fbSel.appendChild(o2);
+      const name = typeof m === 'string' ? m : m.name;
+      const ctx = m.context_window ? (' ('+Math.round(m.context_window/1000)+'K ctx)') : '';
+      const o=document.createElement('option');o.value=name;o.textContent=name+ctx;sel.appendChild(o);
+      const o2=document.createElement('option');o2.value=name;o2.textContent=name+ctx;fbSel.appendChild(o2);
     });
+    if(d.context_window_threshold) document.getElementById('ctxWindowThreshold').value = d.context_window_threshold;
   }catch(e){addLog('Load models failed','error')}
 }
 async function loadSkills(){

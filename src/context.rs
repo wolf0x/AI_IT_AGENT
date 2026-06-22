@@ -105,6 +105,10 @@ pub struct InvocationContext {
     pub fallback_model: Option<String>,
     pub max_iterations: usize,
     pub rabbit_hole_threshold: usize,
+    /// Model context window size in tokens
+    pub context_window: usize,
+    /// Context usage threshold percentage (e.g. 80 = trim at 80%)
+    pub context_window_threshold: usize,
     pub conversation_history: Vec<ChatMessage>,
     pub shared_state: HashMap<String, Value>,
     /// Permission settings (category -> allowed)
@@ -130,6 +134,8 @@ impl InvocationContext {
             fallback_model: None,
             max_iterations,
             rabbit_hole_threshold: 5,
+            context_window: 128000,
+            context_window_threshold: 80,
             conversation_history: Vec::new(),
             shared_state: HashMap::new(),
             permissions: Arc::new(Mutex::new(crate::permission::default_permissions())),
@@ -165,6 +171,18 @@ impl InvocationContext {
     /// Set rabbit hole detection threshold.
     pub fn with_rabbit_hole_threshold(mut self, threshold: usize) -> Self {
         self.rabbit_hole_threshold = threshold;
+        self
+    }
+
+    /// Set context window size in tokens.
+    pub fn with_context_window(mut self, tokens: usize) -> Self {
+        self.context_window = tokens;
+        self
+    }
+
+    /// Set context window usage threshold percentage.
+    pub fn with_context_window_threshold(mut self, percent: usize) -> Self {
+        self.context_window_threshold = percent;
         self
     }
 

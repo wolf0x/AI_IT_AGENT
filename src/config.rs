@@ -31,6 +31,9 @@ pub struct AgentConfig {
     pub max_iterations: usize,
     #[serde(default = "default_rabbit_hole_threshold")]
     pub rabbit_hole_threshold: usize,
+    /// Context window usage threshold percentage (default: 80 = trim at 80% of model context)
+    #[serde(default = "default_context_window_threshold")]
+    pub context_window_threshold: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +44,9 @@ pub struct ModelConfig {
     pub api_key: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// Context window size in tokens (default: 128000)
+    #[serde(default = "default_context_window")]
+    pub context_window: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +82,7 @@ impl Default for Config {
                 working_dir: default_working_dir(),
                 max_iterations: default_max_iterations(),
                 rabbit_hole_threshold: default_rabbit_hole_threshold(),
+                context_window_threshold: default_context_window_threshold(),
             },
             models: vec![],
             mcp_servers: vec![],
@@ -90,6 +97,8 @@ fn default_log_dir() -> String { "logs".to_string() }
 fn default_working_dir() -> String { ".".to_string() }
 fn default_max_iterations() -> usize { 100 }
 fn default_rabbit_hole_threshold() -> usize { 5 }
+fn default_context_window() -> usize { 128000 }
+fn default_context_window_threshold() -> usize { 80 }
 
 impl Config {
     pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
