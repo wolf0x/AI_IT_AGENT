@@ -25,6 +25,10 @@ use crate::skill::SkillManager;
 use crate::tool::mcp_client::McpClientManager;
 use crate::web::StaticServer;
 
+/// Type alias for the broadcast channel used to push notifications to all WS clients.
+pub type NotifyTx = tokio::sync::broadcast::Sender<String>;
+pub type NotifyRx = tokio::sync::broadcast::Receiver<String>;
+
 pub struct AppState {
     pub runner: Arc<Runner>,
     pub skill_manager: Arc<SkillManager>,
@@ -46,6 +50,8 @@ pub struct AppState {
     pub permission_pending: PendingMap,
     /// CRON task scheduler
     pub scheduler: Arc<Mutex<Scheduler>>,
+    /// Broadcast channel for push notifications (sys_remind, etc.)
+    pub notify_tx: NotifyTx,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -65,6 +71,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/cron/{id}", put(cron_update_handler))
         .route("/api/cron/{id}", delete(cron_delete_handler))
         .route("/api/cron/{id}/toggle", post(cron_toggle_handler))
+        .route("/api/notify", post(notify_handler))
         .with_state(state)
 }
 
@@ -196,6 +203,27 @@ async fn cron_toggle_handler(
     Json(json!({ "success": ok, "enabled": enabled }))
 }
 
+/// POST /api/notify — push a notification message to all connected WebSocket clients.
+async fn notify_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let message = body["message"].as_str().unwrap_or("");
+    if message.is_empty() {
+        return Json(json!({ "success": false, "error": "Missing message" }));
+    }
+    // Build a WS-formatted notification JSON
+    let ws_msg = json!({
+        "type": "notification",
+        "message": message,
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }).to_string();
+    match state.notify_tx.send(ws_msg) {
+        Ok(n) => Json(json!({ "success": true, "delivered_to": n })),
+        Err(_) => Json(json!({ "success": false, "delivered_to": 0 })),
+    }
+}
+
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
     ws.on_upgrade(move |socket| handle_ws(socket, state))
 }
@@ -269,6 +297,19 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
         }
         // Signal stream ended
         let _ = ws_tx.send(Message::Close(None)).await;
+    });
+
+    // Subscribe to broadcast notifications and forward to this client's sink
+    let mut notify_rx = state.notify_tx.subscribe();
+    let notify_sink = ws_sink.clone();
+    tokio::spawn(async move {
+        use futures::SinkExt;
+        while let Ok(msg) = notify_rx.recv().await {
+            let mut sink = notify_sink.lock().await;
+            if sink.send(Message::Text(msg.into())).await.is_err() {
+                break;
+            }
+        }
     });
 
     let cancelled = Arc::new(AtomicBool::new(false));

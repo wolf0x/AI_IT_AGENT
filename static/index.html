@@ -510,6 +510,10 @@ function handleMsg(msg){
       hideTyping();finalizeThink();finalizeTextBlock();
       renderPermRequest(msg);
       break;
+    case 'notification':
+      hideTyping();finalizeThink();finalizeTextBlock();
+      showNotification(msg.message, msg.timestamp);
+      break;
     case 'done':
       hideTyping();finalizeThink();
       if(textAccum){msgHist.push({role:'assistant',text:textAccum.trim(),time:new Date().toLocaleTimeString()});saveHist()}
@@ -827,6 +831,22 @@ function showAssistantMsg(txt,time){
   const d=document.createElement('div');d.className='msg assistant';
   d.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+renderMd(esc(txt))+'</div><div class="msg-time">'+(time||'')+'</div></div>';
   document.getElementById('convArea').appendChild(d);
+}
+function showNotification(message, timestamp){
+  const conv=document.getElementById('convArea');
+  // Create notification card
+  const d=document.createElement('div');d.className='msg notification-msg';
+  const time=new Date(timestamp||Date.now()).toLocaleTimeString();
+  d.innerHTML='<div class="msg-avatar" style="background:var(--orange,#f39c12)">&#128276;</div><div class="msg-body"><div class="msg-role" style="color:var(--orange,#f39c12)">&#128276; Reminder</div><div class="msg-content" style="background:#fef9e7;border:1px solid #f9e79f;border-radius:14px;color:#7d6608">'+esc(message)+'</div><div class="msg-time">'+time+'</div></div>';
+  conv.appendChild(d);
+  scrollBottom();
+  // Also try browser native notification
+  if('Notification' in window && Notification.permission==='granted'){
+    new Notification('RustAgent Reminder',{body:message,icon:''});
+  } else if('Notification' in window && Notification.permission!=='denied'){
+    Notification.requestPermission().then(p=>{if(p==='granted')new Notification('RustAgent Reminder',{body:message})});
+  }
+  addLog('Reminder: '+message,'info');
 }
 function loadHist(){try{
   const m=JSON.parse(localStorage.getItem('ra_msgs')||'[]');

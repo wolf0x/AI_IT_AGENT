@@ -141,6 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_context_windows: std::collections::HashMap<String, usize> = config.models.iter()
         .map(|m| (m.name.clone(), m.context_window))
         .collect();
+    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
     let state = Arc::new(AppState {
         runner: runner.clone(),
         skill_manager,
@@ -157,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         permission_resolver,
         permission_pending,
         scheduler,
+        notify_tx,
     });
 
     // Create router and start server

@@ -1,19 +1,24 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tokio::process::Command;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 use super::Tool;
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
-/// Schedule a one-time reminder that pops up a Windows toast notification after a delay.
+/// Schedule a one-time reminder that delivers a notification to the web chat page
+/// (and optionally a Windows toast) after a specified delay.
+///
+/// Uses a server-side tokio timer + HTTP POST to /api/notify to push the message
+/// through the WebSocket broadcast channel to all connected clients.
 pub struct SysRemindTool;
 
 #[async_trait]
 impl Tool for SysRemindTool {
     fn name(&self) -> &str { "sys_remind" }
     fn description(&self) -> &str {
-        "Schedule a one-time reminder. Shows a Windows toast notification after the specified delay. Parameters: message (required), delay (e.g. '2m', '30s', '1h', required)."
+        "Schedule a one-time reminder. Delivers a notification to the web chat page after the specified delay. Parameters: message (required), delay (e.g. '2m', '30s', '1h', required)."
     }
     fn is_builtin(&self) -> bool { true }
     fn parameters_schema(&self) -> Value {
@@ -39,35 +44,53 @@ impl Tool for SysRemindTool {
             return Err("Maximum delay is 24 hours (86400s)".to_string().into());
         }
 
-        // Escape the message for PowerShell
-        let escaped_msg = message
-            .replace("'", "''")
-            .replace('"', "`\"");
+        let message_owned = message.to_string();
 
-        // Build a PowerShell script that runs in background, sleeps, then shows a toast notification
-        let ps_script = format!(
-            r#"Start-Process -FilePath "powershell" -ArgumentList "-NoProfile", "-WindowStyle", "Hidden", "-Command", "[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]; $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); $textNodes = $template.GetElementsByTagName('text'); $textNodes.Item(0).AppendChild($template.CreateTextNode('RustAgent Reminder')) | Out-Null; $textNodes.Item(1).AppendChild($template.CreateTextNode('{escaped_msg}')) | Out-Null; $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('RustAgent'); $toast = [Windows.UI.Notifications.ToastNotification]::new($template); $notifier.Show($toast)" -WindowStyle Hidden; Start-Sleep -Seconds {delay_secs}; [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; [System.Windows.Forms.MessageBox]::Show('{escaped_msg}', 'RustAgent Reminder', 'OK', 'Information')"#,
-            escaped_msg = escaped_msg,
-            delay_secs = delay_secs,
-        );
+        // Spawn a background tokio task that sleeps and then POSTs to /api/notify
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
 
-        // Launch detached PowerShell process
-        let mut cmd = Command::new("powershell");
-        cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_script]);
-        cmd.creation_flags(0x00000008); // DETACHED_PROCESS
-
-        match cmd.spawn() {
-            Ok(_child) => {
-                Ok(json!({
-                    "status": "scheduled",
-                    "message": message,
-                    "delay_seconds": delay_secs,
-                    "delay_human": format_duration(delay_secs),
-                }))
+            // POST to the local server's /api/notify endpoint
+            let client = reqwest::Client::new();
+            let payload = json!({ "message": message_owned });
+            match client.post("http://127.0.0.1:7788/api/notify")
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    tracing::info!("Reminder delivered: '{}' (status: {})", message_owned, resp.status());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to deliver reminder '{}': {}", message_owned, e);
+                    // Fallback: try to show a Windows MessageBox via PowerShell
+                    show_fallback_notification(&message_owned);
+                }
             }
-            Err(e) => Err(format!("Failed to schedule reminder: {}", e).into()),
-        }
+        });
+
+        Ok(json!({
+            "status": "scheduled",
+            "message": message,
+            "delay_seconds": delay_secs,
+            "delay_human": format_duration(delay_secs),
+            "delivery": "web_chat"
+        }))
     }
+}
+
+/// Fallback: show notification via PowerShell MessageBox if HTTP notify fails.
+fn show_fallback_notification(message: &str) {
+    let escaped = message.replace("'", "''");
+    let ps_cmd = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('{}', 'RustAgent Reminder', 'OK', 'Information')",
+        escaped
+    );
+    // Fire-and-forget: spawn PowerShell detached
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_cmd])
+        .creation_flags(0x00000008)
+        .spawn();
 }
 
 /// Parse delay strings like "2m", "30s", "1h", "90s", "1h30m"
