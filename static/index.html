@@ -687,13 +687,24 @@ function finalizeThink(){
     }
     curThinkEl.classList.remove('active');
     curThinkEl.classList.add('done');
-    // Update header to show completed state
+    // Update header text WITHOUT destroying onclick handler (no innerHTML replace)
     const hdr=curThinkEl.querySelector('.think-hdr');
-    if(hdr)hdr.innerHTML='&#128161; Thinking <span style="color:var(--t3);font-weight:400">&#10003;</span> <span class="arrow">&#9660;</span>';
+    if(hdr){
+      const txtNode=hdr.childNodes[0];
+      if(txtNode&&txtNode.nodeType===3)txtNode.textContent='\u{1F4A1} Thinking ';
+      const oldArrow=hdr.querySelector('.arrow');
+      if(oldArrow)oldArrow.remove();
+      const checkSpan=document.createElement('span');
+      checkSpan.style.cssText='color:var(--t3);font-weight:400';
+      checkSpan.textContent='\u2713 ';
+      const newArrow=document.createElement('span');
+      newArrow.className='arrow open';
+      newArrow.innerHTML='&#9660;';
+      hdr.appendChild(checkSpan);
+      hdr.appendChild(newArrow);
+    }
     const body=curThinkEl.querySelector('.think-body');
     if(body)body.classList.add('open');
-    const arrow=curThinkEl.querySelector('.arrow');
-    if(arrow)arrow.classList.add('open');
     curThinkEl=null;
   }
 }
