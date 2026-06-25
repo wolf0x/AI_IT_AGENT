@@ -181,6 +181,15 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .copy-btn{position:absolute;top:6px;right:6px;background:rgba(255,255,255,.15);color:#aaa;border:1px solid #555;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;opacity:0;transition:opacity .2s}
 .md-content pre:hover .copy-btn{opacity:1}
 .md-content .copy-btn:hover{background:var(--border);color:var(--t1)}
+.code-collapsible{margin:.6em 0}
+.code-collapsible-hdr{display:flex;align-items:center;gap:6px;padding:6px 12px;background:#2d2d2d;border:1px solid #333;border-radius:var(--rs) var(--rs) 0 0;cursor:pointer;font-size:11px;color:#999;font-weight:500;user-select:none;transition:background .2s}
+.code-collapsible-hdr:hover{background:#3a3a3a;color:#ccc}
+.code-collapsible-hdr .code-arrow{margin-left:auto;transition:transform .3s;font-size:10px}
+.code-collapsible-hdr .code-arrow.open{transform:rotate(180deg)}
+.code-collapsible-body{overflow:hidden;transition:max-height .3s ease}
+.code-collapsible-body:not(.open){max-height:0}
+.code-collapsible-body.open{max-height:5000px}
+.code-collapsible-body pre{margin:0!important;border-radius:0 0 var(--rs) var(--rs)!important;border-top:0!important}
 
 /* Notification markdown theme overrides */
 .notification-msg .md-content{color:#7d6608}
@@ -1100,9 +1109,36 @@ function renderMdFallback(text){
 }
 function addCopyBtns(container){
   container.querySelectorAll('pre').forEach(pre=>{
+    if(pre.closest('.perm-request')||pre.closest('.tool-block'))return;
     if(pre.querySelector('.copy-btn'))return;
-    const btn=document.createElement('button');btn.className='copy-btn';btn.textContent='Copy';
-    btn.onclick=()=>{const code=pre.querySelector('code')?.textContent||pre.textContent;navigator.clipboard.writeText(code).then(()=>{btn.textContent='Copied!';setTimeout(()=>btn.textContent='Copy',1500)})};
+    const code=pre.querySelector('code');
+    if(!code)return;
+    // Detect language from class (language-xxx)
+    var lang='Code';
+    var cls=code.className||'';
+    var m=cls.match(/(?:^|\s)language-(\S+)/);
+    if(m)lang=m[1];
+    // Wrap in collapsible container
+    var wrapper=document.createElement('div');
+    wrapper.className='code-collapsible';
+    var hdr=document.createElement('div');
+    hdr.className='code-collapsible-hdr';
+    hdr.innerHTML='&#128196; '+esc(lang)+' <span class="code-arrow">&#9660;</span>';
+    hdr.onclick=function(){
+      var body=wrapper.querySelector('.code-collapsible-body');
+      var arrow=hdr.querySelector('.code-arrow');
+      if(body)body.classList.toggle('open');
+      if(arrow)arrow.classList.toggle('open');
+    };
+    var body=document.createElement('div');
+    body.className='code-collapsible-body';
+    pre.parentNode.insertBefore(wrapper,pre);
+    body.appendChild(pre);
+    wrapper.appendChild(hdr);
+    wrapper.appendChild(body);
+    // Add copy button inside pre
+    var btn=document.createElement('button');btn.className='copy-btn';btn.textContent='Copy';
+    btn.onclick=function(e){e.stopPropagation();var t=code.textContent||pre.textContent;navigator.clipboard.writeText(t).then(function(){btn.textContent='Copied!';setTimeout(function(){btn.textContent='Copy'},1500)})};
     pre.style.position='relative';pre.appendChild(btn);
   });
 }
