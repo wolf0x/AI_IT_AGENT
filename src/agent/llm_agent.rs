@@ -345,26 +345,28 @@ impl Agent for LlmAgent {
                             let check_text = format!("{}\n{}", &content, &reasoning).to_lowercase();
                             let mentions_tool = tool_defs.iter().any(|t| check_text.contains(&t.function.name.to_lowercase()));
 
-                            // Detect thinking mode: content empty/short but reasoning present.
-                            // DeepSeek thinking models put tool-call planning in reasoning_content
-                            // and leave content empty, but may not emit the actual tool call JSON.
-                            let is_thinking_mode = content.trim().is_empty() && !reasoning.trim().is_empty();
-
                             // Detect intent phrases in both Chinese and English that suggest
                             // the model intends to take an action (call a tool) but didn't.
+                            // Only specific action phrases — generic words like "运行" or "i'll"
+                            // cause false positives on greetings and casual chat.
                             let intent_phrases = [
-                                "查一下", "看一下", "检查一下", "运行", "执行", "使用工具", "调用", "让我", "我来",
-                                "let me", "i'll", "i will", "let me check", "let me run", "let me use",
-                                "i need to", "i should", "allow me",
+                                "查一下", "看一下", "检查一下", "让我查", "让我看看", "让我来",
+                                "使用工具", "调用工具",
+                                "let me check", "let me run", "let me use", "let me look",
+                                "allow me to",
                             ];
                             let has_intent = intent_phrases.iter().any(|p| check_text.contains(p));
 
-                            if mentions_tool || is_thinking_mode || has_intent {
+                            // Skip re-prompt for simple greetings — the model should
+                            // just respond naturally without being forced to call tools.
+                            let user_trimmed = user_message.trim().to_lowercase();
+                            let is_greeting = ["hi", "hello", "hey", "你好", "嗨", "哈喽", "早上好", "下午好", "晚上好"]
+                                .iter().any(|g| user_trimmed == *g);
+
+                            if !is_greeting && (mentions_tool || has_intent) {
                                 reprompt_count += 1;
                                 let reason = if mentions_tool {
                                     "tool name mentioned"
-                                } else if is_thinking_mode {
-                                    "thinking mode (empty content)"
                                 } else {
                                     "intent phrase detected"
                                 };
