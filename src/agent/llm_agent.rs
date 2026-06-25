@@ -123,12 +123,40 @@ You have FULL ACCESS to the user's system via built-in tools.\n\n\
 - If the user asks 'what is my IP' or similar, call `shell_exec` with `ipconfig` or `Get-NetIPAddress`.\n\
 - Always call tools FIRST, then explain the results to the user.\n\
 - Never say 'I can't check' or 'I don't have access' — you DO have access via tools!\n\n\
+## How to Call Tools (IMPORTANT)\n\
+When you need to use a tool, you **MUST actually emit the tool call** — do NOT just say \"let me check\" \
+or \"I'll use a tool\" without actually calling it. If your API supports native function calling, use that. \
+If it does NOT, output a JSON code block in this exact format:\n\
+```json\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ipconfig\"}}\n```\n\
+The system will detect this block, execute the tool, and return the result. You MUST output the JSON block — \
+saying \"let me check\" without the actual JSON block does nothing.\n\n\
 ## Response Guidelines\n\
 - Provide **detailed, comprehensive** responses with real data from tools.\n\
 - Use **Markdown formatting**: headers, bullet points, code blocks, tables.\n\
 - Explain what you did and interpret the results for the user.\n\
 - If a task requires multiple steps, call tools sequentially and explain each step.\n\
-- Be thorough — don't stop at surface-level observations.\n",
+- Be thorough — don't stop at surface-level observations.\n\n\
+## CRITICAL: You Have Long-Term Memory\n\
+This assistant is connected to a LOCAL MEMORY STORE (SQLite). Past conversations with this user are persisted and \
+injected into your context as SYSTEM messages labeled **[Memory Context]** or **[Memory Recall]**.\n\
+- When such a block is present in the conversation, you **MUST** treat it as real memory of prior interactions and \
+  use it to answer questions about previous topics, what was discussed yesterday/last time, etc.\n\
+- You are **STRICTLY FORBIDDEN** from claiming any of the following when a [Memory Context]/[Memory Recall] block \
+  is present:\n\
+    - \"我只能记住当前对话窗口的内容\" / \"I can only remember the current conversation window\"\n\
+    - \"我无法访问之前的对话历史\" / \"I can't access previous conversations\"\n\
+    - \"每次对话对我来说都是全新的开始\" / \"every conversation is a fresh start\"\n\
+    - \"我没有记录或查询之前聊天内容的能力\" / \"I have no ability to query past chats\"\n\
+- Instead, summarize and reference what the memory block contains. If the user asks about a topic not covered in \
+  the memory block, say you don't have a record of that specific topic (not that you lack memory entirely).\n\
+- If and only if NO [Memory Context]/[Memory Recall] block is present, you may honestly say you have no stored \
+  record of past conversations.\n\
+- The memory block is already the authoritative output of the local memory system. Unless the user EXPLICITLY asks \
+  you to inspect memory files / SQLite / logs, you must NOT call tools like `file_read` or `shell_exec` to inspect \
+  `memory.db`, logs, or config files just to answer a memory question. Use the injected memory block instead.\n\
+- For casual new messages like \"hello\", greetings, or simple follow-ups, do NOT resume unrelated unfinished topics \
+  from old sessions on your own. Use memory only as background context unless the user explicitly asks to recall \
+  earlier conversations.\n",
         );
 
         let matching_skills = self.skill_manager.find_matching(user_message);
@@ -153,7 +181,6 @@ impl Agent for LlmAgent {
         let model = &ctx.model_name;
         let invocation_id = &ctx.base.invocation_id;
         let author = &ctx.agent_name;
-        let _session_id = &ctx.base.session_id;
         let max_iter = ctx.max_iterations;
 
         // Use an mpsc channel to produce events, then convert to a Stream
@@ -162,7 +189,8 @@ impl Agent for LlmAgent {
         // Build system prompt and history in the spawned task
         let system_prompt = self.build_system_prompt(user_message);
         let tool_defs = self.tools.definitions();
-        info!("Agent sending {} tool definitions to LLM", tool_defs.len());
+        let session_id = ctx.base.session_id.clone();
+        info!("[session:{}] Agent sending {} tool definitions to LLM", session_id, tool_defs.len());
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let working_dir = self.working_dir.clone();
@@ -182,7 +210,34 @@ impl Agent for LlmAgent {
                 let max_history_chars: usize = context_window * context_window_threshold * 4 / 100;
 
         tokio::spawn(async move {
+            let mut effective_system_prompt = system_prompt.clone();
             let mut history: Vec<ChatMessage> = prev_history;
+
+            // Some OpenAI-compatible / local models strongly prioritize only the
+            // FIRST system prompt. Fold injected memory blocks into that first
+            // system message so the model cannot ignore them as trailing system
+            // or chat messages.
+            let mut memory_blocks = Vec::new();
+            history.retain(|msg| {
+                if msg.role == "system" {
+                    if let Some(content) = msg.content.as_deref() {
+                        if content.starts_with("[Memory Context") || content.starts_with("[Memory Recall") {
+                            memory_blocks.push(content.to_string());
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
+            if !memory_blocks.is_empty() {
+                effective_system_prompt.push_str("\n\n## Injected Memory From Local Store\n");
+                for block in &memory_blocks {
+                    effective_system_prompt.push_str("\n");
+                    effective_system_prompt.push_str(block);
+                    effective_system_prompt.push_str("\n");
+                }
+            }
+
             history.push(ChatMessage::user(&user_message));
 
             // Rabbit hole detection: track identical tool calls (same name + same args)
@@ -190,15 +245,26 @@ impl Agent for LlmAgent {
             // Track which model we're using (for fallback)
             let mut active_model = model.clone();
             let mut used_fallback = false;
+            let mut has_executed_tools = false;
+            let mut reprompt_count = 0u32;
 
             for iteration in 0..max_iter {
-                info!("Agent loop iteration {} (model: {})", iteration + 1, active_model);
+                info!("[session:{}] Agent loop iteration {} (model: {})", session_id, iteration + 1, active_model);
+
+                // If the consumer (WebSocket client) dropped the event stream —
+                // e.g. user clicked Stop or the connection closed — abort the
+                // agent loop immediately so we don't keep streaming from the
+                // LLM into a dead channel.
+                if tx.is_closed() {
+                    info!("[session:{}] Consumer channel closed, aborting agent loop", session_id);
+                    return;
+                }
 
                 // Trim history if approaching context limit
                 let total_chars: usize = history.iter().map(|m| m.content.as_deref().unwrap_or("").len()).sum();
                 if total_chars > max_history_chars {
-                    warn!("History too large ({} chars, limit: {} = {}% of {} tokens), trimming old results",
-                          total_chars, max_history_chars, context_window_threshold, context_window);
+                    warn!("[session:{}] History too large ({} chars, limit: {} = {}% of {} tokens), trimming old results",
+                          session_id, total_chars, max_history_chars, context_window_threshold, context_window);
                     // Replace old tool results with summaries, keeping the latest 3 iterations worth
                     let keep_recent = (history.len().saturating_sub(20)).max(6);
                     for i in 0..history.len() {
@@ -219,10 +285,10 @@ impl Agent for LlmAgent {
                         }
                     }
                     let new_chars: usize = history.iter().map(|m| m.content.as_deref().unwrap_or("").len()).sum();
-                    info!("History trimmed from {} to {} chars", total_chars, new_chars);
+                    info!("[session:{}] History trimmed from {} to {} chars", session_id, total_chars, new_chars);
                 }
 
-                let mut messages = vec![ChatMessage::system(&system_prompt)];
+                let mut messages = vec![ChatMessage::system(&effective_system_prompt)];
                 messages.extend(history.clone());
 
                 // Call LLM via legacy chat_stream (uses mpsc for text deltas)
@@ -231,16 +297,108 @@ impl Agent for LlmAgent {
                     .await;
 
                 match result {
-                    Ok((content, tool_calls)) => {
+                    Ok((content, reasoning, tool_calls)) => {
+                        // If the consumer disappeared mid-stream, don't continue
+                        // executing tools or making further LLM calls.
+                        if tx.is_closed() {
+                            info!("[session:{}] Consumer closed during LLM response, stopping", session_id);
+                            return;
+                        }
+                        // If the model didn't emit native tool_calls, try to
+                        // extract them from the text content AND from the
+                        // reasoning_content (DeepSeek thinking mode puts
+                        // everything in reasoning_content, leaving content
+                        // empty).
+                        let tool_calls = if tool_calls.is_empty() {
+                            info!("[session:{}] No native tool_calls from API, attempting text extraction (content={} chars, reasoning={} chars)",
+                                  session_id, content.len(), reasoning.len());
+                            let mut extracted = extract_tool_calls_from_content(&content);
+                            if extracted.is_empty() && !reasoning.is_empty() {
+                                info!("[session:{}] Content extraction found nothing, scanning reasoning_content for tool calls", session_id);
+                                extracted = extract_tool_calls_from_content(&reasoning);
+                                if extracted.is_empty() {
+                                    let reasoning_preview: String = reasoning.chars().take(200).collect();
+                                    warn!("[session:{}] Extraction from reasoning_content found no tool calls. Preview: {}...", session_id, reasoning_preview);
+                                }
+                            }
+                            if !extracted.is_empty() {
+                                info!("[session:{}] Extracted {} tool call(s) from text/reasoning", session_id, extracted.len());
+                            }
+                            extracted
+                        } else {
+                            tool_calls
+                        };
+                        // Re-prompt fallback: ONLY when no tools have been
+                        // executed yet in this session. If the model returned
+                        // text without any tool calls, but tools ARE available
+                        // and the response looks like it *wanted* to use a tool
+                        // (mentions a tool name, is in thinking mode with empty
+                        // content, or uses intent phrases like "let me check"),
+                        // push a correction and loop again.
+                        // Once tools have been executed, never re-prompt — the
+                        // model is summarizing results, not trying to call tools.
+                        let combined = if content.trim().is_empty() { &reasoning } else { &content };
+                        info!("[session:{}] Response analysis: content={} chars, reasoning={} chars, native_tool_calls={}",
+                              session_id, content.len(), reasoning.len(), tool_calls.len());
+                        if tool_calls.is_empty() && !tool_defs.is_empty() && !has_executed_tools && reprompt_count < 2 && !combined.trim().is_empty() {
+                            // Check BOTH content AND reasoning for tool name mentions.
+                            let check_text = format!("{}\n{}", &content, &reasoning).to_lowercase();
+                            let mentions_tool = tool_defs.iter().any(|t| check_text.contains(&t.function.name.to_lowercase()));
+
+                            // Detect thinking mode: content empty/short but reasoning present.
+                            // DeepSeek thinking models put tool-call planning in reasoning_content
+                            // and leave content empty, but may not emit the actual tool call JSON.
+                            let is_thinking_mode = content.trim().is_empty() && !reasoning.trim().is_empty();
+
+                            // Detect intent phrases in both Chinese and English that suggest
+                            // the model intends to take an action (call a tool) but didn't.
+                            let intent_phrases = [
+                                "查一下", "看一下", "检查一下", "运行", "执行", "使用工具", "调用", "让我", "我来",
+                                "let me", "i'll", "i will", "let me check", "let me run", "let me use",
+                                "i need to", "i should", "allow me",
+                            ];
+                            let has_intent = intent_phrases.iter().any(|p| check_text.contains(p));
+
+                            if mentions_tool || is_thinking_mode || has_intent {
+                                reprompt_count += 1;
+                                let reason = if mentions_tool {
+                                    "tool name mentioned"
+                                } else if is_thinking_mode {
+                                    "thinking mode (empty content)"
+                                } else {
+                                    "intent phrase detected"
+                                };
+                                info!("[session:{}] Re-prompting model to emit tool call JSON (iter {}, attempt {}, reason: {})", session_id, iteration, reprompt_count, reason);
+                                history.push(ChatMessage::assistant(combined));
+
+                                // Build a tool list hint so the model knows which tools are available
+                                let tool_list_hint = tool_defs.iter()
+                                    .map(|t| format!("- `{}`: {}", t.function.name, t.function.description.chars().take(80).collect::<String>()))
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                let correction = format!(
+                                    "You said you would take an action, but you did NOT output a tool call.\n\n\
+                                    Available tools:\n{}\n\n\
+                                    You MUST output the tool call as a JSON code block in this EXACT format:\n\
+                                    ```json\n{{\"name\": \"shell_exec\", \"arguments\": {{\"command\": \"ipconfig\"}}}}\n```\n\
+                                    Replace the tool name and arguments with what you actually need.\n\n\
+                                    CRITICAL: Saying 'I will do it' or 'let me check' WITHOUT the actual JSON code block does NOTHING.\n\
+                                    You MUST include the ```json ... ``` block in your response. Output it now.",
+                                    tool_list_hint
+                                );
+                                history.push(ChatMessage::user(&correction));
+                                continue;
+                            }
+                        }
                         if tool_calls.is_empty() {
                             // Text response - done
-                            info!("Agent completed with text response ({} chars, {} tool calls)", content.len(), tool_calls.len());
+                            info!("[session:{}] Agent completed with text response ({} chars, {} tool calls)", session_id, content.len(), tool_calls.len());
                             if content.len() < 100 {
-                                info!("Short response content: {}", content);
+                                info!("[session:{}] Short response content: {}", session_id, content);
                             }
                             // Handle empty response - request a final summary from LLM
                             let (final_content, already_streamed) = if content.trim().is_empty() && iteration > 0 {
-                                warn!("LLM returned empty response after {} iterations, requesting summary", iteration + 1);
+                                warn!("[session:{}] LLM returned empty response after {} iterations, requesting summary", session_id, iteration + 1);
                                 // Add a summary request to history and ask LLM one more time
                                 let summary_prompt = "Please provide a final summary of the task. Include:\n\
                                     1. Whether the task succeeded or failed\n\
@@ -252,7 +410,7 @@ impl Agent for LlmAgent {
                                 summary_msgs.extend(history.clone());
                                 // One more LLM call for summary (no tools) - streams to client
                                 match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
-                                    Ok((summary_content, _)) => {
+                                    Ok((summary_content, _, _)) => {
                                         if summary_content.trim().is_empty() {
                                             (generate_static_summary(&history, iteration + 1), false)
                                         } else {
@@ -277,7 +435,8 @@ impl Agent for LlmAgent {
                         }
 
                         // Tool calls - execute them
-                        info!("Agent returned {} tool call(s)", tool_calls.len());
+                        info!("[session:{}] Agent returned {} tool call(s)", session_id, tool_calls.len());
+                        has_executed_tools = true;
                         history.push(ChatMessage::assistant_with_tool_calls(tool_calls.clone()));
 
                         // Create permission checker for this iteration
@@ -295,63 +454,75 @@ impl Agent for LlmAgent {
                                 for tc in &tool_calls {
                                     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
                                     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
-                                    // Build signature: tool_name + args (identifies duplicate calls)
                                     let sig = format!("{}:{}", tool_name, args_str);
-                                    let count = call_signatures.entry(sig.clone()).or_insert(0);
-                                    *count += 1;
-                                    if *count >= rabbit_hole_threshold {
-                                        warn!("Rabbit hole: '{}' called with same args {} times: {}", tool_name, *count, args_str);
-                                        let warning_msg = format!(
-                                            "WARNING: You have called {} with the SAME arguments {} times and the task is not completing. \
-                                             You must try a DIFFERENT approach, use different arguments, or explain what went wrong and stop.",
-                                            tool_name, *count
-                                        );
+                                    if let Some((count, warning_msg)) = rabbit_hole_check(
+                                        &mut call_signatures, &sig, tool_name, rabbit_hole_threshold,
+                                    ) {
+                                        warn!("[session:{}] Rabbit hole: '{}' called with same args {} times: {}", session_id, tool_name, count, args_str);
                                         history.push(ChatMessage::user(&warning_msg));
                                         let _ = tx.send(Ok(AgentEvent::text(
-                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, *count),
+                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, count),
                                             &invocation_id, &author
                                         ))).await;
-                                        *count = 0;
                                     }
-                                    execute_tool_call(
-                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &mut history, &checker,
+                                    let msg = execute_tool_call(
+                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker,
                                     ).await;
+                                    history.push(msg);
                                 }
                             }
                             ToolExecutionStrategy::Parallel | ToolExecutionStrategy::Auto => {
+                                // Rabbit-hole bookkeeping runs first (cheap, sequential).
                                 for tc in &tool_calls {
                                     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
                                     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
                                     let sig = format!("{}:{}", tool_name, args_str);
-                                    let count = call_signatures.entry(sig.clone()).or_insert(0);
-                                    *count += 1;
-                                    if *count >= rabbit_hole_threshold {
-                                        warn!("Rabbit hole: '{}' called with same args {} times: {}", tool_name, *count, args_str);
-                                        let warning_msg = format!(
-                                            "WARNING: You have called {} with the SAME arguments {} times and the task is not completing. \
-                                             You must try a DIFFERENT approach, use different arguments, or explain what went wrong and stop.",
-                                            tool_name, *count
-                                        );
+                                    if let Some((count, warning_msg)) = rabbit_hole_check(
+                                        &mut call_signatures, &sig, tool_name, rabbit_hole_threshold,
+                                    ) {
+                                        warn!("[session:{}] Rabbit hole: '{}' called with same args {} times: {}", session_id, tool_name, count, args_str);
                                         history.push(ChatMessage::user(&warning_msg));
                                         let _ = tx.send(Ok(AgentEvent::text(
-                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, *count),
+                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, count),
                                             &invocation_id, &author
                                         ))).await;
-                                        *count = 0;
                                     }
-                                    execute_tool_call(
-                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &mut history, &checker,
+                                }
+
+                                // `Auto` only runs concurrently when every call in
+                                // the batch is read-only; otherwise it falls back to
+                                // sequential to avoid racing mutable operations.
+                                // `Parallel` always runs concurrently (caller's
+                                // responsibility to pass safe tools).
+                                let all_read_only = strategy == ToolExecutionStrategy::Parallel
+                                    || tool_calls.iter().all(|tc| {
+                                        let n = tc.function.name.as_deref().unwrap_or("");
+                                        tools.get(n).map(|t| t.is_read_only()).unwrap_or(false)
+                                    });
+
+                                if all_read_only && tool_calls.len() > 1 {
+                                    info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
+                                    let msgs = execute_tools_concurrent(
+                                        &tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker,
                                     ).await;
+                                    history.extend(msgs);
+                                } else {
+                                    for tc in &tool_calls {
+                                        let msg = execute_tool_call(
+                                            &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker,
+                                        ).await;
+                                        history.push(msg);
+                                    }
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        error!("LLM error (model: {}): {}", active_model, e);
+                        error!("[session:{}] LLM error (model: {}): {}", session_id, active_model, e);
                         // Try fallback model if available and not already used
                         if !used_fallback {
                             if let Some(ref fb) = fallback_model {
-                                warn!("Switching to fallback model: {}", fb);
+                                warn!("[session:{}] Switching to fallback model: {}", session_id, fb);
                                 let _ = tx.send(Ok(AgentEvent::text(
                                     &format!("\n\n*[Primary model failed, switching to {}]*\n\n", fb),
                                     &invocation_id, &author
@@ -369,7 +540,7 @@ impl Agent for LlmAgent {
             }
 
             // Max iterations reached - request final summary
-            warn!("Max iterations ({}) reached", max_iter);
+            warn!("[session:{}] Max iterations ({}) reached", session_id, max_iter);
             let summary_prompt = format!(
                 "The agent has reached the maximum number of iterations ({}) without completing. \
                  Please provide a final summary:\n\
@@ -383,7 +554,7 @@ impl Agent for LlmAgent {
             let mut summary_msgs = vec![ChatMessage::system(&system_prompt)];
             summary_msgs.extend(history.clone());
             match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
-                Ok((summary_content, _)) => {
+                Ok((summary_content, _, _)) => {
                     if summary_content.trim().is_empty() {
                         // LLM returned empty, send static summary
                         let fallback = generate_static_summary(&history, max_iter);
@@ -405,7 +576,138 @@ impl Agent for LlmAgent {
     }
 }
 
+/// Extract tool calls from the model's text content when it doesn't support
+/// native function calling. Looks for:
+/// 1. JSON code blocks: ```json {"name": "...", "arguments": {...}} ```
+/// 2. Inline JSON objects: {"name": "...", "arguments": {...}}
+fn extract_tool_calls_from_content(content: &str) -> Vec<crate::model::ToolCallDelta> {
+    use crate::model::{FunctionCallDelta, ToolCallDelta};
+    let mut calls = Vec::new();
+    let mut id_counter = 0u32;
+
+    // Helper: try to parse a JSON string into a ToolCallDelta
+    let try_parse = |json_str: &str, id_counter: &mut u32| -> Option<ToolCallDelta> {
+        let val: serde_json::Value = serde_json::from_str(json_str.trim()).ok()?;
+        let name = val
+            .get("name")
+            .or_else(|| val.get("tool"))
+            .or_else(|| val.get("function"))
+            .and_then(|v| v.as_str())?;
+        let args = val
+            .get("arguments")
+            .or_else(|| val.get("args"))
+            .or_else(|| val.get("parameters"));
+        let args_str = match args {
+            Some(a) => serde_json::to_string(a).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        };
+        let call_id = format!("textcall_{}", *id_counter);
+        *id_counter += 1;
+        info!("[text-tool-call] Extracted: {} ({})", name, args_str);
+        Some(ToolCallDelta {
+            id: call_id,
+            call_type: "function".to_string(),
+            function: FunctionCallDelta {
+                name: Some(name.to_string()),
+                arguments: Some(args_str),
+            },
+        })
+    };
+
+    // 1. Scan for ```json ... ``` code blocks
+    let mut remaining = content;
+    while let Some(start) = remaining.find("```") {
+        remaining = &remaining[start + 3..];
+        // Trim whitespace BEFORE checking for the json label — the model
+        // often outputs ```\njson\n{...} (newline after backticks).
+        remaining = remaining.trim_start();
+        if remaining.starts_with("json") {
+            remaining = &remaining[4..];
+            remaining = remaining.trim_start();
+        } else if remaining.starts_with("JSON") {
+            remaining = &remaining[4..];
+            remaining = remaining.trim_start();
+        }
+        if let Some(end) = remaining.find("```") {
+            let json_str = &remaining[..end];
+            if let Some(tc) = try_parse(json_str, &mut id_counter) {
+                calls.push(tc);
+            }
+            remaining = &remaining[end + 3..];
+        } else {
+            break;
+        }
+    }
+
+    // 2. Scan for inline JSON objects like {"name": "...", "arguments": {...}}
+    for marker in &["{\"name\"", "{\"tool\"", "{\"function\""] {
+        let mut search_from = 0;
+        while let Some(pos) = content[search_from..].find(marker) {
+            let abs_pos = search_from + pos;
+            if let Some(json_str) = extract_json_object(&content[abs_pos..]) {
+                let is_in_codeblock = content[..abs_pos].rfind("```")
+                    .map(|cb_start| {
+                        let between = &content[cb_start..abs_pos];
+                        between.matches("```").count() % 2 == 1
+                    })
+                    .unwrap_or(false);
+                if !is_in_codeblock {
+                    if let Some(tc) = try_parse(&json_str, &mut id_counter) {
+                        calls.push(tc);
+                    }
+                }
+                search_from = abs_pos + json_str.len();
+            } else {
+                search_from = abs_pos + marker.len();
+            }
+        }
+    }
+
+    calls
+}
+
+/// Extract a complete JSON object starting at the beginning of `text`.
+/// Tracks brace depth and string state to handle nested objects.
+fn extract_json_object(text: &str) -> Option<String> {
+    if !text.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, c) in text.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Execute a single tool call and emit events.
+/// Returns the tool-result `ChatMessage` (caller appends it to history so that
+/// the function can be used both sequentially and concurrently).
 async fn execute_tool_call(
     tools: &ToolRegistry,
     tc: &crate::model::ToolCallDelta,
@@ -413,9 +715,8 @@ async fn execute_tool_call(
     invocation_id: &str,
     author: &str,
     tx: &tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
-    history: &mut Vec<ChatMessage>,
     permission: &PermissionChecker,
-) {
+) -> ChatMessage {
     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
     let args: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
@@ -450,7 +751,7 @@ async fn execute_tool_call(
     let result_event = AgentEvent::tool_result(tool_name, &tc.id, result.clone(), invocation_id, author);
     let _ = tx.send(Ok(result_event)).await;
 
-    // Add to history with size cap (max ~15000 chars per result to prevent context overflow)
+    // Build the history entry with size cap (max ~15000 chars per result to prevent context overflow)
     let result_str = serde_json::to_string(&result).unwrap_or_default();
     let history_str = if result_str.len() > 15_000 {
         let preview: String = result_str.chars().take(15_000).collect();
@@ -458,7 +759,49 @@ async fn execute_tool_call(
     } else {
         result_str
     };
-    history.push(ChatMessage::tool_result(&tc.id, tool_name, &history_str));
+    ChatMessage::tool_result(&tc.id, tool_name, &history_str)
+}
+
+/// Run a batch of tool calls concurrently and return their result messages in
+/// the original (input) order. Only safe for read-only / concurrency-safe tools.
+async fn execute_tools_concurrent<'a>(
+    tools: &'a ToolRegistry,
+    tool_calls: &'a [crate::model::ToolCallDelta],
+    working_dir: &'a str,
+    invocation_id: &'a str,
+    author: &'a str,
+    tx: &'a tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
+    permission: &'a PermissionChecker,
+) -> Vec<ChatMessage> {
+    use futures::future::join_all;
+    let futs = tool_calls.iter().map(|tc| {
+        execute_tool_call(tools, tc, working_dir, invocation_id, author, tx, permission)
+    });
+    join_all(futs).await
+}
+
+/// Rabbit-hole detection: tracks how many times a tool was called with the same
+/// signature. Returns `Some((count, warning_text))` when the threshold is
+/// reached (and resets the counter so it can trigger again later).
+fn rabbit_hole_check(
+    call_signatures: &mut std::collections::HashMap<String, usize>,
+    signature: &str,
+    tool_name: &str,
+    threshold: usize,
+) -> Option<(usize, String)> {
+    let count = call_signatures.entry(signature.to_string()).or_insert(0);
+    *count += 1;
+    if *count >= threshold {
+        let c = *count;
+        *count = 0;
+        Some((c, format!(
+            "WARNING: You have called {} with the SAME arguments {} times and the task is not completing. \
+             You must try a DIFFERENT approach, use different arguments, or explain what went wrong and stop.",
+            tool_name, c
+        )))
+    } else {
+        None
+    }
 }
 
 /// Generate a static summary from tool results in history (fallback when LLM summary also fails).

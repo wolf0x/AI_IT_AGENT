@@ -125,7 +125,8 @@ impl Tool for WebFetchTool {
 
         let truncated = body_text.len() > max_length;
         let body = if truncated {
-            body_text[..max_length].to_string()
+            // Truncate by char boundary to avoid splitting multi-byte UTF-8 sequences.
+            body_text.chars().take(max_length).collect::<String>()
         } else {
             body_text
         };

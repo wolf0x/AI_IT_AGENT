@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,15 +47,37 @@ pub struct ModelConfig {
     /// Context window size in tokens (default: 128000)
     #[serde(default = "default_context_window")]
     pub context_window: usize,
+    /// Maximum output tokens per response (default: 16384).
+    /// Increase for reasoning models that produce long thinking chains.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    /// Sampling temperature (default: 0.7)
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub name: String,
-    pub command: String,
+    /// Transport type: "stdio" (default) or "sse"
+    #[serde(default = "default_transport")]
+    pub transport: String,
+    /// Command to run (for stdio transport)
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Arguments for the command (for stdio transport)
     #[serde(default)]
     pub args: Vec<String>,
+    /// URL for SSE transport
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Whether this server is enabled
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 }
+
+fn default_transport() -> String { "stdio".to_string() }
+fn default_enabled() -> bool { true }
 
 impl ModelConfig {
     pub fn resolved_api_key(&self) -> String {
@@ -99,6 +121,8 @@ fn default_max_iterations() -> usize { 100 }
 fn default_rabbit_hole_threshold() -> usize { 5 }
 fn default_context_window() -> usize { 128000 }
 fn default_context_window_threshold() -> usize { 80 }
+fn default_max_tokens() -> u32 { 16384 }
+fn default_temperature() -> f64 { 0.7 }
 
 impl Config {
     pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {

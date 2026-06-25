@@ -7,12 +7,38 @@ use super::Tool;
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
+/// Type alias for the broadcast channel that pushes notifications to WebSocket clients.
+pub type NotifyTx = tokio::sync::broadcast::Sender<String>;
+
 /// Schedule a one-time reminder that delivers a notification to the web chat page
 /// (and optionally a Windows toast) after a specified delay.
 ///
-/// Uses a server-side tokio timer + HTTP POST to /api/notify to push the message
-/// through the WebSocket broadcast channel to all connected clients.
-pub struct SysRemindTool;
+/// Pushes the message directly through the server's broadcast channel to all
+/// connected WebSocket clients (no HTTP loopback, so it works regardless of the
+/// configured server port).
+pub struct SysRemindTool {
+    notify_tx: Option<NotifyTx>,
+}
+
+impl SysRemindTool {
+    pub fn new() -> Self {
+        Self { notify_tx: None }
+    }
+
+    pub fn with_notify_tx(notify_tx: NotifyTx) -> Self {
+        Self { notify_tx: Some(notify_tx) }
+    }
+
+    pub fn with_notify_tx_optional(notify_tx: Option<NotifyTx>) -> Self {
+        Self { notify_tx }
+    }
+}
+
+impl Default for SysRemindTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Tool for SysRemindTool {
@@ -46,26 +72,33 @@ impl Tool for SysRemindTool {
 
         let message_owned = message.to_string();
 
-        // Spawn a background tokio task that sleeps and then POSTs to /api/notify
+        // Clone the broadcast sender (if any) into the background task so the
+        // notification is delivered directly to WebSocket clients without an
+        // HTTP loopback (which would break if the server port were changed).
+        let notify_tx = self.notify_tx.clone();
+
+        // Spawn a background tokio task that sleeps and then pushes the notification.
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
 
-            // POST to the local server's /api/notify endpoint
-            let client = reqwest::Client::new();
-            let payload = json!({ "message": message_owned });
-            match client.post("http://127.0.0.1:7788/api/notify")
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    tracing::info!("Reminder delivered: '{}' (status: {})", message_owned, resp.status());
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to deliver reminder '{}': {}", message_owned, e);
-                    // Fallback: try to show a Windows MessageBox via PowerShell
+            let ws_msg = json!({
+                "type": "notification",
+                "message": message_owned,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }).to_string();
+
+            let delivered = match &notify_tx {
+                Some(tx) => tx.send(ws_msg).is_ok(),
+                // No broadcast channel available (e.g. tool used standalone) —
+                // fall back to a Windows MessageBox so the reminder is not lost.
+                None => {
                     show_fallback_notification(&message_owned);
+                    false
                 }
+            };
+
+            if delivered {
+                tracing::info!("Reminder delivered via broadcast: '{}'", message_owned);
             }
         });
 

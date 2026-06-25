@@ -140,6 +140,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .msg.assistant .msg-avatar{background:var(--green)}
 .msg-body{display:flex;flex-direction:column;max-width:70%;min-width:0}
 .msg.assistant .msg-body{max-width:85%}
+.notification-msg .msg-body{max-width:85%}
 .msg.user .msg-body{align-items:flex-end}
 .msg-role{font-size:10px;font-weight:600;margin-bottom:2px;padding:0 6px}
 .msg.user .msg-role{color:var(--accent)}
@@ -170,7 +171,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .md-content a{color:var(--accent);text-decoration:none;transition:color .2s}
 .md-content a:hover{color:var(--purple);text-decoration:underline}
 .md-content table{border-collapse:collapse;width:100%;margin:.6em 0;border:1px solid var(--border);border-radius:var(--rs);overflow:hidden}
-.md-content table th,.md-content table td{padding:.45em .75em;text-align:left;border-bottom:1px solid var(--border)}
+.md-content table th,.md-content table td{padding:.45em .75em;text-align:left!important;border-bottom:1px solid var(--border)}
 .md-content table th{background:#f0f3f5;color:var(--t1);font-weight:600;font-size:.9em}
 .md-content table tr:hover{background:rgba(0,0,0,.02)}
 .md-content table tr:last-child td{border-bottom:none}
@@ -181,10 +182,24 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .md-content pre:hover .copy-btn{opacity:1}
 .md-content .copy-btn:hover{background:var(--border);color:var(--t1)}
 
+/* Notification markdown theme overrides */
+.notification-msg .md-content{color:#7d6608}
+.notification-msg .md-content table{border-color:#f0d97a;table-layout:auto}
+.notification-msg .md-content table th,.notification-msg .md-content table td{padding:8px 12px!important;text-align:left!important;vertical-align:top}
+.notification-msg .md-content table th{background:#fdf2cc;color:#7d6608;border-bottom-color:#f0d97a;white-space:nowrap;font-weight:700}
+.notification-msg .md-content table tr:hover{background:rgba(125,102,8,.04)}
+.notification-msg .md-content h1,.notification-msg .md-content h2,.notification-msg .md-content h3,.notification-msg .md-content h4,.notification-msg .md-content h5,.notification-msg .md-content h6{color:#7d6608}
+.notification-msg .md-content strong{color:#7d6608}
+.notification-msg .md-content code{background:rgba(125,102,8,.12);color:#9a7d0a}
+.notification-msg .md-content pre{background:#3d3500;color:#fef9e7;border-color:#7d6608}
+.notification-msg .md-content pre code{color:#fef9e7}
+.notification-msg .md-content blockquote{border-left-color:#f39c12;background:rgba(243,156,18,.08);color:#9a7d0a}
+.notification-msg .md-content a{color:#d68910}
+
 /* 鈹€鈹€ Thinking Block 鈹€鈹€ */
 .think-block{border-radius:var(--rs);margin:6px 0;overflow:hidden;transition:all .3s}
-.think-block.active{border:1px solid rgba(118,75,162,.3);background:rgba(118,75,162,.06);animation:pulseP 2s infinite}
-.think-block.done{border:1px solid rgba(118,75,162,.15);background:rgba(118,75,162,.04)}
+.think-block.active{border:1px solid transparent;background:rgba(118,75,162,.04);animation:pulseP 2s infinite}
+.think-block.done{border:1px solid transparent;background:rgba(118,75,162,.02)}
 .think-hdr{display:flex;align-items:center;gap:6px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--purple);font-weight:500;user-select:none;transition:background .2s}
 .think-hdr:hover{background:rgba(118,75,162,.08)}
 .think-hdr .arrow{margin-left:auto;transition:transform .3s;font-size:10px}
@@ -288,6 +303,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
       <button class="nav-tab" onclick="switchPage('settings',this)">&#9881; <span>Settings</span></button>
       <button class="nav-tab" onclick="switchPage('skills',this)">&#129504; <span>Skills</span></button>
       <button class="nav-tab" onclick="switchPage('mcp',this)">&#128268; <span>MCP</span></button>
+      <button class="nav-tab" onclick="switchPage('tools',this)">&#128295; <span>Tools</span></button>
       <button class="nav-tab" onclick="switchPage('cron',this)">&#9200; <span>CRON</span></button>
     </div>
     <div class="sidebar-ftr">
@@ -360,7 +376,14 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
     <div id="skills" class="page">
       <div class="settings-scroll">
         <div class="settings-section">
-          <h3>&#129504; Skills</h3>
+          <h3>&#129504; Skills Management</h3>
+          <div style="margin-bottom:16px;padding:12px;background:#f8f9fa;border-radius:var(--rs)">
+            <div class="form-group"><label>Skill Name</label><input type="text" id="skillName" placeholder="e.g. code-review"></div>
+            <div class="form-group"><label>Description</label><input type="text" id="skillDesc" placeholder="What this skill does"></div>
+            <div class="form-group"><label>Triggers (comma-separated)</label><input type="text" id="skillTriggers" placeholder="review, code review, audit"></div>
+            <div class="form-group"><label>Content (instructions)</label><textarea id="skillContent" rows="4" style="width:100%;padding:10px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);font-family:inherit;resize:vertical" placeholder="Skill instructions..."></textarea></div>
+            <button class="btn btn-p" onclick="createSkill()">+ Add Skill</button>
+          </div>
           <div id="skillList" style="font-size:13px;color:var(--t2)">Loading...</div>
         </div>
       </div>
@@ -370,8 +393,39 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
     <div id="mcp" class="page">
       <div class="settings-scroll">
         <div class="settings-section">
-          <h3>&#128268; MCP Servers</h3>
+          <h3>&#128268; MCP Server Management</h3>
+          <div style="margin-bottom:16px;padding:12px;background:#f8f9fa;border-radius:var(--rs)">
+            <div class="form-group"><label>Transport</label>
+              <select id="mcpTransport" onchange="toggleMcpFields()">
+                <option value="stdio">stdio (local process)</option>
+                <option value="sse">SSE (remote server)</option>
+              </select>
+            </div>
+            <div class="form-group"><label>Name</label><input type="text" id="mcpName" placeholder="e.g. filesystem"></div>
+            <div id="mcpStdioFields">
+              <div class="form-group"><label>Command</label><input type="text" id="mcpCommand" placeholder="e.g. npx"></div>
+              <div class="form-group"><label>Args (comma-separated)</label><input type="text" id="mcpArgs" placeholder="e.g. -y, @modelcontextprotocol/server-filesystem, C:/Users"></div>
+            </div>
+            <div id="mcpSseFields" style="display:none">
+              <div class="form-group"><label>URL</label><input type="text" id="mcpUrl" placeholder="e.g. http://localhost:3001/sse"></div>
+            </div>
+            <button class="btn btn-p" onclick="addMcpServer()">+ Add Server</button>
+          </div>
           <div id="mcpList" style="font-size:13px;color:var(--t2)">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tools Page -->
+    <div id="tools" class="page">
+      <div class="settings-scroll">
+        <div class="settings-section">
+          <h3>&#128295; External Tools</h3>
+          <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
+            <button class="btn btn-s" onclick="loadTools()">&#128260; Refresh</button>
+            <span id="toolsPath" style="font-size:12px;color:var(--t3)"></span>
+          </div>
+          <div id="toolsList" style="font-size:13px;color:var(--t2)">Loading...</div>
         </div>
       </div>
     </div>
@@ -428,7 +482,10 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 <script>
 // 鈹€鈹€ State 鈹€鈹€
 let ws=null,connected=false,msgHist=[],logHist=[];
-let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false;
+let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
+let intentionalDisconnect=false;
+const MODEL_KEY='ra_model';
+const FALLBACK_MODEL_KEY='ra_fallback_model';
 
 // Permission categories with defaults
 const PERM_CATEGORIES=[
@@ -454,7 +511,8 @@ function switchPage(name,btn){
   if(name==='skills')loadSkills();
   if(name==='mcp')loadMcp();
   if(name==='cron')loadCron();
-  if(name==='chat')scrollBottom();
+  if(name==='tools')loadTools();
+  if(name==='chat')setTimeout(()=>scrollBottom(false),50);
 }
 
 // 鈹€鈹€ WebSocket 鈹€鈹€
@@ -462,14 +520,36 @@ function connectWs(){
   const url=document.getElementById('wsUrl').value;
   const pwd=document.getElementById('wsPwd').value;
   if(!url){addLog('Enter WebSocket URL','error');return}
+  intentionalDisconnect=false;
   addLog('Connecting...','info');
   ws=new WebSocket(url);
   ws.onopen=()=>{addLog('Authenticating...','info');ws.send(JSON.stringify({type:'auth',password:pwd}))};
   ws.onmessage=e=>{try{handleMsg(JSON.parse(e.data))}catch(err){console.error(err)}};
   ws.onerror=()=>{addLog('Connection failed','error')};
-  ws.onclose=()=>{connected=false;updateStatus();addLog('Disconnected','warn')};
+  ws.onclose=()=>{
+    connected=false;
+    updateStatus();
+    hideTyping();
+    setAgentRunning(false);
+    curToolMap={};
+    if(intentionalDisconnect)addLog('Disconnected','info');
+    else addLog('Disconnected','warn');
+    intentionalDisconnect=false;
+  };
 }
-function disconnectWs(){if(ws){ws.close();ws=null}}
+function disconnectWs(){
+  if(!ws)return;
+  intentionalDisconnect=true;
+  const sock=ws;
+  ws=null;
+  if(connected&&agentRunning){
+    try{sock.send(JSON.stringify({type:'stop'}))}catch(e){}
+  }
+  hideTyping();
+  setAgentRunning(false);
+  addLog('Disconnecting...','info');
+  setTimeout(()=>{try{sock.close()}catch(e){}},connected&&agentRunning?150:0);
+}
 function updateStatus(){
   const dot=document.getElementById('statusDot'),txt=document.getElementById('statusText');
   if(connected){dot.classList.add('ok');txt.textContent='Connected';document.getElementById('msgInput').disabled=false;document.getElementById('sendBtn').disabled=false}
@@ -520,6 +600,12 @@ function handleMsg(msg){
       finalizeTextBlock();
       curToolMap={};
       setAgentRunning(false);
+      // Process message queue
+      if(msgQueue.length>0){
+        const next=msgQueue.shift();
+        addLog('Processing queued message ('+msgQueue.length+' remaining)','info');
+        setTimeout(()=>doSend(next),500);
+      }
       scrollBottom();break;
   }
 }
@@ -537,19 +623,24 @@ function getOrCreateTextBlock(){
 }
 function appendTextContent(el,chunk){
   textAccum+=chunk;
-  // Strip leading/trailing middle-dots (·) and ellipsis (…) artifacts
-  const cleaned=textAccum.replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'');
-  const content=el.querySelector('.msg-content');
-  if(content){content.innerHTML=renderMd(cleaned);addCopyBtns(content)}
+  var cleaned=stripToolJson(textAccum).replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'');
+  var content=el.querySelector('.msg-content');
+  if(content){
+    var html=renderMd(cleaned);
+    html=renderToolCallPlaceholders(html);
+    content.innerHTML=html;addCopyBtns(content);
+  }
 }
 function finalizeTextBlock(){
   if(curTextEl){
     if(textAccum){
-      const cleaned=textAccum.replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'').trim();
+      var cleaned=stripToolJson(textAccum).replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'').trim();
       const content=curTextEl.querySelector('.msg-content');
       if(content){
         if(cleaned){
-          content.innerHTML=renderMd(cleaned);
+          var html=renderMd(cleaned);
+          html=renderToolCallPlaceholders(html);
+          content.innerHTML=html;
           addCopyBtns(content);
         } else {
           content.innerHTML='<span style="color:var(--t3);font-style:italic">Thinking...</span>';
@@ -576,25 +667,33 @@ function hideTyping(){const el=document.getElementById('typingInd');if(el)el.rem
 // 鈹€鈹€ Thinking Block 鈹€鈹€
 function createThinkBlock(){
   const d=document.createElement('div');d.className='think-block active';
-  d.innerHTML='<div class="think-hdr" onclick="toggleBlock(this)">&#128161; Thinking... <span class="arrow">&#9660;</span></div><div class="think-body"><div class="think-text"></div></div>';
+  d.innerHTML='<div class="think-hdr" onclick="toggleBlock(this)">&#128161; Thinking... <span class="arrow open">&#9660;</span></div><div class="think-body open"><div class="think-text"></div></div>';
   return d;
 }
 function appendThinkText(el,chunk){
   const t=el.querySelector('.think-text');if(t)t.textContent+=chunk;
-  // Keep collapsed by default - user clicks header to expand
+  const body=el.querySelector('.think-body');
+  if(body)body.classList.add('open');
+  const arrow=el.querySelector('.arrow');
+  if(arrow)arrow.classList.add('open');
 }
 function finalizeThink(){
   if(curThinkEl){
+    const thinkText=curThinkEl.querySelector('.think-text')?.textContent?.trim()||'';
+    if(!thinkText){
+      curThinkEl.remove();
+      curThinkEl=null;
+      return;
+    }
     curThinkEl.classList.remove('active');
     curThinkEl.classList.add('done');
     // Update header to show completed state
     const hdr=curThinkEl.querySelector('.think-hdr');
     if(hdr)hdr.innerHTML='&#128161; Thinking <span style="color:var(--t3);font-weight:400">&#10003;</span> <span class="arrow">&#9660;</span>';
-    // Collapse body (user can click header to expand)
     const body=curThinkEl.querySelector('.think-body');
-    if(body)body.classList.remove('open');
+    if(body)body.classList.add('open');
     const arrow=curThinkEl.querySelector('.arrow');
-    if(arrow)arrow.classList.remove('open');
+    if(arrow)arrow.classList.add('open');
     curThinkEl=null;
   }
 }
@@ -633,6 +732,15 @@ function sendMsg(){
   const inp=document.getElementById('msgInput');const txt=inp.value.trim();
   if(!txt||!connected)return;
   showUserMsg(txt);inp.value='';
+  msgHist.push({role:'user',text:txt,time:new Date().toLocaleTimeString()});saveHist();
+  if(agentRunning){
+    msgQueue.push(txt);
+    addLog('Message queued ('+msgQueue.length+' pending)','info');
+    return;
+  }
+  doSend(txt);
+}
+function doSend(txt){
   const model=document.getElementById('modelSel').value;
   const fallback=document.getElementById('fallbackSel').value;
   const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
@@ -642,7 +750,6 @@ function sendMsg(){
   ws.send(JSON.stringify({type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold}));
   showTyping();
   setAgentRunning(true);
-  msgHist.push({role:'user',text:txt,time:new Date().toLocaleTimeString()});saveHist();
 }
 function stopAgent(){
   if(ws&&connected&&agentRunning){
@@ -652,17 +759,16 @@ function stopAgent(){
 }
 function setAgentRunning(running){
   agentRunning=running;
-  const sendBtn=document.getElementById('sendBtn');
   const stopBtn=document.getElementById('stopBtn');
   if(running){
-    sendBtn.classList.add('hidden');stopBtn.classList.add('visible');
+    stopBtn.classList.add('visible');
   }else{
-    sendBtn.classList.remove('hidden');stopBtn.classList.remove('visible');
+    stopBtn.classList.remove('visible');
   }
 }
-function showUserMsg(txt){
+function showUserMsg(txt,time){
   const d=document.createElement('div');d.className='msg user';
-  d.innerHTML='<div class="msg-avatar">&#128100;</div><div class="msg-body"><div class="msg-role">You</div><div class="msg-content">'+esc(txt)+'</div><div class="msg-time">'+new Date().toLocaleTimeString()+'</div></div>';
+  d.innerHTML='<div class="msg-avatar">&#128100;</div><div class="msg-body"><div class="msg-role">You</div><div class="msg-content">'+esc(txt)+'</div><div class="msg-time">'+(time||new Date().toLocaleTimeString())+'</div></div>';
   document.getElementById('convArea').appendChild(d);scrollBottom();
 }
 function appendToConv(el){document.getElementById('convArea').appendChild(el);scrollBottom()}
@@ -672,7 +778,7 @@ function clearChat(){
   if(ws)ws.send(JSON.stringify({type:'clear'}));
   document.getElementById('convArea').innerHTML='';
   document.getElementById('logArea').innerHTML='';
-  msgHist=[];logHist=[];curToolMap={};curThinkEl=null;curTextEl=null;textAccum='';
+  msgHist=[];logHist=[];curToolMap={};curThinkEl=null;curTextEl=null;textAccum='';msgQueue=[];
   addLog('Chat cleared','info');
 }
 function exportChat(){
@@ -694,14 +800,22 @@ function addLog(text,cls){
 // 鈹€鈹€ API 鈹€鈹€
 async function loadModels(){
   try{const r=await fetch('/api/models');const d=await r.json();
-    const sel=document.getElementById('modelSel');sel.innerHTML='';
-    const fbSel=document.getElementById('fallbackSel');fbSel.innerHTML='<option value="">None</option>';
+    const sel=document.getElementById('modelSel');
+    const fbSel=document.getElementById('fallbackSel');
+    const prevModel=localStorage.getItem(MODEL_KEY)||sel.value;
+    const prevFallback=localStorage.getItem(FALLBACK_MODEL_KEY)||fbSel.value;
+    sel.innerHTML='';
+    fbSel.innerHTML='<option value="">None</option>';
     (d.models||[]).forEach(m=>{
       const name = typeof m === 'string' ? m : m.name;
       const ctx = m.context_window ? (' ('+Math.round(m.context_window/1000)+'K ctx)') : '';
       const o=document.createElement('option');o.value=name;o.textContent=name+ctx;sel.appendChild(o);
       const o2=document.createElement('option');o2.value=name;o2.textContent=name+ctx;fbSel.appendChild(o2);
     });
+    if(prevModel&&Array.from(sel.options).some(o=>o.value===prevModel))sel.value=prevModel;
+    if(prevFallback!==null&&Array.from(fbSel.options).some(o=>o.value===prevFallback))fbSel.value=prevFallback;
+    if(sel.value)localStorage.setItem(MODEL_KEY,sel.value);
+    localStorage.setItem(FALLBACK_MODEL_KEY,fbSel.value||'');
     if(d.context_window_threshold) document.getElementById('ctxWindowThreshold').value = d.context_window_threshold;
     if(d.max_iterations) document.getElementById('maxIterInput').value = d.max_iterations;
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
@@ -710,16 +824,114 @@ async function loadModels(){
 async function loadSkills(){
   try{const r=await fetch('/api/skills');const d=await r.json();
     const el=document.getElementById('skillList');
-    if(d.skills&&d.skills.length)el.innerHTML=d.skills.map(s=>'<div style="padding:6px 0;border-bottom:1px solid var(--border)"><strong>'+esc(s.name||'?')+'</strong><br><span style="color:var(--t3)">'+esc(s.description||'')+'</span></div>').join('');
-    else el.innerHTML='<span style="color:var(--t3)">No skills installed</span>';
+    if(d.skills&&d.skills.length){
+      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Description</th><th>Triggers</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+d.skills.map(s=>{
+        const status=s.enabled?'<span style="color:var(--green)">&#9679; Enabled</span>':'<span style="color:var(--t3)">&#9679; Disabled</span>';
+        const triggers=(s.triggers||[]).map(t=>'<span style="background:#e8ecee;padding:2px 6px;border-radius:10px;font-size:11px;margin-right:4px">'+esc(t)+'</span>').join('');
+        return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(s.name)+'</strong></td><td style="color:var(--t3)">'+esc(s.description||'')+'</td><td>'+triggers+'</td><td>'+status+'</td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleSkill(\''+esc(s.name)+'\')">'+(s.enabled?'Disable':'Enable')+'</button> <button class="btn btn-d" style="padding:4px 8px;font-size:11px" onclick="deleteSkill(\''+esc(s.name)+'\')">Delete</button></td></tr>';
+      }).join('')+'</tbody></table>';
+    } else el.innerHTML='<span style="color:var(--t3)">No skills installed</span>';
   }catch(e){document.getElementById('skillList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
+}
+async function createSkill(){
+  const name=document.getElementById('skillName').value.trim();
+  const description=document.getElementById('skillDesc').value.trim();
+  const triggersStr=document.getElementById('skillTriggers').value.trim();
+  const content=document.getElementById('skillContent').value.trim();
+  if(!name||!content){alert('Name and content are required');return}
+  const triggers=triggersStr?triggersStr.split(',').map(t=>t.trim()).filter(t=>t):[];
+  try{
+    const r=await fetch('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,description,triggers,content})});
+    const d=await r.json();
+    if(d.success){
+      document.getElementById('skillName').value='';
+      document.getElementById('skillDesc').value='';
+      document.getElementById('skillTriggers').value='';
+      document.getElementById('skillContent').value='';
+      loadSkills();
+    }else{alert('Error: '+(d.error||'Unknown'))}
+  }catch(e){alert('Failed to create skill')}
+}
+async function toggleSkill(name){
+  try{await fetch('/api/skills/'+encodeURIComponent(name)+'/toggle',{method:'POST'});loadSkills()}catch(e){alert('Failed')}
+}
+async function deleteSkill(name){
+  if(!confirm('Delete skill "'+name+'"?'))return;
+  try{await fetch('/api/skills/'+encodeURIComponent(name),{method:'DELETE'});loadSkills()}catch(e){alert('Failed')}
 }
 async function loadMcp(){
   try{const r=await fetch('/api/mcp');const d=await r.json();
     const el=document.getElementById('mcpList');const servers=d.servers||[];
-    if(servers.length)el.innerHTML=servers.map(s=>'<div style="padding:6px 0;border-bottom:1px solid var(--border)"><strong>'+esc(s.name||'?')+'</strong><br><span style="color:var(--t3)">'+(s.tools||[]).map(t=>t.name).join(', ')+'</span></div>').join('');
-    else el.innerHTML='<span style="color:var(--t3)">No MCP servers</span>';
+    if(servers.length){
+      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Transport</th><th>Tools</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+servers.map(s=>{
+        const statusColor=s.status==='connected'?'var(--green)':s.status==='disconnected'?'var(--t3)':'var(--red)';
+        const statusIcon=s.status==='connected'?'&#9679;':'&#9679;';
+        const toolsList=(s.tools||[]).map(t=>t.name).join(', ')||'<span style="color:var(--t3)">none</span>';
+        return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(s.name)+'</strong></td><td><span style="background:#e8ecee;padding:2px 8px;border-radius:10px;font-size:11px">'+esc(s.transport||'stdio')+'</span></td><td style="font-size:11px;color:var(--t3)">'+toolsList+'</td><td><span style="color:'+statusColor+'">'+statusIcon+' '+esc(s.status)+'</span></td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleMcp(\''+esc(s.name)+'\')">'+(s.enabled?'Disable':'Enable')+'</button> <button class="btn btn-s" style="padding:4px 8px;font-size:11px;background:var(--orange)" onclick="restartMcp(\''+esc(s.name)+'\')">Restart</button> <button class="btn btn-d" style="padding:4px 8px;font-size:11px" onclick="deleteMcp(\''+esc(s.name)+'\')">Delete</button></td></tr>';
+      }).join('')+'</tbody></table>';
+    } else el.innerHTML='<span style="color:var(--t3)">No MCP servers configured</span>';
   }catch(e){document.getElementById('mcpList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
+}
+function toggleMcpFields(){
+  const transport=document.getElementById('mcpTransport').value;
+  document.getElementById('mcpStdioFields').style.display=transport==='stdio'?'block':'none';
+  document.getElementById('mcpSseFields').style.display=transport==='sse'?'block':'none';
+}
+async function addMcpServer(){
+  const name=document.getElementById('mcpName').value.trim();
+  const transport=document.getElementById('mcpTransport').value;
+  if(!name){alert('Name is required');return}
+  const body={name,transport,enabled:true};
+  if(transport==='stdio'){
+    body.command=document.getElementById('mcpCommand').value.trim();
+    const argsStr=document.getElementById('mcpArgs').value.trim();
+    body.args=argsStr?argsStr.split(',').map(a=>a.trim()).filter(a=>a):[];
+    if(!body.command){alert('Command is required for stdio transport');return}
+  }else{
+    body.url=document.getElementById('mcpUrl').value.trim();
+    if(!body.url){alert('URL is required for SSE transport');return}
+  }
+  try{
+    const r=await fetch('/api/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.success){
+      document.getElementById('mcpName').value='';
+      document.getElementById('mcpCommand').value='';
+      document.getElementById('mcpArgs').value='';
+      document.getElementById('mcpUrl').value='';
+      loadMcp();
+    }else{alert('Error: '+(d.error||'Unknown'))}
+  }catch(e){alert('Failed to add server')}
+}
+async function toggleMcp(name){
+  try{await fetch('/api/mcp/'+encodeURIComponent(name)+'/toggle',{method:'POST'});loadMcp()}catch(e){alert('Failed')}
+}
+async function restartMcp(name){
+  try{await fetch('/api/mcp/'+encodeURIComponent(name)+'/restart',{method:'POST'});loadMcp()}catch(e){alert('Failed')}
+}
+async function deleteMcp(name){
+  if(!confirm('Delete MCP server "'+name+'"?'))return;
+  try{await fetch('/api/mcp/'+encodeURIComponent(name),{method:'DELETE'});loadMcp()}catch(e){alert('Failed')}
+}
+
+async function loadTools(){
+  try{const r=await fetch('/api/tools');const d=await r.json();
+    const el=document.getElementById('toolsList');
+    const pathEl=document.getElementById('toolsPath');
+    if(d.tools_dir)pathEl.textContent='📁 '+d.tools_dir;
+    const tools=d.tools||[];
+    if(tools.length){
+      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Type</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+tools.map(t=>{
+        const status=t.enabled?'<span style="color:var(--green)">&#9679; Enabled</span>':'<span style="color:var(--t3)">&#9679; Disabled</span>';
+        return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(t.name)+'</strong><br><span style="font-size:11px;color:var(--t3)">'+esc(t.path)+'</span></td><td><span style="background:#e8ecee;padding:2px 8px;border-radius:10px;font-size:11px">.'+esc(t.extension)+'</span></td><td style="color:var(--t3);font-size:12px">'+esc(t.description)+'</td><td>'+status+'</td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleTool(\''+esc(t.name)+'\')">'+(t.enabled?'Disable':'Enable')+'</button></td></tr>';
+      }).join('')+'</tbody></table>';
+    }else{
+      el.innerHTML='<div style="padding:20px;text-align:center;color:var(--t3)"><p>No tools found in Tools directory.</p><p style="font-size:12px;margin-top:8px">Place .exe, .bat, .ps1, or .cmd files in the Tools folder to use them as external tools.</p></div>';
+    }
+  }catch(e){document.getElementById('toolsList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
+}
+async function toggleTool(name){
+  try{await fetch('/api/tools/'+encodeURIComponent(name)+'/toggle',{method:'POST'});loadTools()}catch(e){alert('Failed')}
 }
 
 // 鈹€鈹€ CRON Tasks 鈹€鈹€
@@ -767,8 +979,78 @@ async function deleteCron(id){
 
 // 鈹€鈹€ Markdown Renderer (local marked.js with GFM, robust fallback) 鈹€鈹€
 if(typeof marked!=='undefined'){try{marked.setOptions({breaks:false,gfm:true})}catch(e){}}
+
+// Remove inline JSON tool-call blocks from streamed text and replace them
+// with placeholders that are later rendered as collapsible blocks.
+var pendingToolCalls=[];
+function stripToolJson(text){
+  if(!text)return'';
+  pendingToolCalls=[];
+  // 1. Handle ```json ... ``` code blocks containing tool calls
+  text=text.replace(/```(?:json|JSON)?\s*\n?([\s\S]*?)```/g,function(m,content){
+    if(/"(?:name|tool|function)"\s*:/.test(content)&&/"(?:arguments|args)"\s*:/.test(content)){
+      var idx=pendingToolCalls.length;
+      pendingToolCalls.push(content.trim());
+      return'\n\n[TOOLCALL:'+idx+']\n\n';
+    }
+    return m;
+  });
+  // 2. Handle inline JSON objects (brace counting for nesting)
+  var result='',i=0;
+  var markers=['{"name"','{"tool"','{"function"','{ "name"','{ "tool"','{ "function"'];
+  while(i<text.length){
+    var hit=-1;
+    for(var m=0;m<markers.length;m++){
+      var idx=text.indexOf(markers[m],i);
+      if(idx>=0&&(hit<0||idx<hit))hit=idx;
+    }
+    if(hit<0){result+=text.substring(i);break}
+    result+=text.substring(i,hit);
+    var depth=0,inStr=false,esc=false,end=hit;
+    for(var j=hit;j<text.length;j++){
+      var c=text[j];
+      if(esc){esc=false;continue}
+      if(c==='\\'&&inStr){esc=true;continue}
+      if(c==='"'){inStr=!inStr;continue}
+      if(inStr)continue;
+      if(c==='{')depth++;
+      else if(c==='}'){depth--;if(depth===0){end=j+1;break}}
+    }
+    var jsonStr=text.substring(hit,end);
+    var idx2=pendingToolCalls.length;
+    pendingToolCalls.push(jsonStr);
+    result+='\n\n[TOOLCALL:'+idx2+']\n\n';
+    i=end;
+  }
+  return result.replace(/\n[ \t]*\n[ \t]*\n+/g,'\n\n').trim();
+}
+// Replace [TOOLCALL:N] placeholders with collapsible HTML blocks.
+function renderToolCallPlaceholders(html){
+  if(!pendingToolCalls.length)return html;
+  // Match <p>[TOOLCALL:N]</p> (markdown wraps standalone text in <p>)
+  html=html.replace(/<p>\s*\[TOOLCALL:(\d+)\]\s*<\/p>/g,function(match,idx){
+    var json=pendingToolCalls[parseInt(idx)]||'';
+    return'<div class="tool-block done" style="margin:6px 0">'
+      +'<div class="tool-hdr" onclick="toggleBlock(this)">&#9881; Tool Call: '+esc(_extractToolName(json))+' <span class="arrow">&#9660;</span></div>'
+      +'<div class="tool-body"><pre style="margin:4px 0;font-size:12px;white-space:pre-wrap">'+esc(json)+'</pre></div></div>';
+  });
+  // Also match bare [TOOLCALL:N] (fallback)
+  html=html.replace(/\[TOOLCALL:(\d+)\]/g,function(match,idx){
+    var json=pendingToolCalls[parseInt(idx)]||'';
+    return'<div class="tool-block done" style="margin:6px 0">'
+      +'<div class="tool-hdr" onclick="toggleBlock(this)">&#9881; Tool Call: '+esc(_extractToolName(json))+' <span class="arrow">&#9660;</span></div>'
+      +'<div class="tool-body"><pre style="margin:4px 0;font-size:12px;white-space:pre-wrap">'+esc(json)+'</pre></div></div>';
+  });
+  return html;
+}
+function _extractToolName(json){
+  try{var o=JSON.parse(json);return o.name||o.tool||'unknown'}catch(e){return'unknown'}
+}
+
 function renderMd(text){
   if(!text)return'';
+  var NL=String.fromCharCode(10);
+  var lines=text.split(NL);for(var _i=1;_i<lines.length;_i++){if(/^\|.+\|$/.test(lines[_i])&&/^\|[\s:|-]+\|$/.test(lines[_i+1]||'')&&lines[_i-1]!==''){lines.splice(_i,0,'');_i++}}text=lines.join(NL);
   if(typeof marked!=='undefined'){try{return marked.parse(text)}catch(e){}}
   return renderMdFallback(text);
 }
@@ -827,42 +1109,79 @@ function addCopyBtns(container){
 
 // 鈹€鈹€ Helpers 鈹€鈹€
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function scrollBottom(){requestAnimationFrame(()=>{const a=document.getElementById('convArea');if(a)a.scrollTo({top:a.scrollHeight,behavior:'smooth'});const l=document.getElementById('logArea');if(l)l.scrollTop=l.scrollHeight})}
+function scrollBottom(smooth){requestAnimationFrame(()=>{const a=document.getElementById('convArea');if(a)a.scrollTo({top:a.scrollHeight,behavior:smooth===false?'auto':'smooth'});const l=document.getElementById('logArea');if(l)l.scrollTop=l.scrollHeight})}
 function saveHist(){try{localStorage.setItem('ra_msgs',JSON.stringify(msgHist.slice(-200)));localStorage.setItem('ra_logs',JSON.stringify(logHist.slice(-200)))}catch(e){}}
 function showAssistantMsg(txt,time){
   const d=document.createElement('div');d.className='msg assistant';
   d.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+renderMd(esc(txt))+'</div><div class="msg-time">'+(time||'')+'</div></div>';
   document.getElementById('convArea').appendChild(d);
 }
-function showNotification(message, timestamp){
+function showNotification(message, timestamp, skipHist){
   const conv=document.getElementById('convArea');
-  // Create notification card with Markdown rendering
+  // Create notification card with Markdown rendering (same pipeline as main chat)
   const d=document.createElement('div');d.className='msg notification-msg';
   const time=new Date(timestamp||Date.now()).toLocaleTimeString();
-  d.innerHTML='<div class="msg-avatar" style="background:var(--orange,#f39c12)">&#128276;</div><div class="msg-body"><div class="msg-role" style="color:var(--orange,#f39c12)">&#128276; Reminder</div><div class="msg-content" style="background:#fef9e7;border:1px solid #f9e79f;border-radius:14px;color:#7d6608">'+renderMd(message)+'</div><div class="msg-time">'+time+'</div></div>';
+  // Clean text same as main chat finalizeTextBlock
+  const cleaned=message.replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'').trim();
+  d.innerHTML='<div class="msg-avatar" style="background:var(--orange,#f39c12)">&#128276;</div><div class="msg-body"><div class="msg-role" style="color:var(--orange,#f39c12)">&#128276; Reminder</div><div class="msg-content md-content" style="background:#fef9e7;border:1px solid #f9e79f;border-radius:14px;color:#7d6608">'+renderMd(cleaned)+'</div><div class="msg-time">'+time+'</div></div>';
   conv.appendChild(d);
-  scrollBottom();
-  // Also try browser native notification (plain text only)
-  const plainText = message.replace(/[*#_~`\[\]]/g, '').substring(0, 200);
-  if('Notification' in window && Notification.permission==='granted'){
-    new Notification('RustAgent Reminder',{body:plainText,icon:''});
-  } else if('Notification' in window && Notification.permission!=='denied'){
-    Notification.requestPermission().then(p=>{if(p==='granted')new Notification('RustAgent Reminder',{body:plainText})});
+  // Add copy buttons to code blocks (same as main chat)
+  const nc=d.querySelector('.msg-content');if(nc)addCopyBtns(nc);
+  if(!skipHist)scrollBottom(false);
+  // Also try browser native notification (plain text only) — skip when restoring history
+  if(!skipHist){
+    const plainText = message.replace(/[*#_~`\[\]]/g, '').substring(0, 200);
+    if('Notification' in window && Notification.permission==='granted'){
+      new Notification('RustAgent Reminder',{body:plainText,icon:''});
+    } else if('Notification' in window && Notification.permission!=='denied'){
+      Notification.requestPermission().then(p=>{if(p==='granted')new Notification('RustAgent Reminder',{body:plainText})});
+    }
+    addLog('Reminder delivered','info');
+    // Persist notification to history
+    msgHist.push({role:'notification',text:message,time:time});
+    saveHist();
   }
-  // Only log a brief system action, not the full content
-  addLog('Reminder delivered','info');
 }
-function loadHist(){try{
-  const m=JSON.parse(localStorage.getItem('ra_msgs')||'[]');
-  const l=JSON.parse(localStorage.getItem('ra_logs')||'[]');
-  m.forEach(x=>{
-    if(x.role==='user')showUserMsg(x.text);
+function loadHist(){
+  // 1. Restore logs immediately from localStorage (UI logs only)
+  try{
+    const l=JSON.parse(localStorage.getItem('ra_logs')||'[]');
+    l.forEach(x=>addLog(x.text,x.cls));
+    logHist=l;
+  }catch(e){logHist=[]}
+  // 2. Always fetch fresh history from the server (source of truth).
+  //    localStorage is only a fallback when the server is unreachable.
+  //    This ensures a hard refresh shows today's conversations even though
+  //    localStorage still holds a stale cache.
+  var localFallback=function(){
+    let m=[];
+    try{m=JSON.parse(localStorage.getItem('ra_msgs')||'[]')}catch(e){m=[]}
+    if(m.length>0){renderHistMessages(m);msgHist=m}
+  };
+  fetch('/api/history?days=3&limit=200')
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.messages&&d.messages.length>0){
+        renderHistMessages(d.messages);
+        msgHist=d.messages;
+        saveHist();  // Update localStorage cache with fresh data
+      }else{
+        localFallback();
+      }
+    })
+    .catch(e=>{
+      addLog('Failed to load server history: '+e,'warn');
+      localFallback();
+    });
+}
+function renderHistMessages(msgs){
+  msgs.forEach(x=>{
+    if(x.role==='user')showUserMsg(x.text,x.time);
     else if(x.role==='assistant')showAssistantMsg(x.text,x.time);
+    else if(x.role==='notification')showNotification(x.text,x.time,true);
   });
-  l.forEach(x=>addLog(x.text,x.cls));
-  msgHist=m;logHist=l;
-  if(m.length)scrollBottom();
-}catch(e){}}
+  if(msgs.length)scrollBottom(false);
+}
 
 // 鈹€鈹€ Permissions 鈹€鈹€
 function renderPerms(){
@@ -950,6 +1269,15 @@ function respondPerm(requestId,allowed){
 }
 
 // 鈹€鈹€ Init 鈹€鈹€
-document.addEventListener('DOMContentLoaded',()=>{loadHist();renderPerms();if(!msgHist.length)addLog('RustAgent ready','info');updateStatus()});
+document.addEventListener('DOMContentLoaded',()=>{
+  loadHist();
+  renderPerms();
+  if(!msgHist.length)addLog('RustAgent ready','info');
+  updateStatus();
+  const modelSel=document.getElementById('modelSel');
+  const fallbackSel=document.getElementById('fallbackSel');
+  if(modelSel)modelSel.addEventListener('change',()=>localStorage.setItem(MODEL_KEY,modelSel.value||''));
+  if(fallbackSel)fallbackSel.addEventListener('change',()=>localStorage.setItem(FALLBACK_MODEL_KEY,fallbackSel.value||''));
+});
 </script>
 </html>

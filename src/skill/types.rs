@@ -7,7 +7,11 @@ pub struct SkillMetadata {
     pub description: String,
     #[serde(default)]
     pub triggers: Vec<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 }
+
+fn default_enabled() -> bool { true }
 
 #[derive(Debug, Clone)]
 pub struct Skill {

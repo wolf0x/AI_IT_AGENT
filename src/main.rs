@@ -7,7 +7,9 @@ mod config;
 mod context;
 #[allow(dead_code)]
 mod error;
+mod external_tools;
 mod log;
+mod memory;
 mod model;
 mod permission;
 #[allow(dead_code)]
@@ -28,7 +30,9 @@ use tracing_subscriber::EnvFilter;
 
 use crate::agent::LlmAgent;
 use crate::config::Config;
+use crate::external_tools::ExternalToolsManager;
 use crate::log::ConversationLogger;
+use crate::memory::MemoryStore;
 use crate::model::openai::OpenAiProvider;
 use crate::runner::Runner;
 use crate::permission::{PermissionResolver, default_permissions};
@@ -49,16 +53,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting RustAgent...");
 
-    // Load config
-    let config = Config::load("config.toml")?;
+    // Resolve exe directory for relative paths
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    info!("Executable directory: {}", exe_dir.display());
+
+    // Load config from exe directory
+    let config_path = exe_dir.join("config.toml");
+    let config = Config::load(config_path.to_str().unwrap_or("config.toml"))?;
     info!(
         "Config loaded: {} models, {} MCP servers",
         config.models.len(),
         config.mcp_servers.len()
     );
 
-    // Build tool registry (12 built-in tools)
-    let mut registry = ToolRegistry::build_default(&config.agent.working_dir);
+    // Build tool registry (built-in tools)
+    // The notification broadcast channel is created early so tools that need to
+    // push messages to WebSocket clients (e.g. sys_remind) can hold a sender.
+    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+
+    let working_dir = if config.agent.working_dir == "." {
+        exe_dir.to_string_lossy().to_string()
+    } else {
+        config.agent.working_dir.clone()
+    };
+    let mut registry = ToolRegistry::build_default(&working_dir, Some(notify_tx.clone()));
     info!("Built-in tools: {:?}", registry.tool_names());
 
     // Connect MCP servers
@@ -72,8 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Load skills
-    let skill_manager = Arc::new(SkillManager::new("skills"));
+    // Load skills (resolve skills dir relative to exe)
+    let skills_dir = exe_dir.join("skills");
+    let skill_manager = Arc::new(SkillManager::new(skills_dir.to_str().unwrap_or("skills")));
     let skills = skill_manager.list();
     info!("Loaded {} skills", skills.len());
 
@@ -88,8 +110,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(OpenAiProvider::new(config.models.clone()));
     info!("Models available: {:?}", model_names);
 
-    // Build logger
-    let logger = Arc::new(ConversationLogger::new(&config.server.log_dir));
+    // Build logger (resolve log dir relative to exe)
+    let log_dir = exe_dir.join(&config.server.log_dir);
+    let logger = Arc::new(ConversationLogger::new(log_dir.to_str().unwrap_or("logs")));
+
+    // Build memory store (resolve DB path relative to exe)
+    let db_path = exe_dir.join("memory.db");
+    let memory_store = Arc::new(
+        MemoryStore::new(db_path.to_str().unwrap_or("memory.db"))
+            .expect("Failed to initialize memory store")
+    );
+    info!("Memory store ready: {}", db_path.display());
+
+    // Build external tools manager (resolve Tools dir relative to exe)
+    let tools_dir = exe_dir.join("Tools");
+    let external_tools = Arc::new(Mutex::new(ExternalToolsManager::new(tools_dir.clone())));
+    info!("External tools dir: {}", tools_dir.display());
 
     // Build agent using builder pattern (ADK-RUST style)
     let agent = LlmAgent::builder()
@@ -99,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .tools(Arc::new(registry))
         .skill_manager(skill_manager.clone())
         .max_iterations(config.agent.max_iterations)
-        .working_dir(&config.agent.working_dir)
+        .working_dir(&working_dir)
         .model_configs(config.models.clone())
         .build()
         .map_err(|e| format!("Failed to build agent: {}", e))?;
@@ -118,12 +154,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (permission_resolver, permission_pending) = PermissionResolver::new();
     let permissions = Arc::new(Mutex::new(default_permissions()));
 
-    // Build notification broadcast channel (before scheduler)
-    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
-
-    // Build scheduler
+    // Build scheduler (resolve cron path relative to exe)
+    let cron_path = exe_dir.join("cron_tasks.json");
     let scheduler = Arc::new(Mutex::new(Scheduler::new(
-        "cron_tasks.json",
+        cron_path.to_str().unwrap_or("cron_tasks.json"),
         runner.clone(),
         model_names.clone(),
         permissions.clone(),
@@ -150,6 +184,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         skill_manager,
         mcp_manager: Arc::new(Mutex::new(mcp_manager)),
         logger,
+        memory_store,
+        external_tools,
         password: config.server.password.clone(),
         model_names,
         model_context_windows,

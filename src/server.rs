@@ -17,11 +17,14 @@ use tracing::info;
 
 use crate::agent::AgentEvent;
 use crate::log::ConversationLogger;
+use crate::memory::MemoryStore;
 use crate::model::ChatMessage;
 use crate::permission::{PermissionResolver, PendingMap};
 use crate::runner::Runner;
 use crate::scheduler::{Scheduler, CronTask};
 use crate::skill::SkillManager;
+use crate::config::McpServerConfig;
+use crate::external_tools::ExternalToolsManager;
 use crate::tool::mcp_client::McpClientManager;
 use crate::web::StaticServer;
 
@@ -34,6 +37,8 @@ pub struct AppState {
     pub skill_manager: Arc<SkillManager>,
     pub mcp_manager: Arc<Mutex<McpClientManager>>,
     pub logger: Arc<ConversationLogger>,
+    pub memory_store: Arc<MemoryStore>,
+    pub external_tools: Arc<Mutex<ExternalToolsManager>>,
     pub password: String,
     pub model_names: Vec<String>,
     pub model_context_windows: std::collections::HashMap<String, usize>,
@@ -62,8 +67,15 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/models", get(models_handler))
         .route("/api/health", get(health_handler))
         .route("/api/skills", get(skills_handler))
+        .route("/api/skills", post(skills_create_handler))
         .route("/api/skills/reload", post(skills_reload_handler))
+        .route("/api/skills/{name}", delete(skills_delete_handler))
+        .route("/api/skills/{name}/toggle", post(skills_toggle_handler))
         .route("/api/mcp", get(mcp_handler))
+        .route("/api/mcp", post(mcp_create_handler))
+        .route("/api/mcp/{name}", delete(mcp_delete_handler))
+        .route("/api/mcp/{name}/toggle", post(mcp_toggle_handler))
+        .route("/api/mcp/{name}/restart", post(mcp_restart_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/logs/dates", get(log_dates_handler))
         .route("/api/cron", get(cron_list_handler))
@@ -72,6 +84,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/cron/{id}", delete(cron_delete_handler))
         .route("/api/cron/{id}/toggle", post(cron_toggle_handler))
         .route("/api/notify", post(notify_handler))
+        .route("/api/memory/dates", get(memory_dates_handler))
+        .route("/api/memory/summaries", get(memory_summaries_handler))
+        .route("/api/memory", get(memory_entries_handler))
+        .route("/api/memory/summarize", post(memory_summarize_handler))
+        .route("/api/history", get(history_handler))
+        .route("/api/tools", get(tools_handler))
+        .route("/api/tools/{name}/toggle", post(tools_toggle_handler))
+        .route("/api/tools/{name}/description", post(tools_desc_handler))
         .with_state(state)
 }
 
@@ -105,15 +125,113 @@ async fn skills_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({ "skills": skills, "count": skills.len() }))
 }
 
+async fn skills_create_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let name = body["name"].as_str().unwrap_or("").to_string();
+    let description = body["description"].as_str().unwrap_or("").to_string();
+    let content = body["content"].as_str().unwrap_or("").to_string();
+    let triggers: Vec<String> = body["triggers"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if name.is_empty() || content.is_empty() {
+        return Json(json!({ "success": false, "error": "Name and content are required" }));
+    }
+    match state.skill_manager.create_skill(&name, &description, &triggers, &content) {
+        Ok(filename) => Json(json!({ "success": true, "filename": filename })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
 async fn skills_reload_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     state.skill_manager.reload();
     let skills = state.skill_manager.list();
     Json(json!({ "status": "reloaded", "count": skills.len() }))
 }
 
+async fn skills_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    match state.skill_manager.delete_skill(&name) {
+        Ok(_) => Json(json!({ "success": true })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
+async fn skills_toggle_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    match state.skill_manager.toggle_skill(&name) {
+        Some(enabled) => Json(json!({ "success": true, "enabled": enabled })),
+        None => Json(json!({ "success": false, "error": "Not found" })),
+    }
+}
+
 async fn mcp_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let mgr = state.mcp_manager.lock().await;
     Json(json!({ "servers": mgr.server_info() }))
+}
+
+async fn mcp_create_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let name = body["name"].as_str().unwrap_or("").to_string();
+    if name.is_empty() {
+        return Json(json!({ "success": false, "error": "Missing name" }));
+    }
+    let transport = body["transport"].as_str().unwrap_or("stdio").to_string();
+    let config = McpServerConfig {
+        name: name.clone(),
+        transport,
+        command: body["command"].as_str().map(|s| s.to_string()),
+        args: body["args"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        url: body["url"].as_str().map(|s| s.to_string()),
+        enabled: body["enabled"].as_bool().unwrap_or(true),
+    };
+    let mut mgr = state.mcp_manager.lock().await;
+    mgr.connect_server(&config).await;
+    mgr.save_configs();
+    Json(json!({ "success": true, "name": name }))
+}
+
+async fn mcp_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    let mut mgr = state.mcp_manager.lock().await;
+    let ok = mgr.remove_server(&name).await;
+    if ok { mgr.save_configs(); }
+    Json(json!({ "success": ok }))
+}
+
+async fn mcp_toggle_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    let mut mgr = state.mcp_manager.lock().await;
+    match mgr.toggle_server(&name).await {
+        Some(enabled) => {
+            mgr.save_configs();
+            Json(json!({ "success": true, "enabled": enabled }))
+        }
+        None => Json(json!({ "success": false, "error": "Not found" })),
+    }
+}
+
+async fn mcp_restart_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    let mut mgr = state.mcp_manager.lock().await;
+    let ok = mgr.reconnect_server(&name).await;
+    if ok { mgr.save_configs(); }
+    Json(json!({ "success": ok }))
 }
 
 #[derive(Deserialize)]
@@ -369,10 +487,41 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             cancelled.store(false, Ordering::SeqCst);
 
                             // Get session history for multi-turn context
-                            let history = {
+                            let mut history = {
                                 let sessions = state.sessions.lock().await;
                                 sessions.get(&session_id).cloned().unwrap_or_default()
                             };
+
+                            // Inject memory context for new sessions (page refresh)
+                            if history.is_empty() {
+                                // Inject a memory context (daily summaries of past
+                                // conversations) as a SYSTEM message so the LLM
+                                // treats it as authoritative background, not chat.
+                                if let Some(mem_ctx) = state.memory_store.build_context_string(7) {
+                                    info!("Injecting memory context ({} chars)", mem_ctx.len());
+                                    history.push(ChatMessage::system(&mem_ctx));
+                                }
+                                // Do NOT replay today's full raw chat history into the
+                                // model context. The frontend already restores chat UI
+                                // from localStorage / /api/history after refresh. Raw
+                                // replay here makes the model continue old unfinished
+                                // threads (e.g. keep investigating memory.db after a
+                                // simple "hello"). The memory context above provides a
+                                // concise summary instead.
+                            }
+
+                            // Mid-session recall: if the user is asking about earlier
+                            // conversations during an ongoing session, query SQLite
+                            // (keyword search + daily summaries) and inject the result
+                            // as an ephemeral SYSTEM message at the start of history.
+                            // This is NOT persisted — the server only stores the
+                            // original user content + assistant reply below.
+                            if !history.is_empty() && is_recall_query(&content) {
+                                if let Some(recall) = state.memory_store.build_recall_context(&content, 14) {
+                                    info!("Injecting recall context ({} chars) for query", recall.len());
+                                    history.insert(0, ChatMessage::system(&recall));
+                                }
+                            }
 
                             // Run via Runner
                             match state.runner.run(
@@ -474,6 +623,16 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                             let drain = hist.len() - 50;
                                             hist.drain(..drain);
                                         }
+
+                                        // Store in memory (SQLite)
+                                        let _ = state.memory_store.store_entry(&session_id, "user", &content, None);
+                                        let _ = state.memory_store.store_entry(&session_id, "assistant", &assistant_text, None);
+
+                                        // Refresh today's auto-summary so future
+                                        // sessions (and mid-session recall
+                                        // queries) can reference this exchange.
+                                        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                                        let _ = state.memory_store.auto_summarize_date(&today);
                                     }
                                 }
                                 Err(e) => {
@@ -518,4 +677,191 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
             _ => {}
         }
     }
+}
+
+// ============================================================
+// Memory Handlers
+// ============================================================
+
+async fn memory_dates_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    match state.memory_store.available_dates() {
+        Ok(dates) => Json(json!({ "dates": dates, "count": dates.len() })),
+        Err(e) => Json(json!({ "error": e })),
+    }
+}
+
+async fn memory_summaries_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    match state.memory_store.get_all_summaries() {
+        Ok(summaries) => Json(json!({ "summaries": summaries, "count": summaries.len() })),
+        Err(e) => Json(json!({ "error": e })),
+    }
+}
+
+#[derive(Deserialize)]
+struct MemoryQuery {
+    date: Option<String>,
+}
+
+async fn memory_entries_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<MemoryQuery>,
+) -> Json<Value> {
+    let date = query.date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    match state.memory_store.get_entries_by_date(&date) {
+        Ok(entries) => Json(json!({ "date": date, "entries": entries, "count": entries.len() })),
+        Err(e) => Json(json!({ "error": e })),
+    }
+}
+
+#[derive(Deserialize)]
+struct SummarizeRequest {
+    date: Option<String>,
+}
+
+async fn memory_summarize_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SummarizeRequest>,
+) -> Json<Value> {
+    let date = body.date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    match state.memory_store.build_raw_context_for_date(&date) {
+        Ok(raw) => {
+            // Build a summary prompt
+            let prompt = format!(
+                "Please provide a concise summary of the following conversation log from {}. \
+                 Focus on key topics discussed, actions taken, and outcomes. Keep it under 200 words.\n\n{}",
+                date, raw
+            );
+            // For now, store a simple extractive summary (LLM-based summary would need provider access)
+            let lines: Vec<&str> = raw.lines().collect();
+            let user_msgs: Vec<&str> = lines.iter()
+                .filter(|l| l.starts_with("User:"))
+                .copied()
+                .collect();
+            let summary = if user_msgs.is_empty() {
+                format!("{} conversation entries recorded ({} chars)", lines.len(), raw.len())
+            } else {
+                let topics: Vec<String> = user_msgs.iter().take(5)
+                    .map(|m| {
+                        let text = m.trim_start_matches("User:").trim();
+                        let preview: String = text.chars().take(80).collect();
+                        preview
+                    })
+                    .collect();
+                format!("Topics: {}", topics.join("; "))
+            };
+            match state.memory_store.store_summary(&date, &summary) {
+                Ok(_) => {
+                    info!("Summary stored for {}: {} chars", date, summary.len());
+                    Json(json!({ "success": true, "date": date, "summary": summary }))
+                }
+                Err(e) => Json(json!({ "success": false, "error": e })),
+            }
+        }
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
+// ============================================================
+// History API - fetch recent conversation from memory store
+// ============================================================
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    #[serde(default = "default_history_days")]
+    days: usize,
+    #[serde(default = "default_history_limit")]
+    limit: usize,
+}
+
+fn default_history_days() -> usize { 3 }
+fn default_history_limit() -> usize { 50 }
+
+async fn history_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HistoryQuery>,
+) -> Json<Value> {
+    let days = query.days.max(1).min(30);
+    let limit = query.limit.max(1).min(200);
+    match state.memory_store.get_recent_entries(days) {
+        Ok(entries) => {
+            // Filter to user/assistant roles and take the last N entries
+            let filtered: Vec<_> = entries.into_iter()
+                .filter(|e| e.role == "user" || e.role == "assistant")
+                .collect();
+            let chat: Vec<Value> = filtered.into_iter()
+                .rev()
+                .take(limit)
+                .rev()
+                .map(|e| json!({
+                    "role": e.role,
+                    "text": e.content,
+                    "time": chrono::DateTime::parse_from_rfc3339(&e.timestamp)
+                        .map(|dt| dt.format("%H:%M:%S").to_string())
+                        .unwrap_or_default(),
+                    "session_id": e.session_id,
+                }))
+                .collect();
+            Json(json!({ "messages": chat, "count": chat.len() }))
+        }
+        Err(e) => Json(json!({ "messages": [], "count": 0, "error": e })),
+    }
+}
+
+// ============================================================
+// External Tools Handlers
+// ============================================================
+
+async fn tools_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let mut mgr = state.external_tools.lock().await;
+    mgr.scan();
+    let tools = mgr.list_tools();
+    let tools_dir = mgr.tools_dir().to_string_lossy().to_string();
+    Json(json!({ "tools": tools, "tools_dir": tools_dir, "count": tools.len() }))
+}
+
+async fn tools_toggle_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    let mut mgr = state.external_tools.lock().await;
+    match mgr.toggle_tool(&name) {
+        Some(enabled) => {
+            mgr.save_state();
+            Json(json!({ "success": true, "enabled": enabled }))
+        }
+        None => Json(json!({ "success": false, "error": "Not found" })),
+    }
+}
+
+async fn tools_desc_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let description = body["description"].as_str().unwrap_or("").to_string();
+    let mut mgr = state.external_tools.lock().await;
+    if mgr.update_description(&name, &description) {
+        mgr.save_state();
+        Json(json!({ "success": true }))
+    } else {
+        Json(json!({ "success": false, "error": "Not found" }))
+    }
+}
+
+/// Detect whether the user's message is asking about earlier conversations.
+/// Used to trigger mid-session injection of the memory context so the agent
+/// can recall past topics instead of claiming it has no history.
+fn is_recall_query(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    const KEYWORDS: &[&str] = &[
+        // Chinese
+        "之前", "昨天", "前天", "上次", "历史", "过往", "以前",
+        "记得", "回忆", "我们讨论", "我们聊", "我们说过", "你之前",
+        "你说过", "之前的对话", "前几次",
+        // English
+        "previous", "yesterday", "last time", "earlier", "we discussed",
+        "we talked", "do you remember", "chat history", "previous chat",
+        "earlier conversation", "before we",
+    ];
+    KEYWORDS.iter().any(|k| lower.contains(k))
 }

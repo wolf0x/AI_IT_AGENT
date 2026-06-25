@@ -192,8 +192,10 @@ impl ToolRegistry {
         self.tools.is_empty()
     }
 
-    /// Build the default registry with all 12 built-in Windows tools.
-    pub fn build_default(working_dir: &str) -> Self {
+    /// Build the default registry with all built-in Windows tools.
+    /// `notify_tx` is the broadcast channel used by `sys_remind` to push
+    /// reminders to WebSocket clients (pass `None` when unavailable).
+    pub fn build_default(working_dir: &str, notify_tx: Option<crate::tool::sys_remind::NotifyTx>) -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(file_ops::FileReadTool));
         registry.register(Arc::new(file_ops::FileWriteTool));
@@ -205,7 +207,7 @@ impl ToolRegistry {
         registry.register(Arc::new(sys_eventlog::SysEventLogTool));
         registry.register(Arc::new(sys_process::SysProcessTool));
         registry.register(Arc::new(sys_service::SysServiceTool));
-        registry.register(Arc::new(sys_remind::SysRemindTool));
+        registry.register(Arc::new(sys_remind::SysRemindTool::with_notify_tx_optional(notify_tx)));
         registry.register(Arc::new(app_launch::AppLaunchTool));
         registry.register(Arc::new(browser_open::BrowserOpenTool));
         registry.register(Arc::new(web_fetch::WebFetchTool));

@@ -51,6 +51,7 @@ struct DeltaContent {
 
 #[derive(Debug, Deserialize)]
 struct ToolCallChunk {
+    #[serde(default)]
     index: usize,
     id: Option<String>,
     function: Option<FunctionChunk>,
@@ -86,7 +87,7 @@ impl OpenAiProvider {
         tx: mpsc::Sender<AgentResult<crate::agent::AgentEvent>>,
         invocation_id: &str,
         author: &str,
-    ) -> Result<(String, Vec<ToolCallDelta>), String> {
+    ) -> Result<(String, String, Vec<ToolCallDelta>), String> {
         let model = self.find_model(model_name).ok_or("No model configured")?;
         let api_key = model.resolved_api_key();
         let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
@@ -95,11 +96,12 @@ impl OpenAiProvider {
             "model": model.name,
             "messages": messages,
             "stream": true,
-            "temperature": 0.7,
-            "max_tokens": 4096,
+            "temperature": model.temperature,
+            "max_tokens": model.max_tokens,
         });
         if !tools.is_empty() {
             body["tools"] = serde_json::to_value(tools).unwrap();
+            body["tool_choice"] = serde_json::json!("auto");
         }
 
         let mut req = self.client.post(&url).header("Content-Type", "application/json");
@@ -118,10 +120,17 @@ impl OpenAiProvider {
 
         let mut s = resp.bytes_stream();
         let mut full_content = String::new();
+        let mut full_reasoning = String::new();
         let mut tool_calls_map: Vec<ToolCallAccum> = Vec::new();
         let mut buffer = String::new();
 
-        while let Some(chunk_result) = s.next().await {
+        // If the consumer (agent stream / WebSocket) drops the receiver, there is
+        // no point continuing to read the HTTP stream. We watch for that with a
+        // flag and abort the loops as soon as a send fails, instead of spamming
+        // one warning per remaining chunk.
+        let mut consumer_gone = false;
+
+        'outer: while let Some(chunk_result) = s.next().await {
             let chunk_bytes = match chunk_result {
                 Ok(b) => b,
                 Err(e) => { warn!("Stream chunk error: {}", e); break; }
@@ -142,18 +151,23 @@ impl OpenAiProvider {
                                 for choice in choices {
                                     // Handle reasoning_content (thinking phase for DeepSeek V4 etc.)
                                     if let Some(reasoning) = &choice.delta.reasoning_content {
-                                        let _ = tx.try_send(
+                                        full_reasoning.push_str(reasoning);
+                                        if tx.send(
                                             Ok(crate::agent::AgentEvent::thinking(reasoning, invocation_id, author))
-                                        );
+                                        ).await.is_err() {
+                                            consumer_gone = true;
+                                            break 'outer;
+                                        }
                                     }
                                     // Handle content (actual response)
                                     if let Some(content) = &choice.delta.content {
                                         if !content.is_empty() {
                                             full_content.push_str(content);
-                                            if tx.try_send(
+                                            if tx.send(
                                                 Ok(crate::agent::AgentEvent::text(content, invocation_id, author))
-                                            ).is_err() {
-                                                tracing::warn!("Failed to send text event: channel full");
+                                            ).await.is_err() {
+                                                consumer_gone = true;
+                                                break 'outer;
                                             }
                                         }
                                     }
@@ -185,20 +199,35 @@ impl OpenAiProvider {
             }
         }
 
+        if consumer_gone {
+            debug!("LLM stream aborted because the client disconnected or stopped the session");
+        }
+
+        let mut synthetic_id_counter = 0u32;
         let tool_calls: Vec<ToolCallDelta> = tool_calls_map
             .into_iter()
-            .filter(|tc| !tc.id.is_empty())
-            .map(|tc| ToolCallDelta {
-                id: tc.id,
-                call_type: "function".to_string(),
-                function: FunctionCallDelta {
-                    name: Some(tc.name),
-                    arguments: Some(tc.arguments),
-                },
+            .filter(|tc| !tc.name.is_empty())
+            .map(|tc| {
+                let id = if tc.id.is_empty() {
+                    let sid = format!("tc_synthetic_{}", synthetic_id_counter);
+                    synthetic_id_counter += 1;
+                    warn!("Tool call '{}' missing ID from API, generated synthetic ID: {}", tc.name, sid);
+                    sid
+                } else {
+                    tc.id
+                };
+                ToolCallDelta {
+                    id,
+                    call_type: "function".to_string(),
+                    function: FunctionCallDelta {
+                        name: Some(tc.name),
+                        arguments: Some(tc.arguments),
+                    },
+                }
             })
             .collect();
 
-        Ok((full_content, tool_calls))
+        Ok((full_content, full_reasoning, tool_calls))
     }
 }
 
@@ -335,16 +364,26 @@ impl Llm for OpenAiProvider {
             }
 
             // Emit final response with accumulated data
+            let mut synthetic_id_counter = 0u32;
             let tool_calls: Vec<ToolCallDelta> = tc_map
                 .into_iter()
-                .filter(|tc| !tc.id.is_empty())
-                .map(|tc| ToolCallDelta {
-                    id: tc.id,
-                    call_type: "function".to_string(),
-                    function: FunctionCallDelta {
-                        name: Some(tc.name),
-                        arguments: Some(tc.arguments),
-                    },
+                .filter(|tc| !tc.name.is_empty())
+                .map(|tc| {
+                    let id = if tc.id.is_empty() {
+                        let sid = format!("tc_synthetic_{}", synthetic_id_counter);
+                        synthetic_id_counter += 1;
+                        sid
+                    } else {
+                        tc.id
+                    };
+                    ToolCallDelta {
+                        id,
+                        call_type: "function".to_string(),
+                        function: FunctionCallDelta {
+                            name: Some(tc.name),
+                            arguments: Some(tc.arguments),
+                        },
+                    }
                 })
                 .collect();
 

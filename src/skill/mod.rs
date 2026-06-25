@@ -1,5 +1,6 @@
 pub mod types;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
@@ -14,14 +15,17 @@ use serde_json::{json, Value};
 pub struct SkillManager {
     skills: Arc<RwLock<Vec<Skill>>>,
     skills_dir: PathBuf,
+    state_path: PathBuf,
 }
 
 impl SkillManager {
     pub fn new(skills_dir: &str) -> Self {
         let dir = PathBuf::from(skills_dir);
+        let state_path = dir.join("skills_state.json");
         let mgr = Self {
             skills: Arc::new(RwLock::new(Vec::new())),
             skills_dir: dir,
+            state_path,
         };
         mgr.reload();
         mgr
@@ -36,12 +40,19 @@ impl SkillManager {
             return;
         }
 
+        // Load enabled state
+        let state = self.load_state();
+
         let pattern = format!("{}/*.md", self.skills_dir.display());
         for entry in glob::glob(&pattern).ok().into_iter().flatten() {
             match entry {
                 Ok(path) => match parse_skill_file(&path) {
-                    Some(skill) => {
-                        info!("Loaded skill: {} from {}", skill.metadata.name, path.display());
+                    Some(mut skill) => {
+                        // Apply enabled state from persisted state
+                        if let Some(enabled) = state.get(&skill.metadata.name) {
+                            skill.metadata.enabled = *enabled;
+                        }
+                        info!("Loaded skill: {} from {} (enabled={})", skill.metadata.name, path.display(), skill.metadata.enabled);
                         skills.push(skill);
                     }
                     None => {
@@ -68,7 +79,7 @@ impl SkillManager {
         skills
             .iter()
             .filter(|s| {
-                s.metadata
+                s.metadata.enabled && s.metadata
                     .triggers
                     .iter()
                     .any(|t| msg_lower.contains(&t.to_lowercase()))
@@ -80,6 +91,50 @@ impl SkillManager {
     #[allow(dead_code)]
     pub fn skills_dir(&self) -> &Path {
         self.skills_dir.as_path()
+    }
+
+    /// Create a new skill from parameters (writes .md file and reloads).
+    pub fn create_skill(&self, name: &str, description: &str, triggers: &[String], content: &str) -> Result<String, String> {
+        let filename = name.to_lowercase().replace(' ', "_");
+        let path = self.skills_dir.join(format!("{}.md", filename));
+        let triggers_yaml: Vec<String> = triggers.iter().map(|t| format!("  - {}", t)).collect();
+        let md_content = format!(
+            "---\nname: {}\ndescription: {}\ntriggers:\n{}\n---\n\n{}\n",
+            name, description, triggers_yaml.join("\n"), content
+        );
+        std::fs::create_dir_all(&self.skills_dir)
+            .map_err(|e| format!("Failed to create dir: {}", e))?;
+        std::fs::write(&path, &md_content)
+            .map_err(|e| format!("Failed to write: {}", e))?;
+        self.reload();
+        Ok(filename)
+    }
+
+    /// Delete a skill by name (removes .md file and reloads).
+    pub fn delete_skill(&self, name: &str) -> Result<(), String> {
+        let skills = self.skills.read().unwrap();
+        let skill = skills.iter().find(|s| s.metadata.name == name)
+            .ok_or_else(|| format!("Skill '{}' not found", name))?;
+        let path = skill.file_path.clone();
+        drop(skills);
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("Failed to remove: {}", e))?;
+        // Remove from state
+        self.remove_from_state(name);
+        self.reload();
+        Ok(())
+    }
+
+    /// Toggle a skill's enabled state.
+    pub fn toggle_skill(&self, name: &str) -> Option<bool> {
+        let mut skills = self.skills.write().unwrap();
+        let skill = skills.iter_mut().find(|s| s.metadata.name == name)?;
+        skill.metadata.enabled = !skill.metadata.enabled;
+        let enabled = skill.metadata.enabled;
+        drop(skills);
+        // Persist
+        self.save_state_entry(name, enabled);
+        Some(enabled)
     }
 
     /// Build meta-tools for skill management (install_skill, list_skills, remove_skill)
@@ -100,6 +155,41 @@ impl SkillManager {
                 skills: skills_ref.clone(),
             }) as Arc<dyn Tool>,
         ]
+    }
+
+    // --- State persistence ---
+
+    fn load_state(&self) -> HashMap<String, bool> {
+        if !self.state_path.exists() {
+            return HashMap::new();
+        }
+        match std::fs::read_to_string(&self.state_path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        }
+    }
+
+    fn save_state(&self, state: &HashMap<String, bool>) {
+        match serde_json::to_string_pretty(state) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&self.state_path, json) {
+                    warn!("Failed to save skills state: {}", e);
+                }
+            }
+            Err(e) => warn!("Failed to serialize skills state: {}", e),
+        }
+    }
+
+    fn save_state_entry(&self, name: &str, enabled: bool) {
+        let mut state = self.load_state();
+        state.insert(name.to_string(), enabled);
+        self.save_state(&state);
+    }
+
+    fn remove_from_state(&self, name: &str) {
+        let mut state = self.load_state();
+        state.remove(name);
+        self.save_state(&state);
     }
 }
 
