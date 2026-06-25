@@ -564,8 +564,10 @@ function handleMsg(msg){
     case 'auth_fail':addLog('Auth failed: '+(msg.message||'bad password'),'error');break;
     case 'thinking':
       hideTyping();
-      if(!curThinkEl){curThinkEl=createThinkBlock();appendToConv(curThinkEl)}
-      appendThinkText(curThinkEl,msg.content);
+      if(msg.content&&msg.content.trim()){
+        if(!curThinkEl){curThinkEl=createThinkBlock();appendToConv(curThinkEl)}
+        appendThinkText(curThinkEl,msg.content);
+      }
       scrollBottom();break;
     case 'text':
       hideTyping();finalizeThink();
@@ -679,20 +681,20 @@ function appendThinkText(el,chunk){
 }
 function finalizeThink(){
   if(curThinkEl){
-    const thinkText=curThinkEl.querySelector('.think-text')?.textContent?.trim()||'';
-    if(!thinkText){
-      curThinkEl.remove();
-      curThinkEl=null;
-      return;
-    }
     curThinkEl.classList.remove('active');
     curThinkEl.classList.add('done');
-    // Rebuild header content and explicitly re-attach onclick for toggle
+    // Ensure think-text has content (placeholder if empty)
+    const thinkTextEl=curThinkEl.querySelector('.think-text');
+    if(thinkTextEl&&!thinkTextEl.textContent.trim()){
+      thinkTextEl.textContent='Thinking...';
+    }
+    // Rebuild header and explicitly re-attach onclick for toggle
     const hdr=curThinkEl.querySelector('.think-hdr');
     if(hdr){
       hdr.innerHTML='\uD83D\uDCA1 Thinking <span style="color:var(--t3);font-weight:400">\u2713</span> <span class="arrow open">&#9660;</span>';
       hdr.onclick=function(){toggleBlock(this)};
     }
+    // Ensure body is open
     const body=curThinkEl.querySelector('.think-body');
     if(body)body.classList.add('open');
     curThinkEl=null;
