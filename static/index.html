@@ -585,6 +585,20 @@ function handleMsg(msg){
       if(blk)updateToolResult(blk,msg.result);
       addLog('Tool: '+msg.name,'tool');
       scrollBottom();break;
+    case 'progress':
+      // Update the current tool block header with progress/heartbeat info
+      if(msg.tool_name){
+        let pblk=curToolMap[Object.keys(curToolMap).pop()];
+        if(pblk){
+          let sumEl=pblk.querySelector('.tool-summary');
+          if(sumEl)sumEl.textContent=msg.message||'Running...';
+          else{
+            let hdr=pblk.querySelector('.tool-hdr');
+            if(hdr){let s=document.createElement('span');s.className='tool-summary';s.textContent=msg.message||'Running...';hdr.insertBefore(s,hdr.querySelector('.arrow'));}
+          }
+        }
+      }
+      break;
     case 'error':
       hideTyping();finalizeThink();finalizeTextBlock();
       addLog('Error: '+msg.message,'error');

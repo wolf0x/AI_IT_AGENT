@@ -712,6 +712,13 @@ fn extract_json_object(text: &str) -> Option<String> {
 /// Execute a single tool call and emit events.
 /// Returns the tool-result `ChatMessage` (caller appends it to history so that
 /// the function can be used both sequentially and concurrently).
+///
+/// Features:
+/// - **Timeout**: 5-minute hard limit per tool call
+/// - **Heartbeat**: Sends `progress` events every 5 seconds so the UI knows
+///   the tool is still running (prevents the "frozen" appearance).
+/// - **Consumer disconnect**: If the WebSocket client disconnects (e.g. user
+///   clicks STOP), the tool execution is aborted immediately.
 async fn execute_tool_call(
     tools: &tokio::sync::RwLock<ToolRegistry>,
     tc: &crate::model::ToolCallDelta,
@@ -733,20 +740,79 @@ async fn execute_tool_call(
     let allowed = permission.check(tool_name, &args).await;
 
     let result = if !allowed {
-        // Permission denied by user
         info!("Tool '{}' denied by user permission", tool_name);
         serde_json::json!({ "error": "Permission denied by user" })
     } else {
-        // Execute
-        let ctx = ToolContext::simple(working_dir.to_string());
-        match tools.read().await.get(tool_name) {
-            Some(tool) => match tool.execute(args.clone(), &ctx).await {
-                Ok(val) => val,
-                Err(e) => {
-                    error!("Tool {} error: {}", tool_name, e);
-                    serde_json::json!({ "error": e.to_string() })
+        // Look up the tool while holding the read lock briefly
+        let tool = tools.read().await.get(tool_name);
+        match tool {
+            Some(tool) => {
+                let ctx = ToolContext::simple(working_dir.to_string());
+                let args_clone = args.clone();
+
+                // Spawn the actual tool execution as a separate task
+                let mut tool_handle = tokio::spawn(async move {
+                    tool.execute(args_clone, &ctx).await
+                });
+
+                // Race: tool execution vs heartbeat vs timeout vs consumer disconnect
+                let timeout_duration = std::time::Duration::from_secs(300); // 5 minutes
+                let heartbeat_interval = std::time::Duration::from_secs(5);
+                let start = std::time::Instant::now();
+                let mut interval = tokio::time::interval(heartbeat_interval);
+                interval.tick().await; // consume the immediate first tick
+
+                loop {
+                    tokio::select! {
+                        // Tool execution completed
+                        tool_result = &mut tool_handle => {
+                            match tool_result {
+                                Ok(Ok(val)) => break val,
+                                Ok(Err(e)) => {
+                                    error!("Tool {} error: {}", tool_name, e);
+                                    break serde_json::json!({ "error": e.to_string() });
+                                }
+                                Err(e) => {
+                                    error!("Tool {} panicked: {}", tool_name, e);
+                                    break serde_json::json!({ "error": format!("Tool execution panicked: {}", e) });
+                                }
+                            }
+                        }
+
+                        // Heartbeat: send progress event every 5 seconds
+                        _ = interval.tick() => {
+                            let elapsed = start.elapsed().as_secs();
+                            let progress = AgentEvent::progress(
+                                tool_name,
+                                &format!("Still running... ({}s)", elapsed),
+                                elapsed,
+                                invocation_id,
+                                author,
+                            );
+                            if tx.send(Ok(progress)).await.is_err() {
+                                // Consumer gone — abort tool execution
+                                info!("[session] Consumer disconnected during tool '{}', aborting", tool_name);
+                                tool_handle.abort();
+                                break serde_json::json!({ "error": "Cancelled by user (consumer disconnected)" });
+                            }
+                        }
+
+                        // Consumer disconnected (STOP button)
+                        _ = tx.closed() => {
+                            info!("Consumer disconnected during tool '{}', aborting", tool_name);
+                            tool_handle.abort();
+                            break serde_json::json!({ "error": "Cancelled by user" });
+                        }
+
+                        // Timeout
+                        _ = tokio::time::sleep(timeout_duration) => {
+                            warn!("Tool '{}' timed out after {}s", tool_name, timeout_duration.as_secs());
+                            tool_handle.abort();
+                            break serde_json::json!({ "error": format!("Tool execution timed out after {}s", timeout_duration.as_secs()) });
+                        }
+                    }
                 }
-            },
+            }
             None => serde_json::json!({ "error": format!("Unknown tool: {}", tool_name) }),
         }
     };

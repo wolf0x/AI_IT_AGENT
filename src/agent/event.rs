@@ -47,6 +47,19 @@ pub enum AgentEvent {
         result: Value,
     },
 
+    /// Heartbeat / progress event sent during long-running tool execution.
+    #[serde(rename = "progress")]
+    Progress {
+        #[serde(flatten)]
+        meta: EventMeta,
+        /// Name of the tool being executed
+        tool_name: String,
+        /// Human-readable status message
+        message: String,
+        /// Seconds elapsed since tool execution started
+        elapsed_secs: u64,
+    },
+
     #[serde(rename = "error")]
     Error {
         #[serde(flatten)]
@@ -155,6 +168,15 @@ impl AgentEvent {
         }
     }
 
+    pub fn progress(tool_name: &str, message: &str, elapsed_secs: u64, invocation_id: &str, author: &str) -> Self {
+        AgentEvent::Progress {
+            meta: EventMeta::new(invocation_id, author),
+            tool_name: tool_name.to_string(),
+            message: message.to_string(),
+            elapsed_secs,
+        }
+    }
+
     pub fn error(message: &str, invocation_id: &str, author: &str) -> Self {
         AgentEvent::Error {
             meta: EventMeta::new(invocation_id, author),
@@ -194,6 +216,7 @@ impl AgentEvent {
             | Self::TextDelta { meta, .. }
             | Self::ToolCall { meta, .. }
             | Self::ToolResult { meta, .. }
+            | Self::Progress { meta, .. }
             | Self::Error { meta, .. }
             | Self::PermissionRequest { meta, .. }
             | Self::PermissionResponse { meta, .. }

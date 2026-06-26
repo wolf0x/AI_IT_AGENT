@@ -116,6 +116,8 @@ impl ConversationLogger {
                 "allowed": allowed,
             }),
             AgentEvent::Done { .. } => return,
+            // Skip logging heartbeat/progress events to avoid noise
+            AgentEvent::Progress { .. } => return,
         };
         self.write_entry(&entry);
     }
