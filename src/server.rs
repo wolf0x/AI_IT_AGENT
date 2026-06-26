@@ -192,6 +192,7 @@ async fn mcp_create_handler(
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default(),
         url: body["url"].as_str().map(|s| s.to_string()),
+        auth_token: body["auth_token"].as_str().map(|s| s.to_string()),
         enabled: body["enabled"].as_bool().unwrap_or(true),
     };
     let mut mgr = state.mcp_manager.lock().await;

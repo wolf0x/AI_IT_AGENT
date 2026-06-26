@@ -1,17 +1,22 @@
 use async_trait::async_trait;
+use rmcp::model::CallToolRequestParams;
+use rmcp::service::RunningService;
+use rmcp::{RoleClient, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tokio::process::Command;
+use tracing::{error, info, warn};
 
 use super::Tool;
 use crate::config::McpServerConfig;
 use crate::context::ToolContext;
 use crate::error::AgentResult;
+
+// ============================================================
+// Data types
+// ============================================================
 
 /// MCP server status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -22,25 +27,12 @@ pub enum ServerStatus {
     Error(String),
 }
 
-/// Runtime MCP server handle
+/// Runtime MCP server handle — wraps an rmcp RunningService
 pub struct McpServerHandle {
     pub config: McpServerConfig,
     pub status: ServerStatus,
-    transport: McpTransport,
+    service: Option<Arc<RunningService<RoleClient, ()>>>,
     tools: Vec<McpToolInfo>,
-    request_id: Arc<Mutex<u64>>,
-}
-
-enum McpTransport {
-    Stdio {
-        child: Option<Child>,
-        writer: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
-        reader: Arc<Mutex<Option<BufReader<tokio::process::ChildStdout>>>>,
-    },
-    Sse {
-        client: reqwest::Client,
-        base_url: String,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -48,33 +40,13 @@ struct McpToolInfo {
     name: String,
     description: String,
     input_schema: Value,
+    #[allow(dead_code)]
     server_name: String,
 }
 
-#[derive(Debug, Serialize)]
-struct JsonRpcRequest {
-    jsonrpc: String,
-    id: u64,
-    method: String,
-    params: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct JsonRpcResponse {
-    id: Option<u64>,
-    result: Option<Value>,
-    error: Option<JsonRpcError>,
-}
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcError {
-    #[allow(dead_code)]
-    code: i64,
-    message: String,
-}
-
 /// Manages multiple MCP server connections with persistence.
+/// Uses the `rmcp` crate (ADK-Rust's MCP protocol layer) for all
+/// JSON-RPC / protocol handling — no hand-rolled wire code.
 pub struct McpClientManager {
     servers: Vec<McpServerHandle>,
     persist_path: PathBuf,
@@ -95,22 +67,18 @@ impl McpClientManager {
         }
     }
 
+    // ── Connection lifecycle ──────────────────────────────
+
     /// Connect to all servers from config.
     pub async fn connect(&mut self, configs: &[McpServerConfig]) {
         for config in configs {
             if !config.enabled {
                 info!("MCP server '{}' is disabled, skipping", config.name);
-                // Still add to list as disconnected
                 self.servers.push(McpServerHandle {
                     config: config.clone(),
                     status: ServerStatus::Disconnected,
-                    transport: McpTransport::Stdio {
-                        child: None,
-                        writer: Arc::new(Mutex::new(None)),
-                        reader: Arc::new(Mutex::new(None)),
-                    },
+                    service: None,
                     tools: Vec::new(),
-                    request_id: Arc::new(Mutex::new(0)),
                 });
                 continue;
             }
@@ -118,15 +86,16 @@ impl McpClientManager {
         }
     }
 
-    /// Connect a single server.
+    /// Connect a single server (dispatches to stdio or HTTP).
     pub async fn connect_server(&mut self, config: &McpServerConfig) {
         info!("Connecting to MCP server: {} ({})", config.name, config.transport);
         match config.transport.as_str() {
-            "sse" => self.connect_sse(config).await,
+            "sse" => self.connect_http(config).await,
             _ => self.connect_stdio(config).await,
         }
     }
 
+    /// Connect via stdio child process using rmcp's TokioChildProcess.
     async fn connect_stdio(&mut self, config: &McpServerConfig) {
         let command = match &config.command {
             Some(cmd) => cmd,
@@ -135,192 +104,167 @@ impl McpClientManager {
                 self.servers.push(McpServerHandle {
                     config: config.clone(),
                     status: ServerStatus::Error("No command specified".to_string()),
-                    transport: McpTransport::Stdio {
-                        child: None,
-                        writer: Arc::new(Mutex::new(None)),
-                        reader: Arc::new(Mutex::new(None)),
-                    },
+                    service: None,
                     tools: Vec::new(),
-                    request_id: Arc::new(Mutex::new(0)),
                 });
                 return;
             }
         };
 
+        // Build the tokio::process::Command
         let mut cmd = Command::new(command);
         cmd.args(&config.args);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // Hide console window on Windows
+        #[cfg(target_os = "windows")]
         cmd.creation_flags(0x08000000);
 
-        match cmd.spawn() {
-            Ok(mut child) => {
-                let stdin = child.stdin.take();
-                let stdout = child.stdout.take();
-
-                let writer = Arc::new(Mutex::new(stdin));
-                let reader = Arc::new(Mutex::new(stdout.map(BufReader::new)));
-                let request_id = Arc::new(Mutex::new(0u64));
-
-                let mut handle = McpServerHandle {
-                    config: config.clone(),
-                    status: ServerStatus::Connected,
-                    transport: McpTransport::Stdio {
-                        child: Some(child),
-                        writer: writer.clone(),
-                        reader: reader.clone(),
-                    },
-                    tools: Vec::new(),
-                    request_id: request_id.clone(),
-                };
-
-                // MCP Initialize handshake
-                let init_result = Self::stdio_send_request(&writer, &reader, &request_id, "initialize", json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": { "name": "rust-agent", "version": "0.1.0" }
-                })).await;
-
-                match init_result {
-                    Ok(_) => {
-                        let _ = Self::stdio_send_notification(&writer, &reader, "notifications/initialized", json!({})).await;
-
-                        // Get tools list
-                        match Self::stdio_send_request(&writer, &reader, &request_id, "tools/list", json!({})).await {
-                            Ok(tools_result) => {
-                                if let Some(tools_arr) = tools_result.get("tools").and_then(|v| v.as_array()) {
-                                    for tool_val in tools_arr {
-                                        let name = tool_val["name"].as_str().unwrap_or("").to_string();
-                                        let desc = tool_val["description"].as_str().unwrap_or("").to_string();
-                                        let schema = tool_val["inputSchema"].clone();
-                                        handle.tools.push(McpToolInfo {
-                                            name, description: desc, input_schema: schema,
-                                            server_name: config.name.clone(),
-                                        });
-                                    }
-                                }
-                                info!("MCP server '{}' connected with {} tools", config.name, handle.tools.len());
-                            }
-                            Err(e) => {
-                                warn!("MCP server '{}' tools/list failed: {}", config.name, e);
-                                handle.status = ServerStatus::Error(e);
-                            }
-                        }
+        // rmcp: spawn child process + perform MCP handshake automatically
+        match rmcp::transport::TokioChildProcess::new(cmd) {
+            Ok(transport) => match ().serve(transport).await {
+                Ok(service) => {
+                    let service = Arc::new(service);
+                    let mut tools = Self::discover_tools(&service).await;
+                    for t in &mut tools {
+                        t.server_name = config.name.clone();
                     }
-                    Err(e) => {
-                        warn!("MCP server '{}' initialize failed: {}", config.name, e);
-                        handle.status = ServerStatus::Error(e);
-                    }
+                    info!(
+                        "MCP server '{}' connected via stdio with {} tools",
+                        config.name,
+                        tools.len()
+                    );
+                    self.servers.push(McpServerHandle {
+                        config: config.clone(),
+                        status: ServerStatus::Connected,
+                        service: Some(service),
+                        tools,
+                    });
                 }
-
-                self.servers.push(handle);
-            }
+                Err(e) => {
+                    let msg = format!("Initialize failed: {}", e);
+                    warn!("MCP server '{}' {}", config.name, msg);
+                    self.servers.push(McpServerHandle {
+                        config: config.clone(),
+                        status: ServerStatus::Error(msg),
+                        service: None,
+                        tools: Vec::new(),
+                    });
+                }
+            },
             Err(e) => {
-                warn!("Failed to spawn MCP server '{}': {}", config.name, e);
+                let msg = format!("Spawn failed: {}", e);
+                warn!("MCP server '{}' {}", config.name, msg);
                 self.servers.push(McpServerHandle {
                     config: config.clone(),
-                    status: ServerStatus::Error(format!("Spawn failed: {}", e)),
-                    transport: McpTransport::Stdio {
-                        child: None,
-                        writer: Arc::new(Mutex::new(None)),
-                        reader: Arc::new(Mutex::new(None)),
-                    },
+                    status: ServerStatus::Error(msg),
+                    service: None,
                     tools: Vec::new(),
-                    request_id: Arc::new(Mutex::new(0)),
                 });
             }
         }
     }
 
-    async fn connect_sse(&mut self, config: &McpServerConfig) {
-        let base_url = match &config.url {
-            Some(url) => url.trim_end_matches('/').to_string(),
+    /// Connect via HTTP (Streamable HTTP / SSE) using rmcp's transport.
+    async fn connect_http(&mut self, config: &McpServerConfig) {
+        let url = match &config.url {
+            Some(u) => u.trim_end_matches('/').to_string(),
             None => {
-                warn!("MCP server '{}' has no URL for SSE, skipping", config.name);
+                warn!("MCP server '{}' has no URL, skipping", config.name);
                 self.servers.push(McpServerHandle {
                     config: config.clone(),
                     status: ServerStatus::Error("No URL specified".to_string()),
-                    transport: McpTransport::Sse {
-                        client: reqwest::Client::new(),
-                        base_url: String::new(),
-                    },
+                    service: None,
                     tools: Vec::new(),
-                    request_id: Arc::new(Mutex::new(0)),
                 });
                 return;
             }
         };
 
-        let client = reqwest::Client::new();
-        let request_id = Arc::new(Mutex::new(0u64));
+        // Build HTTP transport with optional auth via rmcp config
+        let mut transport_config =
+            rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(
+                url.as_str(),
+            );
 
-        let mut handle = McpServerHandle {
-            config: config.clone(),
-            status: ServerStatus::Connected,
-            transport: McpTransport::Sse {
-                client: client.clone(),
-                base_url: base_url.clone(),
-            },
-            tools: Vec::new(),
-            request_id: request_id.clone(),
-        };
-
-        // SSE MCP handshake via HTTP POST
-        let init_result = Self::sse_send_request(&client, &base_url, &request_id, "initialize", json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "rust-agent", "version": "0.1.0" }
-        })).await;
-
-        match init_result {
-            Ok(_) => {
-                let _ = Self::sse_send_notification(&client, &base_url, "notifications/initialized", json!({})).await;
-
-                match Self::sse_send_request(&client, &base_url, &request_id, "tools/list", json!({})).await {
-                    Ok(tools_result) => {
-                        if let Some(tools_arr) = tools_result.get("tools").and_then(|v| v.as_array()) {
-                            for tool_val in tools_arr {
-                                let name = tool_val["name"].as_str().unwrap_or("").to_string();
-                                let desc = tool_val["description"].as_str().unwrap_or("").to_string();
-                                let schema = tool_val["inputSchema"].clone();
-                                handle.tools.push(McpToolInfo {
-                                    name, description: desc, input_schema: schema,
-                                    server_name: config.name.clone(),
-                                });
-                            }
-                        }
-                        info!("MCP SSE server '{}' connected with {} tools", config.name, handle.tools.len());
-                    }
-                    Err(e) => {
-                        warn!("MCP SSE server '{}' tools/list failed: {}", config.name, e);
-                        handle.status = ServerStatus::Error(e);
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("MCP SSE server '{}' initialize failed: {}", config.name, e);
-                handle.status = ServerStatus::Error(e);
+        if let Some(ref token) = config.auth_token {
+            if !token.is_empty() {
+                transport_config = transport_config.auth_header(token.as_str());
             }
         }
 
-        self.servers.push(handle);
+        let transport =
+            rmcp::transport::StreamableHttpClientTransport::<reqwest::Client>::from_config(transport_config);
+
+        match ().serve(transport).await {
+            Ok(service) => {
+                let service = Arc::new(service);
+                let mut tools = Self::discover_tools(&service).await;
+                for t in &mut tools {
+                    t.server_name = config.name.clone();
+                }
+                info!(
+                    "MCP server '{}' connected via HTTP with {} tools",
+                    config.name,
+                    tools.len()
+                );
+                self.servers.push(McpServerHandle {
+                    config: config.clone(),
+                    status: ServerStatus::Connected,
+                    service: Some(service),
+                    tools,
+                });
+            }
+            Err(e) => {
+                let msg = format!("HTTP initialize failed: {}", e);
+                warn!("MCP server '{}' {}", config.name, msg);
+                self.servers.push(McpServerHandle {
+                    config: config.clone(),
+                    status: ServerStatus::Error(msg),
+                    service: None,
+                    tools: Vec::new(),
+                });
+            }
+        }
     }
+
+    /// Discover tools from a connected rmcp service.
+    async fn discover_tools(service: &Arc<RunningService<RoleClient, ()>>) -> Vec<McpToolInfo> {
+        match service.list_all_tools().await {
+            Ok(tools) => tools
+                .into_iter()
+                .map(|t| {
+                    let schema_val: Value =
+                        serde_json::to_value(t.input_schema.as_ref()).unwrap_or(json!({}));
+                    McpToolInfo {
+                        name: t.name.to_string(),
+                        description: t
+                            .description
+                            .map(|d| d.to_string())
+                            .unwrap_or_default(),
+                        input_schema: schema_val,
+                        server_name: String::new(),
+                    }
+                })
+                .collect(),
+            Err(e) => {
+                warn!("tools/list failed: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    // ── Server management ─────────────────────────────────
 
     /// Disconnect a server by name.
     pub async fn disconnect_server(&mut self, name: &str) -> bool {
         if let Some(handle) = self.servers.iter_mut().find(|s| s.config.name == name) {
             handle.tools.clear();
             handle.status = ServerStatus::Disconnected;
-            // Kill child process if stdio
-            if let McpTransport::Stdio { ref mut child, ref mut writer, ref mut reader } = handle.transport {
-                if let Some(ref mut c) = child {
-                    let _ = c.kill().await;
-                }
-                *child = None;
-                *writer.lock().await = None;
-                *reader.lock().await = None;
-            }
+            // Drop the service — rmcp cancels the background task and
+            // closes the transport (kills child process for stdio).
+            handle.service.take();
             info!("MCP server '{}' disconnected", name);
             true
         } else {
@@ -330,14 +274,7 @@ impl McpClientManager {
 
     /// Remove a server by name (disconnect + remove from list).
     pub async fn remove_server(&mut self, name: &str) -> bool {
-        let len_before = self.servers.len();
         if let Some(pos) = self.servers.iter().position(|s| s.config.name == name) {
-            let handle = &mut self.servers[pos];
-            if let McpTransport::Stdio { ref mut child, .. } = handle.transport {
-                if let Some(ref mut c) = child {
-                    let _ = c.kill().await;
-                }
-            }
             self.servers.remove(pos);
             info!("MCP server '{}' removed", name);
             true
@@ -348,15 +285,14 @@ impl McpClientManager {
 
     /// Reconnect a server by name.
     pub async fn reconnect_server(&mut self, name: &str) -> bool {
-        // Find the config
-        let config = self.servers.iter()
+        let config = self
+            .servers
+            .iter()
             .find(|s| s.config.name == name)
             .map(|s| s.config.clone());
 
         if let Some(config) = config {
-            // Remove old handle
             self.remove_server(name).await;
-            // Reconnect
             self.connect_server(&config).await;
             true
         } else {
@@ -369,91 +305,77 @@ impl McpClientManager {
         self.servers.push(McpServerHandle {
             config,
             status: ServerStatus::Disconnected,
-            transport: McpTransport::Stdio {
-                child: None,
-                writer: Arc::new(Mutex::new(None)),
-                reader: Arc::new(Mutex::new(None)),
-            },
+            service: None,
             tools: Vec::new(),
-            request_id: Arc::new(Mutex::new(0)),
         });
     }
 
     /// Toggle a server's enabled state and connect/disconnect accordingly.
     pub async fn toggle_server(&mut self, name: &str) -> Option<bool> {
-        let handle = self.servers.iter_mut().find(|s| s.config.name == name)?;
-        handle.config.enabled = !handle.config.enabled;
-        let enabled = handle.config.enabled;
-        let name_owned = name.to_string();
+        let (enabled, config) = {
+            let handle = self.servers.iter_mut().find(|s| s.config.name == name)?;
+            handle.config.enabled = !handle.config.enabled;
+            (handle.config.enabled, handle.config.clone())
+        };
 
         if enabled {
-            // Need to reconnect - get config first
-            let config = handle.config.clone();
-            drop(handle);
-            self.remove_server(&name_owned).await;
+            self.remove_server(name).await;
             self.connect_server(&config).await;
         } else {
-            self.disconnect_server(&name_owned).await;
+            self.disconnect_server(name).await;
         }
         Some(enabled)
     }
 
+    // ── Tool access ───────────────────────────────────────
+
+    /// Get all tools from all connected servers as Arc<dyn Tool>.
     pub fn get_tools(&self) -> Vec<Arc<dyn Tool>> {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for server in &self.servers {
             if server.status != ServerStatus::Connected {
                 continue;
             }
+            let service = match &server.service {
+                Some(s) => s.clone(),
+                None => continue,
+            };
             for tool_info in &server.tools {
                 tools.push(Arc::new(McpProxyTool {
                     info: tool_info.clone(),
-                    transport_type: match &server.transport {
-                        McpTransport::Stdio { .. } => "stdio",
-                        McpTransport::Sse { .. } => "sse",
-                    }.to_string(),
-                    writer: match &server.transport {
-                        McpTransport::Stdio { writer, .. } => Some(writer.clone()),
-                        _ => None,
-                    },
-                    reader: match &server.transport {
-                        McpTransport::Stdio { reader, .. } => Some(reader.clone()),
-                        _ => None,
-                    },
-                    request_id: server.request_id.clone(),
-                    sse_client: match &server.transport {
-                        McpTransport::Sse { client, .. } => Some(client.clone()),
-                        _ => None,
-                    },
-                    sse_base_url: match &server.transport {
-                        McpTransport::Sse { base_url, .. } => Some(base_url.clone()),
-                        _ => None,
-                    },
+                    service: service.clone(),
                 }));
             }
         }
         tools
     }
 
+    /// Server info for the API endpoint.
     pub fn server_info(&self) -> Vec<Value> {
-        self.servers.iter().map(|s| {
-            json!({
-                "name": s.config.name,
-                "transport": s.config.transport,
-                "command": s.config.command,
-                "args": s.config.args,
-                "url": s.config.url,
-                "enabled": s.config.enabled,
-                "status": match &s.status {
-                    ServerStatus::Connected => "connected".to_string(),
-                    ServerStatus::Disconnected => "disconnected".to_string(),
-                    ServerStatus::Error(e) => format!("error: {}", e),
-                },
-                "tools": s.tools.iter().map(|t| json!({
-                    "name": t.name, "description": t.description,
-                })).collect::<Vec<_>>()
+        self.servers
+            .iter()
+            .map(|s| {
+                json!({
+                    "name": s.config.name,
+                    "transport": s.config.transport,
+                    "command": s.config.command,
+                    "args": s.config.args,
+                    "url": s.config.url,
+                    "enabled": s.config.enabled,
+                    "status": match &s.status {
+                        ServerStatus::Connected => "connected".to_string(),
+                        ServerStatus::Disconnected => "disconnected".to_string(),
+                        ServerStatus::Error(e) => format!("error: {}", e),
+                    },
+                    "tools": s.tools.iter().map(|t| json!({
+                        "name": t.name, "description": t.description,
+                    })).collect::<Vec<_>>()
+                })
             })
-        }).collect()
+            .collect()
     }
+
+    // ── Persistence ───────────────────────────────────────
 
     /// Persist current server configs to JSON file.
     pub fn save_configs(&self) {
@@ -476,18 +398,20 @@ impl McpClientManager {
             return Vec::new();
         }
         match std::fs::read_to_string(&self.persist_path) {
-            Ok(content) => {
-                match serde_json::from_str::<Vec<McpServerConfig>>(&content) {
-                    Ok(configs) => {
-                        info!("Loaded {} MCP configs from {}", configs.len(), self.persist_path.display());
-                        configs
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse MCP configs: {}", e);
-                        Vec::new()
-                    }
+            Ok(content) => match serde_json::from_str::<Vec<McpServerConfig>>(&content) {
+                Ok(configs) => {
+                    info!(
+                        "Loaded {} MCP configs from {}",
+                        configs.len(),
+                        self.persist_path.display()
+                    );
+                    configs
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to parse MCP configs: {}", e);
+                    Vec::new()
+                }
+            },
             Err(e) => {
                 warn!("Failed to read MCP configs: {}", e);
                 Vec::new()
@@ -495,221 +419,66 @@ impl McpClientManager {
         }
     }
 
-    #[allow(dead_code)]
+    /// Gracefully shut down all servers.
     pub async fn shutdown(&mut self) {
         for server in &mut self.servers {
-            if let McpTransport::Stdio { ref mut child, .. } = server.transport {
-                if let Some(ref mut c) = child {
-                    let _ = c.kill().await;
-                }
-            }
+            server.service.take(); // Drop -> rmcp cancels task + closes transport
         }
-    }
-
-    // --- Static helpers for stdio ---
-
-    pub(crate) async fn stdio_send_request(
-        writer: &Arc<Mutex<Option<tokio::process::ChildStdin>>>,
-        reader: &Arc<Mutex<Option<BufReader<tokio::process::ChildStdout>>>>,
-        request_id: &Arc<Mutex<u64>>,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, String> {
-        let mut id_guard = request_id.lock().await;
-        *id_guard += 1;
-        let id = *id_guard;
-        drop(id_guard);
-
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(), id, method: method.to_string(), params,
-        };
-        let msg = serde_json::to_string(&req).map_err(|e| format!("Serialize error: {}", e))?;
-
-        let mut writer_guard = writer.lock().await;
-        let w = writer_guard.as_mut().ok_or("Writer closed")?;
-        w.write_all(msg.as_bytes()).await.map_err(|e| format!("Write error: {}", e))?;
-        w.write_all(b"\n").await.map_err(|e| format!("Write error: {}", e))?;
-        w.flush().await.map_err(|e| format!("Flush error: {}", e))?;
-        drop(writer_guard);
-
-        let mut reader_guard = reader.lock().await;
-        let r = reader_guard.as_mut().ok_or("Reader closed")?;
-
-        // Read lines until we get the response matching our request id.
-        // MCP servers may emit asynchronous notifications (messages with a
-        // `method` field and no `id`) interleaved with responses; those must be
-        // skipped so they are not mistaken for the response.
-        loop {
-            let mut line = String::new();
-            let n = r.read_line(&mut line).await.map_err(|e| format!("Read error: {}", e))?;
-            if n == 0 {
-                return Err("MCP server closed the connection".to_string());
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let parsed: Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(e) => {
-                    // Skip unparseable lines (e.g. server banner/logging) but keep going.
-                    tracing::debug!("MCP: skipping unparseable line: {} | {}", e, trimmed);
-                    continue;
-                }
-            };
-            // Notifications have no `id` — ignore them and keep waiting.
-            if parsed.get("id").is_none() {
-                tracing::debug!("MCP: skipping notification: {:?}", parsed.get("method"));
-                continue;
-            }
-            // Only consume the message that matches our request id.
-            if parsed["id"].as_u64() != Some(id) {
-                tracing::debug!("MCP: skipping response for foreign id {:?}", parsed["id"]);
-                continue;
-            }
-            if let Some(err) = parsed.get("error") {
-                let msg = err["message"].as_str().unwrap_or("Unknown error");
-                return Err(format!("MCP error: {}", msg));
-            }
-            return Ok(parsed.get("result").cloned().unwrap_or(Value::Null));
-        }
-    }
-
-    async fn stdio_send_notification(
-        writer: &Arc<Mutex<Option<tokio::process::ChildStdin>>>,
-        _reader: &Arc<Mutex<Option<BufReader<tokio::process::ChildStdout>>>>,
-        method: &str,
-        params: Value,
-    ) -> Result<(), String> {
-        let msg = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        let msg_str = serde_json::to_string(&msg).map_err(|e| format!("Serialize error: {}", e))?;
-        let mut writer_guard = writer.lock().await;
-        let w = writer_guard.as_mut().ok_or("Writer closed")?;
-        w.write_all(msg_str.as_bytes()).await.map_err(|e| format!("Write error: {}", e))?;
-        w.write_all(b"\n").await.map_err(|e| format!("Write error: {}", e))?;
-        w.flush().await.map_err(|e| format!("Flush error: {}", e))?;
-        Ok(())
-    }
-
-    // --- Static helpers for SSE ---
-
-    async fn sse_send_request(
-        client: &reqwest::Client,
-        base_url: &str,
-        request_id: &Arc<Mutex<u64>>,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, String> {
-        let mut id_guard = request_id.lock().await;
-        *id_guard += 1;
-        let id = *id_guard;
-        drop(id_guard);
-
-        let req = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(), id, method: method.to_string(), params,
-        };
-
-        let resp = client.post(format!("{}/message", base_url))
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| format!("SSE request failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("SSE HTTP error: {}", resp.status()));
-        }
-
-        let body: Value = resp.json().await
-            .map_err(|e| format!("SSE parse error: {}", e))?;
-
-        if let Some(err) = body.get("error") {
-            let msg = err["message"].as_str().unwrap_or("Unknown error");
-            return Err(format!("MCP error: {}", msg));
-        }
-
-        Ok(body.get("result").cloned().unwrap_or(Value::Null))
-    }
-
-    async fn sse_send_notification(
-        client: &reqwest::Client,
-        base_url: &str,
-        method: &str,
-        params: Value,
-    ) -> Result<(), String> {
-        let msg = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        let _ = client.post(format!("{}/message", base_url))
-            .json(&msg)
-            .send()
-            .await
-            .map_err(|e| format!("SSE notification failed: {}", e))?;
-        Ok(())
     }
 }
 
-/// Proxy tool that forwards calls to an MCP server (stdio or SSE).
+// ============================================================
+// McpProxyTool — implements our Tool trait via rmcp service
+// ============================================================
+
+/// Proxy tool that forwards execute() calls to an MCP server
+/// through the rmcp RunningService.
 struct McpProxyTool {
     info: McpToolInfo,
-    transport_type: String,
-    writer: Option<Arc<Mutex<Option<tokio::process::ChildStdin>>>>,
-    reader: Option<Arc<Mutex<Option<BufReader<tokio::process::ChildStdout>>>>>,
-    request_id: Arc<Mutex<u64>>,
-    sse_client: Option<reqwest::Client>,
-    sse_base_url: Option<String>,
+    service: Arc<RunningService<RoleClient, ()>>,
 }
 
 #[async_trait]
 impl Tool for McpProxyTool {
-    fn name(&self) -> &str { &self.info.name }
-    fn description(&self) -> &str { &self.info.description }
-    fn parameters_schema(&self) -> Value { self.info.input_schema.clone() }
+    fn name(&self) -> &str {
+        &self.info.name
+    }
+    fn description(&self) -> &str {
+        &self.info.description
+    }
+    fn parameters_schema(&self) -> Value {
+        self.info.input_schema.clone()
+    }
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
-        match self.transport_type.as_str() {
-            "sse" => {
-                let client = self.sse_client.as_ref().ok_or_else(|| "No SSE client".to_string())?;
-                let base_url = self.sse_base_url.as_ref().ok_or_else(|| "No SSE URL".to_string())?;
+        // Convert args to rmcp's JsonObject (Map<String, Value>)
+        let arguments = match args {
+            Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
 
-                let mut id_guard = self.request_id.lock().await;
-                *id_guard += 1;
-                let id = *id_guard;
-                drop(id_guard);
+        // Build rmcp call request
+        let params = CallToolRequestParams::new(self.info.name.clone()).with_arguments(arguments);
 
-                let req = json!({
-                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
-                    "params": { "name": self.info.name, "arguments": args }
-                });
+        // Call tool via rmcp service (Deref -> Peer<RoleClient>)
+        let result = self
+            .service
+            .call_tool(params)
+            .await
+            .map_err(|e| format!("MCP call failed: {}", e))?;
 
-                let resp = client.post(format!("{}/message", base_url))
-                    .json(&req)
-                    .send()
-                    .await
-                    .map_err(|e| format!("SSE call failed: {}", e))?;
-
-                let body: Value = resp.json().await
-                    .map_err(|e| format!("SSE parse: {}", e))?;
-
-                if let Some(err) = body.get("error") {
-                    let msg = err["message"].as_str().unwrap_or("Unknown");
-                    return Err(format!("MCP tool error: {}", msg).into());
-                }
-
-                Ok(body.get("result").cloned().unwrap_or(Value::Null))
-            }
-            _ => {
-                // stdio — delegate to the shared request helper so it benefits
-                // from proper request/response correlation (id matching and
-                // notification skipping).
-                let writer = self.writer.as_ref().ok_or_else(|| "Writer closed".to_string())?;
-                let reader = self.reader.as_ref().ok_or_else(|| "Reader closed".to_string())?;
-
-                let params = json!({ "name": self.info.name, "arguments": args });
-                let result = McpClientManager::stdio_send_request(
-                    writer, reader, &self.request_id, "tools/call", params,
-                )
-                    .await
-                    .map_err(crate::error::AgentError::from)?;
-                Ok(result)
-            }
+        // Check for error
+        if result.is_error == Some(true) {
+            let msg = result
+                .content
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.as_ref()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(format!("MCP tool error: {}", msg).into());
         }
+
+        // Serialize content to JSON Value
+        Ok(serde_json::to_value(&result.content).unwrap_or(Value::Null))
     }
 }

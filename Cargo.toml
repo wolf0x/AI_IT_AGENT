@@ -8,7 +8,7 @@ description = "Local AI agent with WebSocket gateway, multi-model support, and W
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -24,6 +24,7 @@ glob = "0.3"
 mime_guess = "2"
 tokio-stream = "0.1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+rmcp = { version = "1", features = ["client", "transport-child-process", "client-side-sse", "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "reqwest", "schemars"] }
 
 [profile.release]
 strip = true

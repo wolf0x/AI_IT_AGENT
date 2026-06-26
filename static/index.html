@@ -408,6 +408,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             </div>
             <div id="mcpSseFields" style="display:none">
               <div class="form-group"><label>URL</label><input type="text" id="mcpUrl" placeholder="e.g. http://localhost:3001/sse"></div>
+              <div class="form-group"><label>Bearer Token</label><input type="password" id="mcpAuthToken" placeholder="optional Bearer token"></div>
             </div>
             <button class="btn btn-p" onclick="addMcpServer()">+ Add Server</button>
           </div>
@@ -893,7 +894,9 @@ async function addMcpServer(){
     if(!body.command){alert('Command is required for stdio transport');return}
   }else{
     body.url=document.getElementById('mcpUrl').value.trim();
+    body.auth_token=document.getElementById('mcpAuthToken').value.trim();
     if(!body.url){alert('URL is required for SSE transport');return}
+    if(!body.auth_token) delete body.auth_token;
   }
   try{
     const r=await fetch('/api/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -903,6 +906,7 @@ async function addMcpServer(){
       document.getElementById('mcpCommand').value='';
       document.getElementById('mcpArgs').value='';
       document.getElementById('mcpUrl').value='';
+      document.getElementById('mcpAuthToken').value='';
       loadMcp();
     }else{alert('Error: '+(d.error||'Unknown'))}
   }catch(e){alert('Failed to add server')}

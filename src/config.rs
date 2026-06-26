@@ -71,6 +71,9 @@ pub struct McpServerConfig {
     /// URL for SSE transport
     #[serde(default)]
     pub url: Option<String>,
+    /// Optional Bearer auth token for SSE transport requests
+    #[serde(default)]
+    pub auth_token: Option<String>,
     /// Whether this server is enabled
     #[serde(default = "default_enabled")]
     pub enabled: bool,

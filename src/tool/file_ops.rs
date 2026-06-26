@@ -51,6 +51,9 @@ impl Tool for FileReadTool {
             let lines: Vec<&str> = content.lines().collect();
             let s = start.saturating_sub(1).min(lines.len());
             let e = end.min(lines.len());
+            if s >= e {
+                return Ok(json!({ "content": "", "lines": 0 }));
+            }
             let sliced: Vec<String> = lines[s..e]
                 .iter()
                 .enumerate()
