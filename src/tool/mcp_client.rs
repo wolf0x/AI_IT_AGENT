@@ -386,14 +386,23 @@ impl McpClientManager {
     // ── Persistence ───────────────────────────────────────
 
     /// Persist current server configs to JSON file.
+    /// Auth tokens are encrypted before writing using AES-256-GCM.
     pub fn save_configs(&self) {
-        let configs: Vec<&McpServerConfig> = self.servers.iter().map(|s| &s.config).collect();
+        // Clone configs and encrypt auth tokens
+        let mut configs: Vec<McpServerConfig> = self.servers.iter().map(|s| s.config.clone()).collect();
+        for cfg in &mut configs {
+            if let Some(ref token) = cfg.auth_token {
+                if !token.is_empty() && !crate::crypto::is_encrypted(token) {
+                    cfg.auth_token = Some(crate::crypto::encrypt(token));
+                }
+            }
+        }
         match serde_json::to_string_pretty(&configs) {
             Ok(json_str) => {
                 if let Err(e) = std::fs::write(&self.persist_path, json_str) {
                     error!("Failed to save MCP configs: {}", e);
                 } else {
-                    info!("MCP configs saved to {}", self.persist_path.display());
+                    info!("MCP configs saved to {} (auth tokens encrypted)", self.persist_path.display());
                 }
             }
             Err(e) => error!("Failed to serialize MCP configs: {}", e),
@@ -401,15 +410,24 @@ impl McpClientManager {
     }
 
     /// Load server configs from JSON file.
+    /// Auth tokens are automatically decrypted after reading.
     pub fn load_configs(&mut self) -> Vec<McpServerConfig> {
         if !self.persist_path.exists() {
             return Vec::new();
         }
         match std::fs::read_to_string(&self.persist_path) {
             Ok(content) => match serde_json::from_str::<Vec<McpServerConfig>>(&content) {
-                Ok(configs) => {
+                Ok(mut configs) => {
+                    // Decrypt auth tokens
+                    for cfg in &mut configs {
+                        if let Some(ref token) = cfg.auth_token {
+                            if !token.is_empty() {
+                                cfg.auth_token = Some(crate::crypto::decrypt(token));
+                            }
+                        }
+                    }
                     info!(
-                        "Loaded {} MCP configs from {}",
+                        "Loaded {} MCP configs from {} (auth tokens decrypted)",
                         configs.len(),
                         self.persist_path.display()
                     );

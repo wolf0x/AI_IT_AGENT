@@ -3,6 +3,7 @@ mod agent;
 #[allow(dead_code)]
 mod callbacks;
 mod config;
+mod crypto;
 #[allow(dead_code)]
 mod context;
 #[allow(dead_code)]
@@ -84,13 +85,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect MCP servers
     let mut mcp_manager = McpClientManager::new();
+
+    // Load persisted MCP server configs (from mcp_servers.json, auth tokens auto-decrypted)
+    let persisted = mcp_manager.load_configs();
+    if !persisted.is_empty() {
+        info!("Loaded {} persisted MCP server(s)", persisted.len());
+        mcp_manager.connect(&persisted).await;
+    }
+
+    // Also connect servers from static config.yaml (if not already loaded from persist)
     if !config.mcp_servers.is_empty() {
         mcp_manager.connect(&config.mcp_servers).await;
-        let mcp_tools = mcp_manager.get_tools();
-        for tool in &mcp_tools {
-            info!("MCP tool: {} ({})", tool.name(), tool.description());
-            registry.register(tool.clone());
-        }
+    }
+
+    // Register all MCP tools into the tool registry
+    let mcp_tools = mcp_manager.get_tools();
+    for tool in &mcp_tools {
+        info!("MCP tool: {} ({})", tool.name(), tool.description());
+        registry.register(tool.clone());
+    }
+    if !mcp_tools.is_empty() {
+        info!("Registered {} MCP tool(s) total", mcp_tools.len());
     }
 
     // Load skills (resolve skills dir relative to exe)
