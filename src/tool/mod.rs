@@ -172,6 +172,18 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Remove a tool by name. Returns true if a tool was removed.
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
+    /// Remove multiple tools by name.
+    pub fn unregister_many(&mut self, names: &[String]) {
+        for name in names {
+            self.tools.remove(name.as_str());
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }

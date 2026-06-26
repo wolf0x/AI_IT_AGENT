@@ -25,7 +25,7 @@ pub struct LlmAgent {
     name: String,
     description: String,
     provider: Arc<OpenAiProvider>,
-    tools: Arc<ToolRegistry>,
+    tools: Arc<tokio::sync::RwLock<ToolRegistry>>,
     skill_manager: Arc<SkillManager>,
     max_iterations: usize,
     working_dir: String,
@@ -40,7 +40,7 @@ pub struct LlmAgentBuilder {
     name: String,
     description: String,
     provider: Option<Arc<OpenAiProvider>>,
-    tools: Option<Arc<ToolRegistry>>,
+    tools: Option<Arc<tokio::sync::RwLock<ToolRegistry>>>,
     skill_manager: Option<Arc<SkillManager>>,
     max_iterations: usize,
     working_dir: String,
@@ -68,7 +68,7 @@ impl LlmAgentBuilder {
     pub fn name(mut self, name: &str) -> Self { self.name = name.to_string(); self }
     pub fn description(mut self, desc: &str) -> Self { self.description = desc.to_string(); self }
     pub fn provider(mut self, provider: Arc<OpenAiProvider>) -> Self { self.provider = Some(provider); self }
-    pub fn tools(mut self, tools: Arc<ToolRegistry>) -> Self { self.tools = Some(tools); self }
+    pub fn tools(mut self, tools: Arc<tokio::sync::RwLock<ToolRegistry>>) -> Self { self.tools = Some(tools); self }
     pub fn skill_manager(mut self, sm: Arc<SkillManager>) -> Self { self.skill_manager = Some(sm); self }
     pub fn max_iterations(mut self, n: usize) -> Self { self.max_iterations = n; self }
     pub fn working_dir(mut self, dir: &str) -> Self { self.working_dir = dir.to_string(); self }
@@ -188,7 +188,7 @@ impl Agent for LlmAgent {
 
         // Build system prompt and history in the spawned task
         let system_prompt = self.build_system_prompt(user_message);
-        let tool_defs = self.tools.definitions();
+        let tool_defs = self.tools.read().await.definitions();
         let session_id = ctx.base.session_id.clone();
         info!("[session:{}] Agent sending {} tool definitions to LLM", session_id, tool_defs.len());
         let provider = self.provider.clone();
@@ -496,22 +496,24 @@ impl Agent for LlmAgent {
                                 // sequential to avoid racing mutable operations.
                                 // `Parallel` always runs concurrently (caller's
                                 // responsibility to pass safe tools).
+                                let registry = tools.read().await;
                                 let all_read_only = strategy == ToolExecutionStrategy::Parallel
                                     || tool_calls.iter().all(|tc| {
                                         let n = tc.function.name.as_deref().unwrap_or("");
-                                        tools.get(n).map(|t| t.is_read_only()).unwrap_or(false)
+                                        registry.get(n).map(|t| t.is_read_only()).unwrap_or(false)
                                     });
+                                drop(registry);
 
                                 if all_read_only && tool_calls.len() > 1 {
                                     info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
                                     let msgs = execute_tools_concurrent(
-                                        &tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker,
+                                        &*tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker,
+                                            &*tools, tc, &working_dir, &invocation_id, &author, &tx, &checker,
                                         ).await;
                                         history.push(msg);
                                     }
@@ -711,7 +713,7 @@ fn extract_json_object(text: &str) -> Option<String> {
 /// Returns the tool-result `ChatMessage` (caller appends it to history so that
 /// the function can be used both sequentially and concurrently).
 async fn execute_tool_call(
-    tools: &ToolRegistry,
+    tools: &tokio::sync::RwLock<ToolRegistry>,
     tc: &crate::model::ToolCallDelta,
     working_dir: &str,
     invocation_id: &str,
@@ -737,7 +739,7 @@ async fn execute_tool_call(
     } else {
         // Execute
         let ctx = ToolContext::simple(working_dir.to_string());
-        match tools.get(tool_name) {
+        match tools.read().await.get(tool_name) {
             Some(tool) => match tool.execute(args.clone(), &ctx).await {
                 Ok(val) => val,
                 Err(e) => {
@@ -767,7 +769,7 @@ async fn execute_tool_call(
 /// Run a batch of tool calls concurrently and return their result messages in
 /// the original (input) order. Only safe for read-only / concurrency-safe tools.
 async fn execute_tools_concurrent<'a>(
-    tools: &'a ToolRegistry,
+    tools: &'a tokio::sync::RwLock<ToolRegistry>,
     tool_calls: &'a [crate::model::ToolCallDelta],
     working_dir: &'a str,
     invocation_id: &'a str,

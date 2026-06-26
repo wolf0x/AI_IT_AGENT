@@ -329,6 +329,14 @@ impl McpClientManager {
 
     // ── Tool access ───────────────────────────────────────
 
+    /// Get all tool names from all connected servers.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.servers.iter()
+            .filter(|s| s.status == ServerStatus::Connected)
+            .flat_map(|s| s.tools.iter().map(|t| t.name.clone()))
+            .collect()
+    }
+
     /// Get all tools from all connected servers as Arc<dyn Tool>.
     pub fn get_tools(&self) -> Vec<Arc<dyn Tool>> {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();

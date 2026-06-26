@@ -127,12 +127,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let external_tools = Arc::new(Mutex::new(ExternalToolsManager::new(tools_dir.clone())));
     info!("External tools dir: {}", tools_dir.display());
 
+    // Wrap registry in Arc<RwLock> for dynamic MCP tool registration
+    let shared_tools = Arc::new(tokio::sync::RwLock::new(registry));
+
     // Build agent using builder pattern (ADK-RUST style)
     let agent = LlmAgent::builder()
         .name("rust-agent")
         .description("Local AI agent with Windows system tools")
         .provider(provider)
-        .tools(Arc::new(registry))
+        .tools(shared_tools.clone())
         .skill_manager(skill_manager.clone())
         .max_iterations(config.agent.max_iterations)
         .working_dir(&working_dir)
@@ -183,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner: runner.clone(),
         skill_manager,
         mcp_manager: Arc::new(Mutex::new(mcp_manager)),
+        tools: shared_tools,
         logger,
         memory_store,
         external_tools,

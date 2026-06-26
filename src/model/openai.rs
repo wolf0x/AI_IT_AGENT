@@ -211,7 +211,7 @@ impl OpenAiProvider {
                 let id = if tc.id.is_empty() {
                     let sid = format!("tc_synthetic_{}", synthetic_id_counter);
                     synthetic_id_counter += 1;
-                    warn!("Tool call '{}' missing ID from API, generated synthetic ID: {}", tc.name, sid);
+                    debug!("Tool call '{}' missing ID from API, generated synthetic ID: {}", tc.name, sid);
                     sid
                 } else {
                     tc.id

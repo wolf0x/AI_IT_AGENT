@@ -26,6 +26,7 @@ use crate::skill::SkillManager;
 use crate::config::McpServerConfig;
 use crate::external_tools::ExternalToolsManager;
 use crate::tool::mcp_client::McpClientManager;
+use crate::tool::ToolRegistry;
 use crate::web::StaticServer;
 
 /// Type alias for the broadcast channel used to push notifications to all WS clients.
@@ -36,6 +37,8 @@ pub struct AppState {
     pub runner: Arc<Runner>,
     pub skill_manager: Arc<SkillManager>,
     pub mcp_manager: Arc<Mutex<McpClientManager>>,
+    /// Shared tool registry — wrapped in RwLock so MCP handlers can register/unregister tools dynamically
+    pub tools: Arc<tokio::sync::RwLock<ToolRegistry>>,
     pub logger: Arc<ConversationLogger>,
     pub memory_store: Arc<MemoryStore>,
     pub external_tools: Arc<Mutex<ExternalToolsManager>>,
@@ -196,8 +199,20 @@ async fn mcp_create_handler(
         enabled: body["enabled"].as_bool().unwrap_or(true),
     };
     let mut mgr = state.mcp_manager.lock().await;
+    // Snapshot old MCP tool names before connecting
+    let old_names = mgr.tool_names();
     mgr.connect_server(&config).await;
     mgr.save_configs();
+    // Sync registry: remove old, add new
+    let new_names = mgr.tool_names();
+    let mcp_tools = mgr.get_tools();
+    drop(mgr);
+    let mut registry = state.tools.write().await;
+    registry.unregister_many(&old_names);
+    for tool in &mcp_tools {
+        registry.register(tool.clone());
+    }
+    info!("MCP registry synced: {} tools after create '{}'", new_names.len(), name);
     Json(json!({ "success": true, "name": name }))
 }
 
@@ -206,8 +221,20 @@ async fn mcp_delete_handler(
     Path(name): Path<String>,
 ) -> Json<Value> {
     let mut mgr = state.mcp_manager.lock().await;
+    let old_names = mgr.tool_names();
     let ok = mgr.remove_server(&name).await;
-    if ok { mgr.save_configs(); }
+    if ok {
+        mgr.save_configs();
+        let new_names = mgr.tool_names();
+        let mcp_tools = mgr.get_tools();
+        drop(mgr);
+        let mut registry = state.tools.write().await;
+        registry.unregister_many(&old_names);
+        for tool in &mcp_tools {
+            registry.register(tool.clone());
+        }
+        info!("MCP registry synced: {} tools after delete '{}'", new_names.len(), name);
+    }
     Json(json!({ "success": ok }))
 }
 
@@ -216,9 +243,17 @@ async fn mcp_toggle_handler(
     Path(name): Path<String>,
 ) -> Json<Value> {
     let mut mgr = state.mcp_manager.lock().await;
+    let old_names = mgr.tool_names();
     match mgr.toggle_server(&name).await {
         Some(enabled) => {
             mgr.save_configs();
+            let mcp_tools = mgr.get_tools();
+            drop(mgr);
+            let mut registry = state.tools.write().await;
+            registry.unregister_many(&old_names);
+            for tool in &mcp_tools {
+                registry.register(tool.clone());
+            }
             Json(json!({ "success": true, "enabled": enabled }))
         }
         None => Json(json!({ "success": false, "error": "Not found" })),
@@ -230,8 +265,18 @@ async fn mcp_restart_handler(
     Path(name): Path<String>,
 ) -> Json<Value> {
     let mut mgr = state.mcp_manager.lock().await;
+    let old_names = mgr.tool_names();
     let ok = mgr.reconnect_server(&name).await;
-    if ok { mgr.save_configs(); }
+    if ok {
+        mgr.save_configs();
+        let mcp_tools = mgr.get_tools();
+        drop(mgr);
+        let mut registry = state.tools.write().await;
+        registry.unregister_many(&old_names);
+        for tool in &mcp_tools {
+            registry.register(tool.clone());
+        }
+    }
     Json(json!({ "success": ok }))
 }
 
