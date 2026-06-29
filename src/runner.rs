@@ -99,6 +99,7 @@ impl Runner {
         rabbit_hole_threshold: usize,
         context_window: usize,
         context_window_threshold: usize,
+        tool_timeout_secs: u64,
     ) -> AgentResult<EventStream> {
         info!("Runner dispatching to agent '{}' (session: {})", self.agent.name(), session_id);
 
@@ -120,7 +121,8 @@ impl Runner {
          .with_fallback_model(fallback_model)
          .with_rabbit_hole_threshold(rabbit_hole_threshold)
          .with_context_window(context_window)
-         .with_context_window_threshold(context_window_threshold);
+         .with_context_window_threshold(context_window_threshold)
+         .with_tool_timeout_secs(tool_timeout_secs);
 
         // Log user message
         self.logger.log_user_message(session_id, user_message);

@@ -27,6 +27,10 @@ pub struct ServerConfig {
 pub struct AgentConfig {
     #[serde(default = "default_working_dir")]
     pub working_dir: String,
+    /// Agent workspace directory — the agent's "home" where AGENTS.md, SOUL.md, TOOLS.md live.
+    /// Defaults to %USERPROFILE%\.RustAgent\workspace
+    #[serde(default = "default_workspace_dir")]
+    pub workspace_dir: String,
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
     #[serde(default = "default_rabbit_hole_threshold")]
@@ -34,9 +38,12 @@ pub struct AgentConfig {
     /// Context window usage threshold percentage (default: 80 = trim at 80% of model context)
     #[serde(default = "default_context_window_threshold")]
     pub context_window_threshold: usize,
+    /// Maximum seconds allowed for a single tool execution (default: 300)
+    #[serde(default = "default_tool_timeout_secs")]
+    pub tool_timeout_secs: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelConfig {
     pub name: String,
     pub api_base: String,
@@ -105,9 +112,11 @@ impl Default for Config {
             },
             agent: AgentConfig {
                 working_dir: default_working_dir(),
+                workspace_dir: default_workspace_dir(),
                 max_iterations: default_max_iterations(),
                 rabbit_hole_threshold: default_rabbit_hole_threshold(),
                 context_window_threshold: default_context_window_threshold(),
+                tool_timeout_secs: default_tool_timeout_secs(),
             },
             models: vec![],
             mcp_servers: vec![],
@@ -120,10 +129,18 @@ fn default_port() -> u16 { 7788 }
 fn default_password() -> String { "123".to_string() }
 fn default_log_dir() -> String { "logs".to_string() }
 fn default_working_dir() -> String { ".".to_string() }
+fn default_workspace_dir() -> String {
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        format!("{}\\.RustAgent\\workspace", userprofile)
+    } else {
+        ".workspace".to_string()
+    }
+}
 fn default_max_iterations() -> usize { 100 }
 fn default_rabbit_hole_threshold() -> usize { 5 }
 fn default_context_window() -> usize { 128000 }
 fn default_context_window_threshold() -> usize { 80 }
+fn default_tool_timeout_secs() -> usize { 300 }
 fn default_max_tokens() -> u32 { 16384 }
 fn default_temperature() -> f64 { 0.7 }
 

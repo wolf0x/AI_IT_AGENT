@@ -12,6 +12,7 @@ mod external_tools;
 mod log;
 mod memory;
 mod model;
+mod model_store;
 mod permission;
 #[allow(dead_code)]
 mod runner;
@@ -75,8 +76,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // push messages to WebSocket clients (e.g. sys_remind) can hold a sender.
     let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
 
+    // Resolve workspace directory (agent's "home")
+    let workspace_dir = if config.agent.workspace_dir.is_empty() || config.agent.workspace_dir == "." {
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            format!("{}\\.RustAgent\\workspace", userprofile)
+        } else {
+            exe_dir.join(".workspace").to_string_lossy().to_string()
+        }
+    } else {
+        config.agent.workspace_dir.clone()
+    };
+    // Create workspace directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
+        tracing::warn!("Failed to create workspace directory {}: {}", workspace_dir, e);
+    } else {
+        info!("Workspace directory: {}", workspace_dir);
+    }
+
     let working_dir = if config.agent.working_dir == "." {
-        exe_dir.to_string_lossy().to_string()
+        workspace_dir.clone()
     } else {
         config.agent.working_dir.clone()
     };
@@ -121,8 +139,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Build LLM provider (implements Llm trait)
-    let model_names: Vec<String> = config.models.iter().map(|m| m.name.clone()).collect();
-    let provider = Arc::new(OpenAiProvider::new(config.models.clone()));
+    // Load persisted model configs (from models.json, api_keys auto-decrypted)
+    let model_store_path = exe_dir.join("models.json");
+    let persisted_models = model_store::load_configs(&model_store_path);
+    let initial_models = if !persisted_models.is_empty() {
+        info!("Loaded {} persisted model config(s)", persisted_models.len());
+        persisted_models
+    } else if !config.models.is_empty() {
+        // First run: seed models.json from config.toml
+        info!("Seeding models.json from config.toml ({} models)", config.models.len());
+        model_store::save_configs(&config.models, &model_store_path);
+        config.models.clone()
+    } else {
+        vec![]
+    };
+    let model_names: Vec<String> = initial_models.iter().map(|m| m.name.clone()).collect();
+    let shared_models = Arc::new(tokio::sync::RwLock::new(initial_models));
+    let provider = Arc::new(OpenAiProvider::new_with_shared(shared_models.clone()));
     info!("Models available: {:?}", model_names);
 
     // Build logger (resolve log dir relative to exe)
@@ -154,6 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .skill_manager(skill_manager.clone())
         .max_iterations(config.agent.max_iterations)
         .working_dir(&working_dir)
+        .workspace_dir(&workspace_dir)
         .model_configs(config.models.clone())
         .build()
         .map_err(|e| format!("Failed to build agent: {}", e))?;
@@ -177,13 +211,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = Arc::new(Mutex::new(Scheduler::new(
         cron_path.to_str().unwrap_or("cron_tasks.json"),
         runner.clone(),
-        model_names.clone(),
+        shared_models.clone(),
         permissions.clone(),
         permission_pending.clone(),
         config.agent.max_iterations,
         config.agent.rabbit_hole_threshold,
         128000,  // default context window for CRON tasks
         config.agent.context_window_threshold,
+        config.agent.tool_timeout_secs as u64,
         notify_tx.clone(),
     )));
 
@@ -193,10 +228,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Scheduler::run_loop(scheduler_loop).await;
     });
 
+    // Register CRON management tool (needs scheduler, which depends on runner)
+    {
+        let mut reg = shared_tools.write().await;
+        reg.register(Arc::new(crate::tool::cron_manage::CronManageTool::new(scheduler.clone())));
+    }
+    info!("Registered cron_manage tool");
+
     // Build app state
-    let model_context_windows: std::collections::HashMap<String, usize> = config.models.iter()
-        .map(|m| (m.name.clone(), m.context_window))
-        .collect();
     let state = Arc::new(AppState {
         runner: runner.clone(),
         skill_manager,
@@ -206,17 +245,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         memory_store,
         external_tools,
         password: config.server.password.clone(),
-        model_names,
-        model_context_windows,
+        model_configs: shared_models.clone(),
+        model_store_path: model_store_path.to_str().unwrap_or("models.json").to_string(),
         max_iterations: config.agent.max_iterations,
         rabbit_hole_threshold: config.agent.rabbit_hole_threshold,
         context_window_threshold: config.agent.context_window_threshold,
+        tool_timeout_secs: config.agent.tool_timeout_secs,
         sessions: Mutex::new(std::collections::HashMap::new()),
         permissions,
         permission_resolver,
         permission_pending,
         scheduler,
         notify_tx,
+        workspace_dir,
     });
 
     // Create router and start server

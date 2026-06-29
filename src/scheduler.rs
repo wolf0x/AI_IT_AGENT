@@ -50,13 +50,14 @@ pub struct Scheduler {
     tasks: Vec<CronTask>,
     storage_path: String,
     runner: Arc<Runner>,
-    model_names: Vec<String>,
+    model_configs: Arc<tokio::sync::RwLock<Vec<crate::config::ModelConfig>>>,
     permissions: Arc<Mutex<HashMap<String, bool>>>,
     permission_pending: PendingMap,
     max_iterations: usize,
     rabbit_hole_threshold: usize,
     context_window: usize,
     context_window_threshold: usize,
+    tool_timeout_secs: u64,
     notify_tx: NotifyTx,
 }
 
@@ -64,26 +65,28 @@ impl Scheduler {
     pub fn new(
         storage_path: &str,
         runner: Arc<Runner>,
-        model_names: Vec<String>,
+        model_configs: Arc<tokio::sync::RwLock<Vec<crate::config::ModelConfig>>>,
         permissions: Arc<Mutex<HashMap<String, bool>>>,
         permission_pending: PendingMap,
         max_iterations: usize,
         rabbit_hole_threshold: usize,
         context_window: usize,
         context_window_threshold: usize,
+        tool_timeout_secs: u64,
         notify_tx: NotifyTx,
     ) -> Self {
         let mut scheduler = Self {
             tasks: Vec::new(),
             storage_path: storage_path.to_string(),
             runner,
-            model_names,
+            model_configs,
             permissions,
             permission_pending,
             max_iterations,
             rabbit_hole_threshold,
             context_window,
             context_window_threshold,
+            tool_timeout_secs,
             notify_tx,
         };
         scheduler.load();
@@ -259,7 +262,8 @@ impl Scheduler {
             task.next_run = Some(Self::compute_next_run(task.interval_secs));
 
             let model = if task.model.is_empty() {
-                self.model_names.first().cloned().unwrap_or_default()
+                let mc = self.model_configs.read().await;
+                mc.first().map(|m| m.name.clone()).unwrap_or_default()
             } else {
                 task.model.clone()
             };
@@ -272,6 +276,7 @@ impl Scheduler {
             let rabbit_hole = self.rabbit_hole_threshold;
             let ctx_window = self.context_window;
             let ctx_window_threshold = self.context_window_threshold;
+            let tool_timeout = self.tool_timeout_secs;
             let task_name = task.name.clone();
             let notify_tx = self.notify_tx.clone();
 
@@ -284,6 +289,7 @@ impl Scheduler {
                     permissions, permission_pending,
                     None, rabbit_hole,
                     ctx_window, ctx_window_threshold,
+                    tool_timeout,
                 ).await {
                     Ok(mut stream) => {
                         use futures::StreamExt;

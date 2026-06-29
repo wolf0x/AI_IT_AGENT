@@ -43,11 +43,14 @@ pub struct AppState {
     pub memory_store: Arc<MemoryStore>,
     pub external_tools: Arc<Mutex<ExternalToolsManager>>,
     pub password: String,
-    pub model_names: Vec<String>,
-    pub model_context_windows: std::collections::HashMap<String, usize>,
+    /// Shared mutable model configs (shared with OpenAiProvider for runtime CRUD)
+    pub model_configs: Arc<tokio::sync::RwLock<Vec<crate::config::ModelConfig>>>,
+    /// Path to models.json persistence file
+    pub model_store_path: String,
     pub max_iterations: usize,
     pub rabbit_hole_threshold: usize,
     pub context_window_threshold: usize,
+    pub tool_timeout_secs: usize,
     /// Per-session conversation history for multi-turn context
     pub sessions: Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>,
     /// Permission settings (category -> allowed), shared across connections
@@ -60,6 +63,8 @@ pub struct AppState {
     pub scheduler: Arc<Mutex<Scheduler>>,
     /// Broadcast channel for push notifications (sys_remind, etc.)
     pub notify_tx: NotifyTx,
+    /// Agent workspace directory (where AGENTS.md, SOUL.md, TOOLS.md live)
+    pub workspace_dir: String,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -68,6 +73,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/static/{*path}", get(static_handler))
         .route("/ws", get(ws_handler))
         .route("/api/models", get(models_handler))
+        .route("/api/providers", get(providers_handler))
+        .route("/api/providers", post(providers_create_handler))
+        .route("/api/providers/{name}", put(providers_update_handler))
+        .route("/api/providers/{name}", delete(providers_delete_handler))
         .route("/api/health", get(health_handler))
         .route("/api/skills", get(skills_handler))
         .route("/api/skills", post(skills_create_handler))
@@ -95,6 +104,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/tools", get(tools_handler))
         .route("/api/tools/{name}/toggle", post(tools_toggle_handler))
         .route("/api/tools/{name}/description", post(tools_desc_handler))
+        .route("/api/config/files", get(config_files_handler))
+        .route("/api/config/files/{name}", put(config_file_save_handler))
         .with_state(state)
 }
 
@@ -111,16 +122,114 @@ async fn health_handler() -> Json<Value> {
 }
 
 async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let models: Vec<Value> = state.model_names.iter().map(|name| {
-        let ctx_window = state.model_context_windows.get(name).copied().unwrap_or(128000);
-        json!({ "name": name, "context_window": ctx_window })
+    let models = state.model_configs.read().await;
+    let list: Vec<Value> = models.iter().map(|m| {
+        json!({ "name": &m.name, "context_window": m.context_window })
     }).collect();
     Json(json!({
-        "models": models,
+        "models": list,
         "context_window_threshold": state.context_window_threshold,
         "max_iterations": state.max_iterations,
         "rabbit_hole_threshold": state.rabbit_hole_threshold,
+        "tool_timeout_secs": state.tool_timeout_secs,
     }))
+}
+
+async fn providers_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let models = state.model_configs.read().await;
+    let list: Vec<Value> = models.iter().map(|m| {
+        let masked_key = m.api_key.as_ref().map(|k| {
+            if k.len() > 8 { format!("{}...{}", &k[..4], &k[k.len()-4..]) }
+            else if !k.is_empty() { "****".to_string() }
+            else { String::new() }
+        });
+        json!({
+            "name": m.name,
+            "api_base": m.api_base,
+            "api_key": masked_key,
+            "api_key_env": m.api_key_env,
+            "context_window": m.context_window,
+            "max_tokens": m.max_tokens,
+            "temperature": m.temperature,
+        })
+    }).collect();
+    Json(json!({ "providers": list, "count": list.len() }))
+}
+
+async fn providers_create_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let name = body["name"].as_str().unwrap_or("").to_string();
+    let api_base = body["api_base"].as_str().unwrap_or("").to_string();
+    if name.is_empty() || api_base.is_empty() {
+        return Json(json!({"error": "name and api_base are required"}));
+    }
+    let new_config = crate::config::ModelConfig {
+        name: name.clone(),
+        api_base,
+        api_key: body["api_key"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty()),
+        api_key_env: body["api_key_env"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty()),
+        context_window: body["context_window"].as_u64().map(|v| v as usize).unwrap_or(128000),
+        max_tokens: body["max_tokens"].as_u64().map(|v| v as u32).unwrap_or(16384),
+        temperature: body["temperature"].as_f64().unwrap_or(0.7),
+    };
+    let mut models = state.model_configs.write().await;
+    if models.iter().any(|m| m.name == name) {
+        return Json(json!({"error": format!("Model '{}' already exists", name)}));
+    }
+    models.push(new_config);
+    crate::model_store::save_configs(&models, std::path::Path::new(&state.model_store_path));
+    info!("Provider '{}' added via API", name);
+    Json(json!({"ok": true, "name": name}))
+}
+
+async fn providers_update_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let mut models = state.model_configs.write().await;
+    let idx = match models.iter().position(|m| m.name == name) {
+        Some(i) => i,
+        None => return Json(json!({"error": format!("Model '{}' not found", name)})),
+    };
+    let existing = &models[idx];
+    // Preserve existing api_key if the incoming one is empty or looks like a masked value
+    let incoming_key = body["api_key"].as_str().unwrap_or("").to_string();
+    let api_key = if incoming_key.is_empty() || incoming_key.contains("...") || incoming_key == "****" {
+        existing.api_key.clone()
+    } else {
+        Some(incoming_key)
+    };
+    models[idx] = crate::config::ModelConfig {
+        name: body["name"].as_str().map(|s| s.to_string()).unwrap_or(name.clone()),
+        api_base: body["api_base"].as_str().map(|s| s.to_string()).unwrap_or_else(|| existing.api_base.clone()),
+        api_key,
+        api_key_env: body["api_key_env"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
+            .or_else(|| existing.api_key_env.clone()),
+        context_window: body["context_window"].as_u64().map(|v| v as usize).unwrap_or(existing.context_window),
+        max_tokens: body["max_tokens"].as_u64().map(|v| v as u32).unwrap_or(existing.max_tokens),
+        temperature: body["temperature"].as_f64().unwrap_or(existing.temperature),
+    };
+    crate::model_store::save_configs(&models, std::path::Path::new(&state.model_store_path));
+    info!("Provider '{}' updated via API", name);
+    Json(json!({"ok": true, "name": name}))
+}
+
+async fn providers_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    let mut models = state.model_configs.write().await;
+    let len_before = models.len();
+    models.retain(|m| m.name != name);
+    if models.len() == len_before {
+        return Json(json!({"error": format!("Model '{}' not found", name)}));
+    }
+    crate::model_store::save_configs(&models, std::path::Path::new(&state.model_store_path));
+    info!("Provider '{}' deleted via API", name);
+    Json(json!({"ok": true, "name": name}))
 }
 
 async fn skills_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -499,13 +608,13 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                     match msg_type {
                         "chat" => {
                             let content = parsed["content"].as_str().unwrap_or("").to_string();
+                            let default_model = {
+                                let mc = state.model_configs.read().await;
+                                mc.first().map(|m| m.name.clone()).unwrap_or_else(|| "gpt-4o".to_string())
+                            };
                             let model = parsed["model"]
                                 .as_str()
-                                .unwrap_or(
-                                    state.model_names.first()
-                                        .map(|s| s.as_str())
-                                        .unwrap_or("gpt-4o"),
-                                )
+                                .unwrap_or(&default_model)
                                 .to_string();
                             let max_iter = parsed["max_iterations"]
                                 .as_u64()
@@ -523,7 +632,14 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 .as_u64()
                                 .map(|v| v as usize)
                                 .unwrap_or(state.context_window_threshold);
-                            let ctx_window = state.model_context_windows.get(&model).copied().unwrap_or(128000);
+                            let tool_timeout = parsed["tool_timeout_secs"]
+                                .as_u64()
+                                .map(|v| v as usize)
+                                .unwrap_or(state.tool_timeout_secs);
+                            let ctx_window = {
+                                let mc = state.model_configs.read().await;
+                                mc.iter().find(|m| m.name == model).map(|m| m.context_window).unwrap_or(128000)
+                            };
 
                             if content.is_empty() {
                                 continue;
@@ -575,6 +691,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 state.permissions.clone(), state.permission_pending.clone(),
                                 fallback_model, rabbit_hole,
                                 ctx_window, ctx_window_threshold,
+                                tool_timeout as u64,
                             ).await {
                                 Ok(mut event_stream) => {
                                     let mut assistant_text = String::new();
@@ -891,6 +1008,50 @@ async fn tools_desc_handler(
         Json(json!({ "success": true }))
     } else {
         Json(json!({ "success": false, "error": "Not found" }))
+    }
+}
+
+// ============================================================
+// Config Files (AGENTS.md, SOUL.md, TOOLS.md)
+// ============================================================
+
+async fn config_files_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let workspace = &state.workspace_dir;
+    let files = ["AGENTS.md", "SOUL.md", "TOOLS.md"];
+    let mut result = serde_json::Map::new();
+
+    for file_name in &files {
+        let path = std::path::Path::new(workspace).join(file_name);
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        result.insert(file_name.to_string(), json!(content));
+    }
+
+    Json(json!({ "files": result, "workspace_dir": workspace }))
+}
+
+async fn config_file_save_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let allowed = ["AGENTS.md", "SOUL.md", "TOOLS.md"];
+    if !allowed.contains(&name.as_str()) {
+        return Json(json!({ "success": false, "error": "Invalid file name. Allowed: AGENTS.md, SOUL.md, TOOLS.md" }));
+    }
+
+    let content = body["content"].as_str().unwrap_or("");
+    let path = std::path::Path::new(&state.workspace_dir).join(&name);
+
+    if let Err(e) = std::fs::create_dir_all(&state.workspace_dir) {
+        return Json(json!({ "success": false, "error": format!("Failed to create workspace: {}", e) }));
+    }
+
+    match std::fs::write(&path, content) {
+        Ok(_) => {
+            info!("Config file saved: {}", path.display());
+            Json(json!({ "success": true, "file": name }))
+        }
+        Err(e) => Json(json!({ "success": false, "error": format!("Failed to save: {}", e) })),
     }
 }
 

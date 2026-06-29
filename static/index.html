@@ -343,6 +343,25 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           </div>
         </div>
         <div class="settings-section">
+          <h3>&#128268; Provider</h3>
+          <div style="margin-bottom:16px;padding:12px;background:var(--bg2,#f8f9fa);border-radius:var(--rs)">
+            <div class="form-group"><label>Name</label><input type="text" id="provName" placeholder="e.g. gpt-4o"></div>
+            <div class="form-group"><label>API Base URL</label><input type="text" id="provApiBase" placeholder="e.g. https://api.openai.com/v1"></div>
+            <div class="form-group"><label>API Key</label><input type="password" id="provApiKey" placeholder="optional"></div>
+            <div class="form-group"><label>API Key Env Var</label><input type="text" id="provApiKeyEnv" placeholder="e.g. OPENAI_API_KEY"></div>
+            <div style="display:flex;gap:8px">
+              <div class="form-group" style="flex:1"><label>Context Window</label><input type="number" id="provCtxWindow" value="128000" min="1024"></div>
+              <div class="form-group" style="flex:1"><label>Max Tokens</label><input type="number" id="provMaxTokens" value="16384" min="256"></div>
+              <div class="form-group" style="flex:0 0 80px"><label>Temp</label><input type="number" id="provTemp" value="0.7" min="0" max="2" step="0.1"></div>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-p" id="provSaveBtn" onclick="saveProvider()">+ Add Model</button>
+              <button class="btn btn-s" onclick="resetProviderForm()">Cancel</button>
+            </div>
+          </div>
+          <div id="providerList" style="font-size:13px;color:var(--t2)">Loading...</div>
+        </div>
+        <div class="settings-section">
           <h3>&#9881; Agent</h3>
           <div class="form-group">
             <label>Max Iterations</label>
@@ -357,6 +376,30 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             <input type="number" id="ctxWindowThreshold" value="80" min="10" max="99">
             <small style="color:var(--t3)">Trim history when usage reaches this % of model's context window</small>
           </div>
+          <div class="form-group">
+            <label>Tool Timeout (seconds)</label>
+            <input type="number" id="toolTimeoutInput" value="300" min="10" max="3600">
+            <small style="color:var(--t3)">Max time allowed for a single tool execution</small>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>&#128196; Config</h3>
+          <p style="font-size:12px;color:var(--t3);margin-bottom:10px">
+            These files are injected into the system prompt at each new session. Keep them concise to save tokens.
+          </p>
+          <div style="display:flex;gap:6px;margin-bottom:10px">
+            <button class="btn btn-p btn-s" id="cfgTabAgents" onclick="switchConfigTab('AGENTS.md')">AGENTS.md</button>
+            <button class="btn btn-s" id="cfgTabSoul" onclick="switchConfigTab('SOUL.md')">SOUL.md</button>
+            <button class="btn btn-s" id="cfgTabTools" onclick="switchConfigTab('TOOLS.md')">TOOLS.md</button>
+          </div>
+          <div class="form-group">
+            <textarea id="configFileContent" rows="12" style="width:100%;padding:10px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);color:var(--t1);font-size:13px;font-family:var(--mono);resize:vertical;line-height:1.5" placeholder="Select a file to edit..."></textarea>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-p" onclick="saveConfigFile()">Save</button>
+            <button class="btn btn-s" onclick="loadConfigFiles()">Reload</button>
+          </div>
+          <div id="configSaveStatus" style="margin-top:6px;font-size:12px;color:var(--t3)"></div>
         </div>
         <div class="settings-section">
           <h3>&#128190; Session</h3>
@@ -436,6 +479,11 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
       <div class="settings-scroll">
         <div class="settings-section">
           <h3>&#9200; CRON Tasks</h3>
+          <div style="padding:10px 12px;background:#fffaf3;border-left:3px solid #f39c12;border-radius:var(--rs);margin-bottom:14px;font-size:12px;color:#7d6608;line-height:1.5">
+            <strong>Note:</strong> CRON tasks are application-level — results are shown in chat.
+            For system-level tasks that run independently (even when RustAgent is closed),
+            ask the agent to create a Windows scheduled task via <code>schtasks</code>.
+          </div>
           <div id="cronAddForm" style="margin-bottom:16px">
             <div class="form-group">
               <label>Task Name</label>
@@ -512,6 +560,7 @@ function switchPage(name,btn){
   if(name==='skills')loadSkills();
   if(name==='mcp')loadMcp();
   if(name==='cron')loadCron();
+  if(name==='settings'){loadProviders();loadConfigFiles();}
   if(name==='tools')loadTools();
   if(name==='chat')setTimeout(()=>scrollBottom(false),50);
 }
@@ -765,8 +814,9 @@ function doSend(txt){
   const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
   const rabbitHole=parseInt(document.getElementById('rabbitHoleInput').value)||5;
   const ctxThreshold=parseInt(document.getElementById('ctxWindowThreshold').value)||80;
+  const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
   sendPerms();
-  ws.send(JSON.stringify({type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold}));
+  ws.send(JSON.stringify({type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout}));
   showTyping();
   setAgentRunning(true);
 }
@@ -838,7 +888,93 @@ async function loadModels(){
     if(d.context_window_threshold) document.getElementById('ctxWindowThreshold').value = d.context_window_threshold;
     if(d.max_iterations) document.getElementById('maxIterInput').value = d.max_iterations;
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
+    if(d.tool_timeout_secs) document.getElementById('toolTimeoutInput').value = d.tool_timeout_secs;
   }catch(e){addLog('Load models failed','error')}
+}
+// --- Provider Management ---
+async function loadProviders(){
+  try{
+    const r=await fetch('/api/providers');const d=await r.json();
+    const el=document.getElementById('providerList');
+    const providers=d.providers||[];
+    if(providers.length){
+      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:6px 4px">Name</th><th>API Base</th><th>Context</th><th style="text-align:right">Actions</th></tr></thead><tbody>'+providers.map(p=>{
+        return '<tr style="border-bottom:1px solid var(--border)">'+
+          '<td style="padding:6px 4px;font-weight:600">'+esc(p.name)+'</td>'+
+          '<td style="color:var(--t3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(p.api_base)+'</td>'+
+          '<td>'+Math.round(p.context_window/1000)+'K</td>'+
+          '<td style="text-align:right;white-space:nowrap">'+
+            '<a href="#" onclick="editProvider(\''+esc(p.name)+'\');return false" style="color:var(--accent);margin-right:8px">Edit</a>'+
+            '<a href="#" onclick="deleteProvider(\''+esc(p.name)+'\');return false" style="color:var(--red)">Delete</a>'+
+          '</td></tr>';
+      }).join('')+'</tbody></table>';
+    }else{
+      el.innerHTML='<span style="color:var(--t3)">No providers configured</span>';
+    }
+  }catch(e){addLog('Load providers failed','error')}
+}
+async function saveProvider(){
+  const name=document.getElementById('provName').value.trim();
+  const apiBase=document.getElementById('provApiBase').value.trim();
+  if(!name||!apiBase){alert('Name and API Base are required');return;}
+  const body={
+    name:name,
+    api_base:apiBase,
+    api_key:document.getElementById('provApiKey').value.trim()||null,
+    api_key_env:document.getElementById('provApiKeyEnv').value.trim()||null,
+    context_window:parseInt(document.getElementById('provCtxWindow').value)||128000,
+    max_tokens:parseInt(document.getElementById('provMaxTokens').value)||16384,
+    temperature:parseFloat(document.getElementById('provTemp').value)||0.7,
+  };
+  const editing=document.getElementById('provSaveBtn').dataset.editing;
+  const url=editing?'/api/providers/'+encodeURIComponent(editing):'/api/providers';
+  const method=editing?'PUT':'POST';
+  try{
+    const r=await fetch(url,{method:method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.error){alert(d.error);return;}
+    resetProviderForm();
+    loadProviders();
+    loadModels();
+    addLog('Provider '+(editing?'updated':'added')+': '+name,'info');
+  }catch(e){addLog('Save provider failed','error')}
+}
+async function editProvider(name){
+  try{
+    const r=await fetch('/api/providers');const d=await r.json();
+    const p=(d.providers||[]).find(x=>x.name===name);
+    if(!p)return;
+    document.getElementById('provName').value=p.name;
+    document.getElementById('provApiBase').value=p.api_base;
+    document.getElementById('provApiKey').value='';
+    document.getElementById('provApiKey').placeholder=p.api_key||'(unchanged)';
+    document.getElementById('provApiKeyEnv').value=p.api_key_env||'';
+    document.getElementById('provCtxWindow').value=p.context_window;
+    document.getElementById('provMaxTokens').value=p.max_tokens;
+    document.getElementById('provTemp').value=p.temperature;
+    document.getElementById('provSaveBtn').dataset.editing=name;
+    document.getElementById('provSaveBtn').textContent='Update Model';
+  }catch(e){addLog('Edit provider failed','error')}
+}
+async function deleteProvider(name){
+  if(!confirm('Delete provider "'+name+'"?'))return;
+  try{
+    const r=await fetch('/api/providers/'+encodeURIComponent(name),{method:'DELETE'});
+    const d=await r.json();
+    if(d.error){alert(d.error);return;}
+    loadProviders();
+    loadModels();
+    addLog('Provider deleted: '+name,'info');
+  }catch(e){addLog('Delete provider failed','error')}
+}
+function resetProviderForm(){
+  ['provName','provApiBase','provApiKey','provApiKeyEnv'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('provCtxWindow').value='128000';
+  document.getElementById('provMaxTokens').value='16384';
+  document.getElementById('provTemp').value='0.7';
+  document.getElementById('provApiKey').placeholder='optional';
+  delete document.getElementById('provSaveBtn').dataset.editing;
+  document.getElementById('provSaveBtn').textContent='+ Add Model';
 }
 async function loadSkills(){
   try{const r=await fetch('/api/skills');const d=await r.json();
@@ -999,7 +1135,64 @@ async function deleteCron(id){
   try{await fetch('/api/cron/'+id,{method:'DELETE'});loadCron()}catch(e){alert('Failed')}
 }
 
-// 鈹€鈹€ Markdown Renderer (local marked.js with GFM, robust fallback) 鈹€鈹€
+// >>> Config Files (AGENTS.md, SOUL.md, TOOLS.md) <<<
+let currentConfigFile='AGENTS.md';
+let configFilesData={};
+
+function switchConfigTab(fileName){
+  configFilesData[currentConfigFile]=document.getElementById('configFileContent').value;
+  currentConfigFile=fileName;
+  document.getElementById('configFileContent').value=configFilesData[fileName]||'';
+  ['cfgTabAgents','cfgTabSoul','cfgTabTools'].forEach(id=>{
+    const el=document.getElementById(id);
+    el.classList.remove('btn-p');el.classList.add('btn-s');
+  });
+  const activeId=fileName==='AGENTS.md'?'cfgTabAgents':fileName==='SOUL.md'?'cfgTabSoul':'cfgTabTools';
+  const activeEl=document.getElementById(activeId);
+  activeEl.classList.remove('btn-s');activeEl.classList.add('btn-p');
+}
+
+async function loadConfigFiles(){
+  try{
+    const r=await fetch('/api/config/files');const d=await r.json();
+    if(d.files){
+      configFilesData=d.files;
+      document.getElementById('configFileContent').value=configFilesData[currentConfigFile]||'';
+      const wsDir=d.workspace_dir||'';
+      document.getElementById('configSaveStatus').textContent=wsDir?'Workspace: '+wsDir:'';
+      document.getElementById('configSaveStatus').style.color='var(--t3)';
+    }
+  }catch(e){
+    document.getElementById('configSaveStatus').textContent='Failed to load config files';
+    document.getElementById('configSaveStatus').style.color='var(--red)';
+  }
+}
+
+async function saveConfigFile(){
+  const content=document.getElementById('configFileContent').value;
+  const statusEl=document.getElementById('configSaveStatus');
+  try{
+    const r=await fetch('/api/config/files/'+encodeURIComponent(currentConfigFile),{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({content})
+    });
+    const d=await r.json();
+    if(d.success){
+      statusEl.textContent='Saved '+currentConfigFile;
+      statusEl.style.color='var(--green)';
+      configFilesData[currentConfigFile]=content;
+    }else{
+      statusEl.textContent='Error: '+(d.error||'Unknown');
+      statusEl.style.color='var(--red)';
+    }
+  }catch(e){
+    statusEl.textContent='Error: '+e.message;
+    statusEl.style.color='var(--red)';
+  }
+}
+// <<< Config Files <<<
+
+// >>> Markdown Renderer (local marked.js with GFM, robust fallback) <<<
 if(typeof marked!=='undefined'){try{marked.setOptions({breaks:false,gfm:true})}catch(e){}}
 
 // Remove inline JSON tool-call blocks from streamed text and replace them

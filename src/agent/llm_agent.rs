@@ -29,6 +29,7 @@ pub struct LlmAgent {
     skill_manager: Arc<SkillManager>,
     max_iterations: usize,
     working_dir: String,
+    workspace_dir: String,
     model_configs: Vec<ModelConfig>,
     #[allow(dead_code)]
     callbacks: AgentCallbacks,
@@ -44,6 +45,7 @@ pub struct LlmAgentBuilder {
     skill_manager: Option<Arc<SkillManager>>,
     max_iterations: usize,
     working_dir: String,
+    workspace_dir: String,
     model_configs: Vec<ModelConfig>,
     callbacks: AgentCallbacks,
     tool_execution_strategy: ToolExecutionStrategy,
@@ -59,6 +61,7 @@ impl LlmAgentBuilder {
             skill_manager: None,
             max_iterations: 100,
             working_dir: ".".to_string(),
+            workspace_dir: String::new(),
             model_configs: Vec::new(),
             callbacks: AgentCallbacks::new(),
             tool_execution_strategy: ToolExecutionStrategy::Sequential,
@@ -72,6 +75,7 @@ impl LlmAgentBuilder {
     pub fn skill_manager(mut self, sm: Arc<SkillManager>) -> Self { self.skill_manager = Some(sm); self }
     pub fn max_iterations(mut self, n: usize) -> Self { self.max_iterations = n; self }
     pub fn working_dir(mut self, dir: &str) -> Self { self.working_dir = dir.to_string(); self }
+    pub fn workspace_dir(mut self, dir: &str) -> Self { self.workspace_dir = dir.to_string(); self }
     pub fn model_configs(mut self, configs: Vec<ModelConfig>) -> Self { self.model_configs = configs; self }
     pub fn callbacks(mut self, cb: AgentCallbacks) -> Self { self.callbacks = cb; self }
     pub fn tool_execution_strategy(mut self, strategy: ToolExecutionStrategy) -> Self {
@@ -92,6 +96,7 @@ impl LlmAgentBuilder {
             skill_manager,
             max_iterations: self.max_iterations,
             working_dir: self.working_dir,
+            workspace_dir: self.workspace_dir,
             model_configs: self.model_configs,
             callbacks: self.callbacks,
             tool_execution_strategy: self.tool_execution_strategy,
@@ -120,6 +125,7 @@ You have FULL ACCESS to the user's system via built-in tools.\n\n\
   - `file_read` / `file_write` / `file_list` / `file_delete` / `file_modify` — File operations\n\
   - `app_launch` — Launch applications\n\
   - `browser_open` — Open URLs in the browser\n\
+  - `cron_manage` — Create, list, delete, or toggle scheduled CRON tasks\n\
 - If the user asks 'what is my IP' or similar, call `shell_exec` with `ipconfig` or `Get-NetIPAddress`.\n\
 - Always call tools FIRST, then explain the results to the user.\n\
 - Never say 'I can't check' or 'I don't have access' — you DO have access via tools!\n\n\
@@ -159,6 +165,71 @@ injected into your context as SYSTEM messages labeled **[Memory Context]** or **
   earlier conversations.\n",
         );
 
+        // ── Scheduled Tasks: RustAgent CRON vs Windows Schtasks ──
+        prompt.push_str(
+            "\n## Scheduled Tasks: CRON vs System Tasks\n\
+You have TWO ways to create scheduled tasks. You MUST distinguish between them:\n\n\
+### RustAgent CRON Tasks (Application-Level)\n\
+- Results are fed back into the chat as notifications\n\
+- Run within RustAgent's context with access to all AI tools\n\
+- Use for: periodic monitoring, reports, data collection that the user wants to SEE in chat\n\
+- **Use the `cron_manage` tool to create/list/delete/toggle these tasks directly from chat**\n\
+- Schedule format: 'every Ns' (seconds), 'every Nm' (minutes), 'every Nh' (hours), 'every Nd' (days)\n\
+- Examples:\n\
+  - User: '每小时检查一次磁盘空间' → cron_manage create, schedule='every 1h', message='Check disk space and report if usage is above 80%'\n\
+  - User: '每天早上9点汇报系统状态' → cron_manage create, schedule='every 1d', message='Run systeminfo and summarize system health'\n\
+  - User: '每30秒ping一下google.com' → cron_manage create, schedule='every 30s', message='Ping google.com and report latency'\n\
+  - User: '列出所有定时任务' → cron_manage list\n\
+  - User: '删除那个磁盘检查任务' → cron_manage delete, task_id=<id from list>\n\
+  - User: '暂停那个任务' → cron_manage toggle, task_id=<id>\n\n\
+### Windows Task Scheduler (System-Level)\n\
+- Managed via `schtasks.exe` command-line tool\n\
+- Run independently of RustAgent (even when RustAgent is closed)\n\
+- Results are NOT automatically fed back to chat\n\
+- Use for: system maintenance, cleanup, backups, scripts that should run regardless of RustAgent\n\
+- Example: 'Create a scheduled task to clean temp files every Sunday at 2 AM'\n\
+- To create: use `shell_exec` with schtasks commands:\n\
+  - Create: `schtasks /Create /TN \"TaskName\" /TR \"command\" /SC DAILY /ST 02:00 /F`\n\
+  - List:   `schtasks /Query /FO LIST`\n\
+  - Delete: `schtasks /Delete /TN \"TaskName\" /F`\n\n\
+**Decision guide:**\n\
+- User wants to **see results in chat** → RustAgent CRON (use `cron_manage` tool)\n\
+- Task should **run independently** or **survive RustAgent restarts** → Windows Schtasks\n\
+- Task requires **AI capabilities** → RustAgent CRON\n\
+- Simple **system command** → Windows Schtasks\n",
+        );
+
+        // ── Workspace Configuration Files ──
+        const MAX_FILE_CHARS: usize = 8000;
+        let workspace = &self.workspace_dir;
+        if !workspace.is_empty() {
+            let config_files = [
+                ("AGENTS.md", "Agent Behavior & Rules"),
+                ("SOUL.md", "Personality, Tone & Boundaries"),
+                ("TOOLS.md", "Local Tool Usage Conventions"),
+            ];
+            let mut injected = Vec::new();
+            for (filename, description) in &config_files {
+                if let Some((content, was_truncated)) = Self::read_workspace_file(workspace, filename, MAX_FILE_CHARS) {
+                    let mut section = format!("\n## {} ({})\n", description, filename);
+                    section.push_str(&content);
+                    if was_truncated {
+                        section.push_str("\n*[Note: This file was auto-truncated due to size. Keep it concise to save tokens.]*");
+                    }
+                    section.push('\n');
+                    injected.push(section);
+                }
+            }
+            if !injected.is_empty() {
+                prompt.push_str("\n# Workspace Configuration\n\
+The following files are loaded from your workspace. They define your behavior, personality, and tool conventions.\n");
+                for section in &injected {
+                    prompt.push_str(section);
+                }
+            }
+        }
+
+        // ── Active Skills ──
         let matching_skills = self.skill_manager.find_matching(user_message);
         if !matching_skills.is_empty() {
             prompt.push_str("\n## Active Skills Context\n");
@@ -169,6 +240,27 @@ injected into your context as SYSTEM messages labeled **[Memory Context]** or **
         }
 
         prompt
+    }
+
+    /// Read a file from the workspace directory. Returns None if missing or empty.
+    /// If the file exceeds `max_chars`, it is truncated and the flag is set.
+    fn read_workspace_file(workspace_dir: &str, filename: &str, max_chars: usize) -> Option<(String, bool)> {
+        let path = std::path::Path::new(workspace_dir).join(filename);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                if content.trim().is_empty() {
+                    return None;
+                }
+                let truncated = content.len() > max_chars;
+                let result = if truncated {
+                    content.chars().take(max_chars).collect::<String>()
+                } else {
+                    content
+                };
+                Some((result, truncated))
+            }
+            Err(_) => None,
+        }
     }
 }
 
@@ -204,6 +296,7 @@ impl Agent for LlmAgent {
         let permission_pending: PendingMap = ctx.permission_pending.clone();
         let fallback_model = ctx.fallback_model.clone();
         let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
+        let tool_timeout_secs = ctx.tool_timeout_secs;
                 let context_window = ctx.context_window;
                 let context_window_threshold = ctx.context_window_threshold;
                 // Calculate max history chars: context_window (tokens) * threshold% * ~4 chars/token
@@ -468,7 +561,7 @@ impl Agent for LlmAgent {
                                         ))).await;
                                     }
                                     let msg = execute_tool_call(
-                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker,
+                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs,
                                     ).await;
                                     history.push(msg);
                                 }
@@ -507,13 +600,13 @@ impl Agent for LlmAgent {
                                 if all_read_only && tool_calls.len() > 1 {
                                     info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
                                     let msgs = execute_tools_concurrent(
-                                        &*tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker,
+                                        &*tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &*tools, tc, &working_dir, &invocation_id, &author, &tx, &checker,
+                                            &*tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs,
                                         ).await;
                                         history.push(msg);
                                     }
@@ -727,6 +820,7 @@ async fn execute_tool_call(
     author: &str,
     tx: &tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
     permission: &PermissionChecker,
+    tool_timeout_secs: u64,
 ) -> ChatMessage {
     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
@@ -756,7 +850,7 @@ async fn execute_tool_call(
                 });
 
                 // Race: tool execution vs heartbeat vs timeout vs consumer disconnect
-                let timeout_duration = std::time::Duration::from_secs(300); // 5 minutes
+                let timeout_duration = std::time::Duration::from_secs(tool_timeout_secs);
                 let heartbeat_interval = std::time::Duration::from_secs(5);
                 let start = std::time::Instant::now();
                 let mut interval = tokio::time::interval(heartbeat_interval);
@@ -842,10 +936,11 @@ async fn execute_tools_concurrent<'a>(
     author: &'a str,
     tx: &'a tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
     permission: &'a PermissionChecker,
+    tool_timeout_secs: u64,
 ) -> Vec<ChatMessage> {
     use futures::future::join_all;
     let futs = tool_calls.iter().map(|tc| {
-        execute_tool_call(tools, tc, working_dir, invocation_id, author, tx, permission)
+        execute_tool_call(tools, tc, working_dir, invocation_id, author, tx, permission, tool_timeout_secs)
     });
     join_all(futs).await
 }

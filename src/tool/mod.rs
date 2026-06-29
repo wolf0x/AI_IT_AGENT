@@ -9,6 +9,7 @@ pub mod app_launch;
 pub mod browser_open;
 pub mod mcp_client;
 pub mod web_fetch;
+pub mod cron_manage;
 
 use async_trait::async_trait;
 use serde_json::Value;

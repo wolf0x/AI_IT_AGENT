@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
@@ -16,7 +17,7 @@ use crate::model::{
 /// Implements the Llm trait (modeled after ADK-RUST's OpenAIClient).
 pub struct OpenAiProvider {
     client: Client,
-    models: Vec<ModelConfig>,
+    models: Arc<tokio::sync::RwLock<Vec<ModelConfig>>>,
 }
 
 // --- Internal streaming types ---
@@ -70,11 +71,25 @@ impl OpenAiProvider {
             .timeout(std::time::Duration::from_secs(180))  // 3 minute timeout for LLM requests
             .build()
             .expect("Failed to create HTTP client");
+        Self { client, models: Arc::new(tokio::sync::RwLock::new(models)) }
+    }
+
+    pub fn new_with_shared(models: Arc<tokio::sync::RwLock<Vec<ModelConfig>>>) -> Self {
+        let client = Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .expect("Failed to create HTTP client");
         Self { client, models }
     }
 
-    fn find_model(&self, name: &str) -> Option<&ModelConfig> {
-        self.models.iter().find(|m| m.name == name).or(self.models.first())
+    pub fn models_ref(&self) -> Arc<tokio::sync::RwLock<Vec<ModelConfig>>> {
+        self.models.clone()
+    }
+
+    async fn find_model(&self, name: &str) -> Option<ModelConfig> {
+        let models = self.models.read().await;
+        models.iter().find(|m| m.name == name).cloned().or_else(|| models.first().cloned())
     }
 
     /// Legacy chat_stream method for backward compat (used by agent loop internally).
@@ -88,7 +103,7 @@ impl OpenAiProvider {
         invocation_id: &str,
         author: &str,
     ) -> Result<(String, String, Vec<ToolCallDelta>), String> {
-        let model = self.find_model(model_name).ok_or("No model configured")?;
+        let model = self.find_model(model_name).await.ok_or("No model configured")?;
         let api_key = model.resolved_api_key();
         let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
 
@@ -240,7 +255,7 @@ impl Llm for OpenAiProvider {
         request: LlmRequest,
         stream: bool,
     ) -> AgentResult<LlmResponseStream> {
-        let model = self.find_model(&request.model)
+        let model = self.find_model(&request.model).await
             .ok_or_else(|| AgentError::model(format!("Model '{}' not found", request.model)))?;
         let api_key = model.resolved_api_key();
         let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
@@ -399,7 +414,9 @@ impl Llm for OpenAiProvider {
     }
 
     fn available_models(&self) -> Vec<String> {
-        self.models.iter().map(|m| m.name.clone()).collect()
+        self.models.try_read()
+            .map(|m| m.iter().map(|mc| mc.name.clone()).collect())
+            .unwrap_or_default()
     }
 }
 

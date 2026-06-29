@@ -109,6 +109,8 @@ pub struct InvocationContext {
     pub context_window: usize,
     /// Context usage threshold percentage (e.g. 80 = trim at 80%)
     pub context_window_threshold: usize,
+    /// Tool execution timeout in seconds
+    pub tool_timeout_secs: u64,
     pub conversation_history: Vec<ChatMessage>,
     pub shared_state: HashMap<String, Value>,
     /// Permission settings (category -> allowed)
@@ -136,6 +138,7 @@ impl InvocationContext {
             rabbit_hole_threshold: 5,
             context_window: 128000,
             context_window_threshold: 80,
+            tool_timeout_secs: 300,
             conversation_history: Vec::new(),
             shared_state: HashMap::new(),
             permissions: Arc::new(Mutex::new(crate::permission::default_permissions())),
@@ -183,6 +186,12 @@ impl InvocationContext {
     /// Set context window usage threshold percentage.
     pub fn with_context_window_threshold(mut self, percent: usize) -> Self {
         self.context_window_threshold = percent;
+        self
+    }
+
+    /// Set tool execution timeout in seconds.
+    pub fn with_tool_timeout_secs(mut self, secs: u64) -> Self {
+        self.tool_timeout_secs = secs;
         self
     }
 
