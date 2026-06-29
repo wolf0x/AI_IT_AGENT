@@ -136,12 +136,22 @@ If it does NOT, output a JSON code block in this exact format:\n\
 ```json\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ipconfig\"}}\n```\n\
 The system will detect this block, execute the tool, and return the result. You MUST output the JSON block — \
 saying \"let me check\" without the actual JSON block does nothing.\n\n\
+**CRITICAL: When emitting a tool call, output ONLY the JSON code block — nothing else.** \
+Do NOT write narrative text like \"let me open the calculator\" before or alongside the tool call. \
+Do NOT repeat yourself. The tool call IS your action — explain the result AFTER you receive it, not before.\n\
+Wrong: \"Let me open the calculator for you! ```json ... ```\"\n\
+Right: ```json\n{\"name\": \"app_launch\", ...}\n```\n\
+(Then after the tool result comes back, say \"Calculator has been opened.\")\n\n\
 ## Response Guidelines\n\
 - Provide **detailed, comprehensive** responses with real data from tools.\n\
 - Use **Markdown formatting**: headers, bullet points, code blocks, tables.\n\
 - Explain what you did and interpret the results for the user.\n\
 - If a task requires multiple steps, call tools sequentially and explain each step.\n\
-- Be thorough — don't stop at surface-level observations.\n\n\
+- Be thorough — don't stop at surface-level observations.\n\
+- **Do NOT repeat yourself.** Once you have answered a question or completed an action, stop. \
+  Do not add follow-up narration like \"now let me verify\" or \"let me double-check\" unless the user asks.\n\
+- **Do NOT announce what you are about to do.** Just do it. If you need to call a tool, emit the tool call \
+  directly. Explain results AFTER the tool returns, not before.\n\n\
 ## CRITICAL: You Have Long-Term Memory\n\
 This assistant is connected to a LOCAL MEMORY STORE (SQLite). Past conversations with this user are persisted and \
 injected into your context as SYSTEM messages labeled **[Memory Context]** or **[Memory Recall]**.\n\
@@ -160,6 +170,11 @@ injected into your context as SYSTEM messages labeled **[Memory Context]** or **
 - The memory block is already the authoritative output of the local memory system. Unless the user EXPLICITLY asks \
   you to inspect memory files / SQLite / logs, you must NOT call tools like `file_read` or `shell_exec` to inspect \
   `memory.db`, logs, or config files just to answer a memory question. Use the injected memory block instead.\n\
+- **STRICTLY PROHIBITED**: After answering a memory question using the injected data, do NOT then say things like \
+  \"let me check the memory files\" or \"let me look at MEMORY.md\" and then call tools. You already have the data — \
+  use it and stop. Do not express intent to re-verify what you already know.\n\
+- **STRICTLY PROHIBITED**: Do NOT narrate your tool-calling intentions. If you need to call a tool, just call it \
+  (output the JSON block). Never write \"let me check X\" as text AND also call the tool in the same response.\n\
 - For casual new messages like \"hello\", greetings, or simple follow-ups, do NOT resume unrelated unfinished topics \
   from old sessions on your own. Use memory only as background context unless the user explicitly asks to recall \
   earlier conversations.\n",
@@ -474,11 +489,11 @@ impl Agent for LlmAgent {
                                 let correction = format!(
                                     "You said you would take an action, but you did NOT output a tool call.\n\n\
                                     Available tools:\n{}\n\n\
-                                    You MUST output the tool call as a JSON code block in this EXACT format:\n\
+                                    Output ONLY the tool call JSON code block — NO narrative text, NO explanation, NO preamble.\n\
+                                    Format:\n\
                                     ```json\n{{\"name\": \"shell_exec\", \"arguments\": {{\"command\": \"ipconfig\"}}}}\n```\n\
                                     Replace the tool name and arguments with what you actually need.\n\n\
-                                    CRITICAL: Saying 'I will do it' or 'let me check' WITHOUT the actual JSON code block does NOTHING.\n\
-                                    You MUST include the ```json ... ``` block in your response. Output it now.",
+                                    CRITICAL: Your entire response must be ONLY the ```json ... ``` block. Nothing before it, nothing after it.",
                                     tool_list_hint
                                 );
                                 history.push(ChatMessage::user(&correction));
