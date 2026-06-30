@@ -9,6 +9,7 @@ mod context;
 #[allow(dead_code)]
 mod error;
 mod external_tools;
+mod heartbeat;
 mod log;
 mod memory;
 mod model;
@@ -39,6 +40,7 @@ use crate::model::openai::OpenAiProvider;
 use crate::runner::Runner;
 use crate::permission::{PermissionResolver, default_permissions};
 use crate::scheduler::Scheduler;
+use crate::heartbeat::Heartbeat;
 use crate::server::AppState;
 use crate::skill::SkillManager;
 use crate::tool::mcp_client::McpClientManager;
@@ -227,6 +229,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         Scheduler::run_loop(scheduler_loop).await;
     });
+
+    // Spawn heartbeat background loop
+    let heartbeat = Heartbeat::new(
+        runner.clone(),
+        shared_models.clone(),
+        permissions.clone(),
+        permission_pending.clone(),
+        config.agent.max_iterations,
+        config.agent.rabbit_hole_threshold,
+        128000,
+        config.agent.context_window_threshold,
+        config.agent.tool_timeout_secs as u64,
+        notify_tx.clone(),
+        workspace_dir.clone(),
+    );
+    tokio::spawn(async move {
+        heartbeat.run_loop().await;
+    });
+    info!("Heartbeat background loop spawned");
 
     // Register CRON management tool (needs scheduler, which depends on runner)
     {
