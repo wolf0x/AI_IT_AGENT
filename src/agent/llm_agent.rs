@@ -131,7 +131,8 @@ You have FULL ACCESS to the user's system via built-in tools.\n\n\
   - `remove_skill` — Delete a skill\n\
   - `memory_md` — Manage long-term curated memory: read/write MEMORY.md\n\
   - `todo_update` — Track multi-step task progress with a TODO list\n\
-  - `browser_cdp` — Control Chrome browser: navigate, click, type, screenshot, get text/HTML, execute JS\n\
+  - `browser_cdp` — Control Chrome browser: navigate, click, type, screenshot, get text/HTML, execute JS. \
+    For screenshots: use the returned `url` field (e.g. `/workspace/screenshots/xxx.png`) in markdown image syntax `![desc](url)` to display. NEVER use local file paths.\n\
 - If the user asks 'what is my IP' or similar, call `shell_exec` with `ipconfig` or `Get-NetIPAddress`.\n\
 - Always call tools FIRST, then explain the results to the user.\n\
 - Never say 'I can't check' or 'I don't have access' — you DO have access via tools!\n\n\

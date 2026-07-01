@@ -314,7 +314,6 @@ impl Tool for BrowserCdpTool {
                 Ok(json!({
                     "success": true,
                     "action": "screenshot",
-                    "path": path.display().to_string(),
                     "url": url
                 }))
             }
