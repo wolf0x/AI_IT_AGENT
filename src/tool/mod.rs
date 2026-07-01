@@ -10,6 +10,9 @@ pub mod browser_open;
 pub mod mcp_client;
 pub mod web_fetch;
 pub mod cron_manage;
+pub mod memory_md;
+pub mod todo_update;
+pub mod browser_cdp;
 
 use async_trait::async_trait;
 use serde_json::Value;

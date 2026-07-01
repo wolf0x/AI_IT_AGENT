@@ -126,6 +126,12 @@ You have FULL ACCESS to the user's system via built-in tools.\n\n\
   - `app_launch` — Launch applications\n\
   - `browser_open` — Open URLs in the browser\n\
   - `cron_manage` — Create, list, delete, or toggle scheduled CRON tasks\n\
+  - `list_skills` — List all available skills\n\
+  - `install_skill` — Create a new skill\n\
+  - `remove_skill` — Delete a skill\n\
+  - `memory_md` — Manage long-term curated memory: read/write MEMORY.md\n\
+  - `todo_update` — Track multi-step task progress with a TODO list\n\
+  - `browser_cdp` — Control Chrome browser: navigate, click, type, screenshot, get text/HTML, execute JS\n\
 - If the user asks 'what is my IP' or similar, call `shell_exec` with `ipconfig` or `Get-NetIPAddress`.\n\
 - Always call tools FIRST, then explain the results to the user.\n\
 - Never say 'I can't check' or 'I don't have access' — you DO have access via tools!\n\n\
@@ -214,6 +220,27 @@ You have TWO ways to create scheduled tasks. You MUST distinguish between them:\
 - Simple **system command** → Windows Schtasks\n",
         );
 
+        // ── TODO Task Planning ──
+        prompt.push_str(
+            "\n## Task Planning with TODO Lists\n\
+When you receive a **complex, multi-step request** (3+ distinct steps), use the `todo_update` tool \
+to create a TODO list BEFORE starting work. This helps you track progress and avoid forgetting steps.\n\n\
+### When to use:\n\
+- User asks you to do multiple things in one message\n\
+- A task requires sequential tool calls with dependencies\n\
+- You need to track which subtasks are done vs pending\n\n\
+### When NOT to use:\n\
+- Simple single-step requests ('what time is it?', 'open calculator')\n\
+- Quick questions that need one tool call at most\n\n\
+### How to use:\n\
+1. At the START of a complex task: call `todo_update` with action='set' and an items array\n\
+2. As you complete each step: call `todo_update` with action='update' to mark it 'completed'\n\
+3. When starting a step: mark it 'in_progress'\n\
+4. When entirely done: call `todo_update` with action='clear'\n\n\
+Example:\n\
+```json\n{\"name\": \"todo_update\", \"arguments\": {\"action\": \"set\", \"items\": [\n  {\"description\": \"Check disk space\", \"status\": \"in_progress\"},\n  {\"description\": \"List large files\", \"status\": \"pending\"},\n  {\"description\": \"Generate cleanup report\", \"status\": \"pending\"}\n]}}\n```\n",
+        );
+
         // ── Workspace Configuration Files ──
         const MAX_FILE_CHARS: usize = 8000;
         let workspace = &self.workspace_dir;
@@ -222,6 +249,7 @@ You have TWO ways to create scheduled tasks. You MUST distinguish between them:\
                 ("AGENTS.md", "Agent Behavior & Rules"),
                 ("SOUL.md", "Personality, Tone & Boundaries"),
                 ("TOOLS.md", "Local Tool Usage Conventions"),
+                ("MEMORY.md", "Curated Long-Term Memory"),
             ];
             let mut injected = Vec::new();
             for (filename, description) in &config_files {
@@ -242,6 +270,27 @@ The following files are loaded from your workspace. They define your behavior, p
                     prompt.push_str(section);
                 }
             }
+
+            // ── Memory System Documentation ──
+            prompt.push_str(
+                "\n# Memory System\n\
+You have two layers of memory:\n\n\
+## Automatic Memory (memory.db — SQLite)\n\
+- Every conversation is automatically persisted\n\
+- Recent summaries are injected into your context as [Memory Context] or [Memory Recall]\n\
+- You do NOT need to do anything — this works automatically\n\n\
+## Curated Long-Term Memory: MEMORY.md\n\
+- High-signal, distilled knowledge — facts, preferences, lessons learned\n\
+- Automatically injected into your system prompt each session\n\
+- Use `memory_md` tool with action 'write_memory' to update (overwrite with new content)\n\
+- Use `memory_md` tool with action 'read_memory' to read current content\n\
+- Keep it concise and well-organized — it is loaded every session (truncated at 8000 chars)\n\
+- Only write things worth remembering long-term — user preferences, key decisions, project conventions\n\n\
+## Guidelines\n\
+- When you notice patterns or lasting preferences from conversations, distill them into MEMORY.md\n\
+- MEMORY.md is curated — quality over quantity\n\
+- The automatic SQLite memory handles day-to-day recall; MEMORY.md is for lasting insights\n",
+            );
         }
 
         // ── Active Skills ──

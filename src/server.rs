@@ -3,7 +3,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post, put, delete},
     Json, Router,
 };
@@ -106,15 +106,54 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/tools/{name}/description", post(tools_desc_handler))
         .route("/api/config/files", get(config_files_handler))
         .route("/api/config/files/{name}", put(config_file_save_handler))
+        .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
 }
 
-async fn index_handler() -> Response {
-    StaticServer::serve_index()
+async fn index_handler(State(state): State<Arc<AppState>>) -> Response {
+    StaticServer::serve_index(&state.workspace_dir)
 }
 
-async fn static_handler(Path(path): Path<String>) -> Response {
-    StaticServer::serve_file(&path)
+async fn static_handler(State(state): State<Arc<AppState>>, Path(path): Path<String>) -> Response {
+    StaticServer::serve_file(&path, &state.workspace_dir)
+}
+
+/// Serve files from workspace directory (e.g., screenshots).
+/// Includes path traversal protection — only serves files within workspace_dir.
+async fn workspace_file_handler(State(state): State<Arc<AppState>>, Path(path): Path<String>) -> Response {
+    use axum::http::{header, StatusCode};
+
+    let workspace = std::path::Path::new(&state.workspace_dir);
+    let file_path = workspace.join(&path);
+
+    // Path traversal protection: ensure resolved path is within workspace
+    let canonical = match file_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let ws_canonical = match workspace.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if !canonical.starts_with(&ws_canonical) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !canonical.is_file() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Determine content type from extension
+    let mime = mime_guess::from_path(&canonical)
+        .first_or_octet_stream();
+
+    match tokio::fs::read(&canonical).await {
+        Ok(data) => {
+            let mut response = axum::body::Body::from(data).into_response();
+            response.headers_mut().insert(header::CONTENT_TYPE, mime.to_string().parse().unwrap());
+            response
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 async fn health_handler() -> Json<Value> {
@@ -1017,7 +1056,7 @@ async fn tools_desc_handler(
 
 async fn config_files_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let workspace = &state.workspace_dir;
-    let files = ["AGENTS.md", "SOUL.md", "TOOLS.md"];
+    let files = ["AGENTS.md", "SOUL.md", "TOOLS.md", "MEMORY.md"];
     let mut result = serde_json::Map::new();
 
     for file_name in &files {
@@ -1034,9 +1073,9 @@ async fn config_file_save_handler(
     Path(name): Path<String>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
-    let allowed = ["AGENTS.md", "SOUL.md", "TOOLS.md"];
+    let allowed = ["AGENTS.md", "SOUL.md", "TOOLS.md", "MEMORY.md"];
     if !allowed.contains(&name.as_str()) {
-        return Json(json!({ "success": false, "error": "Invalid file name. Allowed: AGENTS.md, SOUL.md, TOOLS.md" }));
+        return Json(json!({ "success": false, "error": "Invalid file name. Allowed: AGENTS.md, SOUL.md, TOOLS.md, MEMORY.md" }));
     }
 
     let content = body["content"].as_str().unwrap_or("");

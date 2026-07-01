@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,chromiumoxide::handler=error")),
         )
         .init();
 
@@ -88,11 +88,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         config.agent.workspace_dir.clone()
     };
-    // Create workspace directory if it doesn't exist
+    // Create workspace directory and all subdirectories
     if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
         tracing::warn!("Failed to create workspace directory {}: {}", workspace_dir, e);
     } else {
         info!("Workspace directory: {}", workspace_dir);
+    }
+    let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "screenshots"];
+    for sub in &ws_subdirs {
+        let p = std::path::Path::new(&workspace_dir).join(sub);
+        let _ = std::fs::create_dir_all(&p);
+    }
+
+    // Migrate existing config files from exe_dir → workspace (first-run upgrade)
+    let migrations = [
+        ("models.json", "models.json"),
+        ("cron_tasks.json", "cron_tasks.json"),
+        ("mcp_servers.json", "mcp_servers.json"),
+        ("memory.db", "memory/memory.db"),
+    ];
+    for (src_name, dst_rel) in &migrations {
+        let src = exe_dir.join(src_name);
+        let dst = std::path::Path::new(&workspace_dir).join(dst_rel);
+        if src.exists() && !dst.exists() {
+            if let Err(e) = std::fs::copy(&src, &dst) {
+                tracing::warn!("Failed to migrate {} → {}: {}", src.display(), dst.display(), e);
+            } else {
+                info!("Migrated {} → {}", src.display(), dst.display());
+            }
+        }
+    }
+    // Migrate Tools/ → tools/ (case change for consistency)
+    {
+        let old_tools = exe_dir.join("Tools");
+        let new_tools = std::path::Path::new(&workspace_dir).join("tools");
+        if old_tools.exists() && !new_tools.exists() {
+            let _ = std::fs::rename(&old_tools, &new_tools);
+        }
+    }
+    // Migrate skills/ → workspace/skills/
+    {
+        let old_skills = exe_dir.join("skills");
+        let new_skills = std::path::Path::new(&workspace_dir).join("skills");
+        if old_skills.exists() && !new_skills.exists() {
+            let _ = std::fs::rename(&old_skills, &new_skills);
+        }
+    }
+    // Migrate logs/ → workspace/logs/
+    {
+        let old_logs = exe_dir.join(&config.server.log_dir);
+        let new_logs = std::path::Path::new(&workspace_dir).join("logs");
+        if old_logs.exists() && !new_logs.exists() {
+            let _ = std::fs::rename(&old_logs, &new_logs);
+        }
+    }
+    // Migrate static/ → workspace/static/
+    {
+        let old_static = exe_dir.join("static");
+        let new_static = std::path::Path::new(&workspace_dir).join("static");
+        if old_static.exists() && !new_static.exists() {
+            let _ = std::fs::rename(&old_static, &new_static);
+        }
     }
 
     let working_dir = if config.agent.working_dir == "." {
@@ -103,8 +159,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = ToolRegistry::build_default(&working_dir, Some(notify_tx.clone()));
     info!("Built-in tools: {:?}", registry.tool_names());
 
-    // Connect MCP servers
-    let mut mcp_manager = McpClientManager::new();
+    // Connect MCP servers (persist to workspace)
+    let mcp_persist_path = std::path::Path::new(&workspace_dir).join("mcp_servers.json");
+    let mut mcp_manager = McpClientManager::with_persist_path(mcp_persist_path);
 
     // Load persisted MCP server configs (from mcp_servers.json, auth tokens auto-decrypted)
     let persisted = mcp_manager.load_configs();
@@ -128,8 +185,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Registered {} MCP tool(s) total", mcp_tools.len());
     }
 
-    // Load skills (resolve skills dir relative to exe)
-    let skills_dir = exe_dir.join("skills");
+    // Load skills (resolve skills dir from workspace)
+    let skills_dir = std::path::Path::new(&workspace_dir).join("skills");
     let skill_manager = Arc::new(SkillManager::new(skills_dir.to_str().unwrap_or("skills")));
     let skills = skill_manager.list();
     info!("Loaded {} skills", skills.len());
@@ -141,8 +198,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Build LLM provider (implements Llm trait)
-    // Load persisted model configs (from models.json, api_keys auto-decrypted)
-    let model_store_path = exe_dir.join("models.json");
+    // Load persisted model configs (from models.json in workspace, api_keys auto-decrypted)
+    let model_store_path = std::path::Path::new(&workspace_dir).join("models.json");
     let persisted_models = model_store::load_configs(&model_store_path);
     let initial_models = if !persisted_models.is_empty() {
         info!("Loaded {} persisted model config(s)", persisted_models.len());
@@ -160,20 +217,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(OpenAiProvider::new_with_shared(shared_models.clone()));
     info!("Models available: {:?}", model_names);
 
-    // Build logger (resolve log dir relative to exe)
-    let log_dir = exe_dir.join(&config.server.log_dir);
+    // Build logger (resolve log dir from workspace)
+    let log_dir = std::path::Path::new(&workspace_dir).join("logs");
     let logger = Arc::new(ConversationLogger::new(log_dir.to_str().unwrap_or("logs")));
 
-    // Build memory store (resolve DB path relative to exe)
-    let db_path = exe_dir.join("memory.db");
+    // Build memory store (resolve DB path from workspace/memory/)
+    let db_path = std::path::Path::new(&workspace_dir).join("memory").join("memory.db");
     let memory_store = Arc::new(
         MemoryStore::new(db_path.to_str().unwrap_or("memory.db"))
             .expect("Failed to initialize memory store")
     );
     info!("Memory store ready: {}", db_path.display());
 
-    // Build external tools manager (resolve Tools dir relative to exe)
-    let tools_dir = exe_dir.join("Tools");
+    // Build external tools manager (resolve tools dir from workspace)
+    let tools_dir = std::path::Path::new(&workspace_dir).join("tools");
     let external_tools = Arc::new(Mutex::new(ExternalToolsManager::new(tools_dir.clone())));
     info!("External tools dir: {}", tools_dir.display());
 
@@ -208,8 +265,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (permission_resolver, permission_pending) = PermissionResolver::new();
     let permissions = Arc::new(Mutex::new(default_permissions()));
 
-    // Build scheduler (resolve cron path relative to exe)
-    let cron_path = exe_dir.join("cron_tasks.json");
+    // Build scheduler (resolve cron path from workspace)
+    let cron_path = std::path::Path::new(&workspace_dir).join("cron_tasks.json");
     let scheduler = Arc::new(Mutex::new(Scheduler::new(
         cron_path.to_str().unwrap_or("cron_tasks.json"),
         runner.clone(),
@@ -250,11 +307,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Heartbeat background loop spawned");
 
     // Register CRON management tool (needs scheduler, which depends on runner)
+    // Register memory_md tool (file-based daily logs + long-term memory)
+    // Register todo_update tool (lightweight task planning/tracking)
+    // Register browser_cdp tool (CDP browser automation via chromiumoxide)
+    let browser_session = crate::tool::browser_cdp::BrowserSession::new(workspace_dir.clone());
     {
         let mut reg = shared_tools.write().await;
         reg.register(Arc::new(crate::tool::cron_manage::CronManageTool::new(scheduler.clone())));
+        reg.register(Arc::new(crate::tool::memory_md::MemoryMdTool::new(workspace_dir.clone())));
+        reg.register(Arc::new(crate::tool::todo_update::TodoUpdateTool::new(workspace_dir.clone())));
+        reg.register(Arc::new(crate::tool::browser_cdp::BrowserCdpTool::new(browser_session)));
     }
-    info!("Registered cron_manage tool");
+    info!("Registered cron_manage + memory_md + todo_update + browser_cdp tools");
 
     // Build app state
     let state = Arc::new(AppState {

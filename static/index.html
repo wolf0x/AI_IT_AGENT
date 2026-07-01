@@ -391,6 +391,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             <button class="btn btn-p btn-s" id="cfgTabAgents" onclick="switchConfigTab('AGENTS.md')">AGENTS.md</button>
             <button class="btn btn-s" id="cfgTabSoul" onclick="switchConfigTab('SOUL.md')">SOUL.md</button>
             <button class="btn btn-s" id="cfgTabTools" onclick="switchConfigTab('TOOLS.md')">TOOLS.md</button>
+            <button class="btn btn-s" id="cfgTabMemory" onclick="switchConfigTab('MEMORY.md')">MEMORY.md</button>
           </div>
           <div class="form-group">
             <textarea id="configFileContent" rows="12" style="width:100%;padding:10px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);color:var(--t1);font-size:13px;font-family:var(--mono);resize:vertical;line-height:1.5" placeholder="Select a file to edit..."></textarea>
@@ -787,8 +788,19 @@ function updateToolResult(blk,result){
   blk.classList.remove('active');
   blk.classList.add('done');
   const rs=blk.querySelector('.tool-result');
-  if(rs){rs.style.display='block';rs.querySelector('.tool-res').textContent=typeof result==='string'?result:JSON.stringify(result,null,2)}
-  // Keep collapsed - user clicks header to expand
+  if(rs){
+    rs.style.display='block';
+    const resEl=rs.querySelector('.tool-res');
+    let parsed=result;
+    if(typeof result==='string'){try{parsed=JSON.parse(result)}catch(e){}}
+    if(parsed&&typeof parsed==='object'&&parsed.url&&/\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(parsed.url)){
+      resEl.innerHTML='<img src="'+esc(parsed.url)+'" style="max-width:100%;border-radius:6px;margin:4px 0;cursor:pointer" onclick="window.open(this.src,\'_blank\')" title="Click to open full size"/>'
+        +'<div style="font-size:11px;color:var(--t3);margin-top:2px">'+esc(parsed.url)+'</div>'
+        +'<pre style="margin-top:4px;font-size:11px">'+esc(typeof result==='string'?result:JSON.stringify(result,null,2))+'</pre>';
+    }else{
+      resEl.textContent=typeof result==='string'?result:JSON.stringify(result,null,2);
+    }
+  }
 }
 function toggleBlock(hdr){
   const body=hdr.nextElementSibling;
@@ -1143,11 +1155,11 @@ function switchConfigTab(fileName){
   configFilesData[currentConfigFile]=document.getElementById('configFileContent').value;
   currentConfigFile=fileName;
   document.getElementById('configFileContent').value=configFilesData[fileName]||'';
-  ['cfgTabAgents','cfgTabSoul','cfgTabTools'].forEach(id=>{
+  ['cfgTabAgents','cfgTabSoul','cfgTabTools','cfgTabMemory'].forEach(id=>{
     const el=document.getElementById(id);
     el.classList.remove('btn-p');el.classList.add('btn-s');
   });
-  const activeId=fileName==='AGENTS.md'?'cfgTabAgents':fileName==='SOUL.md'?'cfgTabSoul':'cfgTabTools';
+  const activeId=fileName==='AGENTS.md'?'cfgTabAgents':fileName==='SOUL.md'?'cfgTabSoul':fileName==='TOOLS.md'?'cfgTabTools':'cfgTabMemory';
   const activeEl=document.getElementById(activeId);
   activeEl.classList.remove('btn-s');activeEl.classList.add('btn-p');
 }

@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct StaticServer;
 
@@ -9,31 +9,37 @@ impl StaticServer {
         cfg!(debug_assertions)
     }
 
-    /// Resolve the static files directory relative to the executable.
-    fn static_dir() -> PathBuf {
+    /// Resolve the static files directory from workspace_dir/static.
+    fn static_dir(workspace_dir: &str) -> PathBuf {
+        Path::new(workspace_dir).join("static")
+    }
+
+    /// Fallback: resolve static dir relative to the executable.
+    fn exe_static_dir() -> PathBuf {
         std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("static")))
             .unwrap_or_else(|| PathBuf::from("static"))
     }
 
-    pub fn serve_file(path: &str) -> Response {
+    pub fn serve_file(path: &str, workspace_dir: &str) -> Response {
         if Self::prefer_disk_assets() {
-            let dir = Self::static_dir();
-            let full_path = dir.join(path.trim_start_matches('/'));
-
-            if full_path.exists() && full_path.is_file() {
-                return match std::fs::read(&full_path) {
-                    Ok(content) => {
-                        let mime = mime_guess::from_path(&full_path).first_or_octet_stream();
-                        Response::builder()
-                            .status(StatusCode::OK)
-                            .header("Content-Type", mime.as_ref())
-                            .body(content.into())
-                            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-                    }
-                    Err(_) => Self::serve_embedded(path),
-                };
+            // Try workspace/static first, then exe/static
+            for dir in &[Self::static_dir(workspace_dir), Self::exe_static_dir()] {
+                let full_path = dir.join(path.trim_start_matches('/'));
+                if full_path.exists() && full_path.is_file() {
+                    return match std::fs::read(&full_path) {
+                        Ok(content) => {
+                            let mime = mime_guess::from_path(&full_path).first_or_octet_stream();
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", mime.as_ref())
+                                .body(content.into())
+                                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+                        }
+                        Err(_) => continue,
+                    };
+                }
             }
         }
 
@@ -54,18 +60,18 @@ impl StaticServer {
         }
     }
 
-    pub fn serve_index() -> Response {
+    pub fn serve_index(workspace_dir: &str) -> Response {
         if Self::prefer_disk_assets() {
-            // Debug/dev: prefer disk assets for live editing.
-            let exe_static = Self::static_dir().join("index.html");
-            if exe_static.exists() {
-                if let Ok(content) = std::fs::read_to_string(&exe_static) {
+            // Try workspace/static/index.html first, then exe/static/index.html
+            let ws_index = Self::static_dir(workspace_dir).join("index.html");
+            if ws_index.exists() {
+                if let Ok(content) = std::fs::read_to_string(&ws_index) {
                     return Html(content).into_response();
                 }
             }
-            let cwd_path = PathBuf::from("static/index.html");
-            if cwd_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&cwd_path) {
+            let exe_index = Self::exe_static_dir().join("index.html");
+            if exe_index.exists() {
+                if let Ok(content) = std::fs::read_to_string(&exe_index) {
                     return Html(content).into_response();
                 }
             }
