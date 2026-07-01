@@ -533,9 +533,12 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 // 鈹€鈹€ State 鈹€鈹€
 let ws=null,connected=false,msgHist=[],logHist=[];
 let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
-let intentionalDisconnect=false;
+let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0;
+const MAX_RECONNECT_DELAY=30000;
 const MODEL_KEY='ra_model';
 const FALLBACK_MODEL_KEY='ra_fallback_model';
+const WS_URL_KEY='ra_ws_url';
+const WS_PWD_KEY='ra_ws_pwd';
 
 // Permission categories with defaults
 const PERM_CATEGORIES=[
@@ -572,25 +575,39 @@ function connectWs(){
   const pwd=document.getElementById('wsPwd').value;
   if(!url){addLog('Enter WebSocket URL','error');return}
   intentionalDisconnect=false;
+  if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null}
+  // Persist credentials for auto-reconnect on page refresh
+  try{localStorage.setItem(WS_URL_KEY,url);localStorage.setItem(WS_PWD_KEY,pwd)}catch(e){}
   addLog('Connecting...','info');
   ws=new WebSocket(url);
   ws.onopen=()=>{addLog('Authenticating...','info');ws.send(JSON.stringify({type:'auth',password:pwd}))};
   ws.onmessage=e=>{try{handleMsg(JSON.parse(e.data))}catch(err){console.error(err)}};
   ws.onerror=()=>{addLog('Connection failed','error')};
   ws.onclose=()=>{
+    const wasConnected=connected;
     connected=false;
     updateStatus();
     hideTyping();
     setAgentRunning(false);
     curToolMap={};
-    if(intentionalDisconnect)addLog('Disconnected','info');
-    else addLog('Disconnected','warn');
+    if(intentionalDisconnect){
+      addLog('Disconnected','info');
+      reconnectAttempts=0;
+    }else{
+      // Auto-reconnect with exponential backoff
+      const delay=Math.min(1000*Math.pow(2,reconnectAttempts),MAX_RECONNECT_DELAY);
+      reconnectAttempts++;
+      addLog('Connection lost. Reconnecting in '+Math.round(delay/1000)+'s... ('+reconnectAttempts+')','warn');
+      reconnectTimer=setTimeout(()=>{reconnectTimer=null;connectWs()},delay);
+    }
     intentionalDisconnect=false;
   };
 }
 function disconnectWs(){
-  if(!ws)return;
   intentionalDisconnect=true;
+  if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null}
+  reconnectAttempts=0;
+  if(!ws)return;
   const sock=ws;
   ws=null;
   if(connected&&agentRunning){
@@ -611,8 +628,8 @@ function updateStatus(){
 function handleMsg(msg){
   if(!msg||!msg.type)return;
   switch(msg.type){
-    case 'auth_ok':connected=true;updateStatus();addLog('Authenticated','info');loadModels();sendPerms();renderPerms();break;
-    case 'auth_fail':addLog('Auth failed: '+(msg.message||'bad password'),'error');break;
+    case 'auth_ok':connected=true;reconnectAttempts=0;updateStatus();addLog('Authenticated','info');loadModels();sendPerms();renderPerms();break;
+    case 'auth_fail':addLog('Auth failed: '+(msg.message||'bad password'),'error');intentionalDisconnect=true;reconnectAttempts=0;break;
     case 'thinking':
       hideTyping();
       if(msg.content&&msg.content.trim()){
@@ -1505,6 +1522,16 @@ document.addEventListener('DOMContentLoaded',()=>{
   const fallbackSel=document.getElementById('fallbackSel');
   if(modelSel)modelSel.addEventListener('change',()=>localStorage.setItem(MODEL_KEY,modelSel.value||''));
   if(fallbackSel)fallbackSel.addEventListener('change',()=>localStorage.setItem(FALLBACK_MODEL_KEY,fallbackSel.value||''));
+  // Auto-connect if credentials are saved
+  try{
+    const savedUrl=localStorage.getItem(WS_URL_KEY);
+    const savedPwd=localStorage.getItem(WS_PWD_KEY);
+    if(savedUrl){
+      document.getElementById('wsUrl').value=savedUrl;
+      if(savedPwd)document.getElementById('wsPwd').value=savedPwd;
+      connectWs();
+    }
+  }catch(e){}
 });
 </script>
 </html>
