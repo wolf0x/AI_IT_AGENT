@@ -1369,7 +1369,7 @@ function scrollBottom(smooth){requestAnimationFrame(()=>{const a=document.getEle
 function saveHist(){try{localStorage.setItem('ra_msgs',JSON.stringify(msgHist.slice(-200)));localStorage.setItem('ra_logs',JSON.stringify(logHist.slice(-200)))}catch(e){}}
 function showAssistantMsg(txt,time){
   const d=document.createElement('div');d.className='msg assistant';
-  d.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+renderMd(esc(txt))+'</div><div class="msg-time">'+(time||'')+'</div></div>';
+  d.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+renderMd(txt||'')+'</div><div class="msg-time">'+(time||'')+'</div></div>';
   document.getElementById('convArea').appendChild(d);
 }
 function showNotification(message, timestamp, skipHist){
