@@ -533,8 +533,9 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 // 鈹€鈹€ State 鈹€鈹€
 let ws=null,connected=false,msgHist=[],logHist=[];
 let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
-let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0;
+let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0,reconnectStartTime=0;
 const MAX_RECONNECT_DELAY=30000;
+const RECONNECT_TIMEOUT=30000;
 const MODEL_KEY='ra_model';
 const FALLBACK_MODEL_KEY='ra_fallback_model';
 const WS_URL_KEY='ra_ws_url';
@@ -576,6 +577,7 @@ function connectWs(){
   if(!url){addLog('Enter WebSocket URL','error');return}
   intentionalDisconnect=false;
   if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null}
+  reconnectStartTime=0;
   // Persist credentials for auto-reconnect on page refresh
   try{localStorage.setItem(WS_URL_KEY,url);localStorage.setItem(WS_PWD_KEY,pwd)}catch(e){}
   addLog('Connecting...','info');
@@ -593,8 +595,17 @@ function connectWs(){
     if(intentionalDisconnect){
       addLog('Disconnected','info');
       reconnectAttempts=0;
+      reconnectStartTime=0;
     }else{
-      // Auto-reconnect with exponential backoff
+      // Auto-reconnect with exponential backoff, stop after 30s total
+      if(reconnectStartTime===0) reconnectStartTime=Date.now();
+      const elapsed=Date.now()-reconnectStartTime;
+      if(elapsed>=RECONNECT_TIMEOUT){
+        addLog('Connection failed after 30s. Please reconnect manually.','error');
+        reconnectAttempts=0;
+        reconnectStartTime=0;
+        return;
+      }
       const delay=Math.min(1000*Math.pow(2,reconnectAttempts),MAX_RECONNECT_DELAY);
       reconnectAttempts++;
       addLog('Connection lost. Reconnecting in '+Math.round(delay/1000)+'s... ('+reconnectAttempts+')','warn');
@@ -607,6 +618,7 @@ function disconnectWs(){
   intentionalDisconnect=true;
   if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null}
   reconnectAttempts=0;
+  reconnectStartTime=0;
   if(!ws)return;
   const sock=ws;
   ws=null;
@@ -628,8 +640,8 @@ function updateStatus(){
 function handleMsg(msg){
   if(!msg||!msg.type)return;
   switch(msg.type){
-    case 'auth_ok':connected=true;reconnectAttempts=0;updateStatus();addLog('Authenticated','info');loadModels();sendPerms();renderPerms();break;
-    case 'auth_fail':addLog('Auth failed: '+(msg.message||'bad password'),'error');intentionalDisconnect=true;reconnectAttempts=0;break;
+    case 'auth_ok':connected=true;reconnectAttempts=0;reconnectStartTime=0;updateStatus();addLog('Authenticated','info');loadModels();sendPerms();renderPerms();break;
+    case 'auth_fail':addLog('Auth failed: '+(msg.message||'bad password'),'error');intentionalDisconnect=true;reconnectAttempts=0;reconnectStartTime=0;break;
     case 'thinking':
       hideTyping();
       if(msg.content&&msg.content.trim()){
