@@ -237,18 +237,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wrap registry in Arc<RwLock> for dynamic MCP tool registration
     let shared_tools = Arc::new(tokio::sync::RwLock::new(registry));
 
-    // Read OS user name for personalized greetings
-    let user_name = {
-        let full_name = std::env::var("USERNAME")
-            .or_else(|_| std::env::var("USER"))
-            .unwrap_or_else(|_| "User".to_string());
-        full_name.split(|c: char| c == '.' || c == ' ')
-            .next()
-            .unwrap_or(&full_name)
-            .to_string()
-    };
-    info!("OS user name: {}", user_name);
-
     // Build agent using builder pattern (ADK-RUST style)
     let agent = LlmAgent::builder()
         .name("rust-agent")
@@ -259,7 +247,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_iterations(config.agent.max_iterations)
         .working_dir(&working_dir)
         .workspace_dir(&workspace_dir)
-        .user_name(&user_name)
         .model_configs(config.models.clone())
         .build()
         .map_err(|e| format!("Failed to build agent: {}", e))?;

@@ -30,7 +30,6 @@ pub struct LlmAgent {
     max_iterations: usize,
     working_dir: String,
     workspace_dir: String,
-    user_name: String,
     model_configs: Vec<ModelConfig>,
     #[allow(dead_code)]
     callbacks: AgentCallbacks,
@@ -47,7 +46,6 @@ pub struct LlmAgentBuilder {
     max_iterations: usize,
     working_dir: String,
     workspace_dir: String,
-    user_name: String,
     model_configs: Vec<ModelConfig>,
     callbacks: AgentCallbacks,
     tool_execution_strategy: ToolExecutionStrategy,
@@ -64,7 +62,6 @@ impl LlmAgentBuilder {
             max_iterations: 100,
             working_dir: ".".to_string(),
             workspace_dir: String::new(),
-            user_name: "User".to_string(),
             model_configs: Vec::new(),
             callbacks: AgentCallbacks::new(),
             tool_execution_strategy: ToolExecutionStrategy::Sequential,
@@ -79,7 +76,6 @@ impl LlmAgentBuilder {
     pub fn max_iterations(mut self, n: usize) -> Self { self.max_iterations = n; self }
     pub fn working_dir(mut self, dir: &str) -> Self { self.working_dir = dir.to_string(); self }
     pub fn workspace_dir(mut self, dir: &str) -> Self { self.workspace_dir = dir.to_string(); self }
-    pub fn user_name(mut self, name: &str) -> Self { self.user_name = name.to_string(); self }
     pub fn model_configs(mut self, configs: Vec<ModelConfig>) -> Self { self.model_configs = configs; self }
     pub fn callbacks(mut self, cb: AgentCallbacks) -> Self { self.callbacks = cb; self }
     pub fn tool_execution_strategy(mut self, strategy: ToolExecutionStrategy) -> Self {
@@ -101,7 +97,6 @@ impl LlmAgentBuilder {
             max_iterations: self.max_iterations,
             working_dir: self.working_dir,
             workspace_dir: self.workspace_dir,
-            user_name: self.user_name,
             model_configs: self.model_configs,
             callbacks: self.callbacks,
             tool_execution_strategy: self.tool_execution_strategy,
@@ -115,18 +110,10 @@ impl LlmAgent {
     }
 
     fn build_system_prompt(&self, user_message: &str) -> String {
-        let user_name = &self.user_name;
-        let mut prompt = String::new();
-        // Inject user identity
-        prompt.push_str(&format!(
-            "You are RustAgent, a powerful local AI assistant running on {user_name}'s Windows machine. \
-You have FULL ACCESS to {user_name}'s system via built-in tools.\n\n\
-## User Identity\n\
-The user's name is **{user_name}**. Always address them by their first name. \
-Do NOT use generic terms like \"user\" or hardcoded nicknames — always use their real name.\n\n"
-        ));
-        prompt.push_str(
-            "## CRITICAL: Tool Usage Rules\n\
+        let mut prompt = String::from(
+            "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
+You have FULL ACCESS to the user's system via built-in tools.\n\n\
+## CRITICAL: Tool Usage Rules\n\
 - When the user asks about their system (IP address, processes, services, files, disk space, etc.), \
   you **MUST** use the appropriate tool to get REAL data. Do NOT guess or provide hypothetical answers.\n\
 - Available tools include:\n\
