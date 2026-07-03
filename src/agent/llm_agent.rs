@@ -110,9 +110,11 @@ impl LlmAgent {
     }
 
     fn build_system_prompt(&self, user_message: &str) -> String {
-        let mut prompt = String::from(
+        let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
+        let mut prompt = format!(
             "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
-You have FULL ACCESS to the user's system via built-in tools.\n\n\
+You have FULL ACCESS to the user's system via built-in tools.\n\
+**Current date: {today}**\n\n\
 ## CRITICAL: Tool Usage Rules\n\
 - When the user asks about their system (IP address, processes, services, files, disk space, etc.), \
   you **MUST** use the appropriate tool to get REAL data. Do NOT guess or provide hypothetical answers.\n\
@@ -140,14 +142,14 @@ You have FULL ACCESS to the user's system via built-in tools.\n\n\
 When you need to use a tool, you **MUST actually emit the tool call** — do NOT just say \"let me check\" \
 or \"I'll use a tool\" without actually calling it. If your API supports native function calling, use that. \
 If it does NOT, output a JSON code block in this exact format:\n\
-```json\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ipconfig\"}}\n```\n\
+```json\n{{\"name\": \"shell_exec\", \"arguments\": {{\"command\": \"ipconfig\"}}}}\n```\n\
 The system will detect this block, execute the tool, and return the result. You MUST output the JSON block — \
 saying \"let me check\" without the actual JSON block does nothing.\n\n\
 **CRITICAL: When emitting a tool call, output ONLY the JSON code block — nothing else.** \
 Do NOT write narrative text like \"let me open the calculator\" before or alongside the tool call. \
 Do NOT repeat yourself. The tool call IS your action — explain the result AFTER you receive it, not before.\n\
 Wrong: \"Let me open the calculator for you! ```json ... ```\"\n\
-Right: ```json\n{\"name\": \"app_launch\", ...}\n```\n\
+Right: ```json\n{{\"name\": \"app_launch\", ...}}\n```\n\
 (Then after the tool result comes back, say \"Calculator has been opened.\")\n\n\
 ## Response Guidelines\n\
 - Provide **detailed, comprehensive** responses with real data from tools.\n\
