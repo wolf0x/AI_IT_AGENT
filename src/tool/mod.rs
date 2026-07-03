@@ -13,6 +13,11 @@ pub mod cron_manage;
 pub mod memory_md;
 pub mod todo_update;
 pub mod browser_cdp;
+pub mod ir_scan;
+pub mod ir_process;
+pub mod ir_account;
+pub mod ir_persistence;
+pub mod ir_network;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -227,6 +232,12 @@ impl ToolRegistry {
         registry.register(Arc::new(app_launch::AppLaunchTool));
         registry.register(Arc::new(browser_open::BrowserOpenTool));
         registry.register(Arc::new(web_fetch::WebFetchTool));
+        // IR (Incident Response) tools — ported from yinghuo
+        registry.register(Arc::new(ir_scan::IrScanTool));
+        registry.register(Arc::new(ir_process::IrProcessTool));
+        registry.register(Arc::new(ir_account::IrAccountTool));
+        registry.register(Arc::new(ir_persistence::IrPersistenceTool));
+        registry.register(Arc::new(ir_network::IrNetworkTool));
         let _ = working_dir;
         registry
     }
