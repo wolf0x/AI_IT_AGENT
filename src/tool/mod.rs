@@ -18,6 +18,11 @@ pub mod ir_process;
 pub mod ir_account;
 pub mod ir_persistence;
 pub mod ir_network;
+pub mod ir_eventlog;
+pub mod ir_file;
+pub mod ir_driver;
+pub mod ir_analyzer;
+pub mod ir_report;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -238,6 +243,11 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_account::IrAccountTool));
         registry.register(Arc::new(ir_persistence::IrPersistenceTool));
         registry.register(Arc::new(ir_network::IrNetworkTool));
+        registry.register(Arc::new(ir_eventlog::IrEventLogTool));
+        registry.register(Arc::new(ir_file::IrFileTool));
+        registry.register(Arc::new(ir_driver::IrDriverTool));
+        registry.register(Arc::new(ir_analyzer::IrAnalyzerTool));
+        registry.register(Arc::new(ir_report::IrReportTool));
         let _ = working_dir;
         registry
     }
