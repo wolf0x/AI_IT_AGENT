@@ -578,6 +578,9 @@ function connectWs(){
   intentionalDisconnect=false;
   if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null}
   reconnectStartTime=0;
+  // Close stale WebSocket before opening a new one — prevents duplicate
+  // server-side broadcast subscriptions after sleep/wake reconnects.
+  if(ws){try{ws.onclose=null;ws.close()}catch(e){}; ws=null}
   // Persist credentials for auto-reconnect on page refresh
   try{localStorage.setItem(WS_URL_KEY,url);localStorage.setItem(WS_PWD_KEY,pwd)}catch(e){}
   addLog('Connecting...','info');
