@@ -23,6 +23,9 @@ pub mod ir_file;
 pub mod ir_driver;
 pub mod ir_analyzer;
 pub mod ir_report;
+pub mod malware_analysis;
+pub mod malware_scan;
+pub mod malware_deep;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -248,6 +251,9 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_driver::IrDriverTool));
         registry.register(Arc::new(ir_analyzer::IrAnalyzerTool));
         registry.register(Arc::new(ir_report::IrReportTool));
+        // Malware analysis tools — ported from hacksguard
+        registry.register(Arc::new(malware_scan::MalwareScanTool));
+        registry.register(Arc::new(malware_deep::MalwareDeepTool));
         let _ = working_dir;
         registry
     }
