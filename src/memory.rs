@@ -90,6 +90,101 @@ fn is_cjk_char(c: char) -> bool {
     )
 }
 
+/// Insert spaces between consecutive CJK characters so that the FTS5
+/// `unicode61` tokenizer treats each CJK character as an individual token.
+/// Latin words are left untouched (their existing whitespace is preserved).
+fn preprocess_for_fts(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() + text.len() / 4);
+    let mut prev_cjk = false;
+    for ch in text.chars() {
+        if is_cjk_char(ch) {
+            if prev_cjk {
+                result.push(' ');
+            }
+            result.push(ch);
+            prev_cjk = true;
+        } else {
+            if prev_cjk {
+                result.push(' ');
+            }
+            result.push(ch);
+            prev_cjk = false;
+        }
+    }
+    result
+}
+
+/// Build FTS5 query tokens from a user query string.
+///
+/// - CJK segments → 2-character phrase queries (e.g. `"安 全"`)
+/// - Latin words → quoted exact-match tokens (e.g. `"security"`)
+///
+/// All tokens are returned ready to be joined with ` OR ` for the FTS5
+/// MATCH expression.
+fn build_fts_query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+
+    for word in query.split_whitespace() {
+        if word.is_empty() {
+            continue;
+        }
+        let lower = word.to_lowercase();
+        let chars: Vec<char> = lower.chars().collect();
+        let has_cjk = chars.iter().copied().any(is_cjk_char);
+
+        if has_cjk {
+            // Generate CJK bigram phrase queries.
+            // Each bigram becomes `"X Y"` which FTS5 matches as adjacent tokens.
+            for window in chars.windows(2) {
+                let c0 = window[0];
+                let c1 = window[1];
+                if is_cjk_char(c0) || is_cjk_char(c1) {
+                    // Escape any double-quotes inside the token
+                    let s = format!("{} {}", c0, c1);
+                    tokens.push(format!("\"{}\"", s.replace('"', "\"\"")));
+                }
+            }
+            // Also add the full CJK string as individual character tokens OR'd
+            // so that single-char queries still match something.
+            if chars.len() == 1 && is_cjk_char(chars[0]) {
+                let escaped = format!("{}", chars[0]).replace('"', "\"\"");
+                tokens.push(format!("\"{}\"", escaped));
+            }
+        } else {
+            // Latin word — quote it for exact token match
+            let escaped = lower.replace('"', "\"\"");
+            tokens.push(format!("\"{}\"", escaped));
+        }
+    }
+
+    // Fallback: if the query had no whitespace (single CJK string),
+    // generate bigrams from the whole string.
+    if tokens.is_empty() {
+        let lower = query.trim().to_lowercase();
+        if !lower.is_empty() {
+            let chars: Vec<char> = lower.chars().collect();
+            if chars.iter().copied().any(is_cjk_char) {
+                for window in chars.windows(2) {
+                    let c0 = window[0];
+                    let c1 = window[1];
+                    if is_cjk_char(c0) || is_cjk_char(c1) {
+                        let s = format!("{} {}", c0, c1);
+                        tokens.push(format!("\"{}\"", s.replace('"', "\"\"")));
+                    }
+                }
+            }
+            if tokens.is_empty() {
+                let escaped = lower.replace('"', "\"\"");
+                tokens.push(format!("\"{}\"", escaped));
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Legacy keyword extraction — kept for `is_recall_query()` in server.rs.
+/// The FTS5 search path uses `build_fts_query_tokens` instead.
 fn extract_search_keywords(query: &str) -> Vec<String> {
     let mut keywords = Vec::new();
 
@@ -195,10 +290,45 @@ impl MemoryStore {
                 .map_err(|e| format!("Version insert failed: {}", e))?;
         }
 
+        // ── Schema v2: FTS5 full-text search index ──────────────
+        if version < 2 {
+            // Standalone FTS5 table (not content-synced, because we need
+            // CJK preprocessing before indexing — triggers can't call Rust).
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
+                    content,
+                    tokenize='unicode61 remove_diacritics 0'
+                );"
+            ).map_err(|e| format!("FTS5 table creation failed: {}", e))?;
+
+            // Backfill existing conversations into the FTS index.
+            let rows: Vec<(i64, String)> = conn.prepare(
+                "SELECT rowid, content FROM conversations"
+            )
+            .map_err(|e| format!("FTS backfill query failed: {}", e))?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("FTS backfill query_map failed: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+            for (rowid, content) in &rows {
+                let fts_content = preprocess_for_fts(content);
+                conn.execute(
+                    "INSERT INTO conversations_fts(rowid, content) VALUES (?1, ?2)",
+                    params![rowid, fts_content],
+                ).map_err(|e| format!("FTS backfill insert failed: {}", e))?;
+            }
+
+            conn.execute("INSERT INTO schema_version(version) VALUES(2)", [])
+                .map_err(|e| format!("Version 2 insert failed: {}", e))?;
+
+            info!("Schema v2 migration: FTS5 index created ({} entries indexed)", rows.len());
+        }
+
         Ok(())
     }
 
-    /// Store a conversation entry.
+    /// Store a conversation entry and update the FTS5 index.
     pub fn store_entry(
         &self,
         session_id: &str,
@@ -213,7 +343,18 @@ impl MemoryStore {
             "INSERT INTO conversations (date, session_id, role, content, tool_name, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![date, session_id, role, content, tool_name, timestamp],
         ).map_err(|e| format!("Failed to store entry: {}", e))?;
-        Ok(conn.last_insert_rowid())
+        let rowid = conn.last_insert_rowid();
+
+        // Also insert into FTS5 index with CJK-preprocessed content.
+        // FTS5 table may not exist on very old DBs that haven't migrated yet;
+        // silently ignore that error.
+        let fts_content = preprocess_for_fts(content);
+        let _ = conn.execute(
+            "INSERT INTO conversations_fts(rowid, content) VALUES (?1, ?2)",
+            params![rowid, fts_content],
+        );
+
+        Ok(rowid)
     }
 
     /// Get all conversation entries for a specific date.
@@ -267,13 +408,66 @@ impl MemoryStore {
         Ok(entries)
     }
 
-    /// Keyword search across recent conversation entries (no embeddings).
+    /// Full-text search across recent conversation entries using FTS5.
     ///
-    /// For whitespace-separated languages, splits into words. For CJK text
-    /// (which has no word separators), generates 2-character bigrams so that
-    /// substring matching still works. Returns entries whose content contains
-    /// any of the generated keywords (case-insensitive).
+    /// Uses BM25 ranking so the most relevant results come first.
+    /// CJK text is handled via bigram phrase queries.
+    /// Falls back to the legacy linear scan if the FTS5 table is missing.
     pub fn search_entries(&self, query: &str, days: usize) -> Result<Vec<ConversationEntry>, String> {
+        let tokens = build_fts_query_tokens(query);
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let fts_query = tokens.join(" OR ");
+        let since = (Utc::now() - chrono::Duration::days(days as i64))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let conn = self.conn.lock().unwrap();
+
+        // Try FTS5 search first.
+        let fts_result = (|| -> Result<Vec<ConversationEntry>, String> {
+            let mut stmt = conn.prepare(
+                "SELECT c.id, c.date, c.session_id, c.role, c.content, c.tool_name, c.timestamp
+                 FROM conversations_fts f
+                 JOIN conversations c ON c.rowid = f.rowid
+                 WHERE conversations_fts MATCH ?1
+                   AND c.date >= ?2
+                 ORDER BY bm25(conversations_fts)
+                 LIMIT 30"
+            ).map_err(|e| format!("FTS query prepare failed: {}", e))?;
+
+            let entries = stmt.query_map(params![fts_query, since], |row| {
+                Ok(ConversationEntry {
+                    id: row.get(0)?,
+                    date: row.get(1)?,
+                    session_id: row.get(2)?,
+                    role: row.get(3)?,
+                    content: row.get(4)?,
+                    tool_name: row.get(5)?,
+                    timestamp: row.get(6)?,
+                })
+            }).map_err(|e| format!("FTS query failed: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+            Ok(entries)
+        })();
+
+        match fts_result {
+            Ok(entries) => Ok(entries),
+            Err(e) => {
+                // FTS5 table might not exist (e.g. migration not yet run).
+                // Fall back to legacy linear scan.
+                warn!("FTS5 search failed ({}), falling back to linear scan", e);
+                self.search_entries_legacy(query, days)
+            }
+        }
+    }
+
+    /// Legacy keyword search (fallback when FTS5 is unavailable).
+    fn search_entries_legacy(&self, query: &str, days: usize) -> Result<Vec<ConversationEntry>, String> {
         let keywords = extract_search_keywords(query);
         if keywords.is_empty() {
             return Ok(Vec::new());
@@ -283,12 +477,10 @@ impl MemoryStore {
         let mut matched: Vec<ConversationEntry> = Vec::new();
         for entry in recent {
             let content_lower = entry.content.to_lowercase();
-            // An entry matches if it contains ANY keyword.
             if keywords.iter().any(|kw| content_lower.contains(kw)) {
                 matched.push(entry);
             }
         }
-        // Cap to a reasonable number of hits (keep the most recent).
         if matched.len() > 30 {
             let start = matched.len() - 30;
             matched = matched.split_off(start);
