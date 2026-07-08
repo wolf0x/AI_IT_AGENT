@@ -46,6 +46,10 @@ use crate::skill::SkillManager;
 use crate::tool::mcp_client::McpClientManager;
 use crate::tool::ToolRegistry;
 
+/// Workspace template files embedded into the binary at build time.
+/// Extracted to workspace on first run only — existing files are never overwritten.
+const EMBEDDED_FILES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embedded_files.rs"));
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
@@ -66,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load config from exe directory
     let config_path = exe_dir.join("config.toml");
-    let config = Config::load(config_path.to_str().unwrap_or("config.toml"))?;
+    let mut config = Config::load(config_path.to_str().unwrap_or("config.toml"))?;
     info!(
         "Config loaded: {} models, {} MCP servers",
         config.models.len(),
@@ -98,6 +102,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for sub in &ws_subdirs {
         let p = std::path::Path::new(&workspace_dir).join(sub);
         let _ = std::fs::create_dir_all(&p);
+    }
+
+    // ── Random password (first-run) ──────────────────────────
+    // Each installation gets its own random 6-digit password, persisted to .password.
+    // Subsequent runs reuse the same password — no more default "123".
+    {
+        let pwd_file = std::path::Path::new(&workspace_dir).join(".password");
+        if pwd_file.exists() {
+            if let Ok(pwd) = std::fs::read_to_string(&pwd_file) {
+                let pwd = pwd.trim().to_string();
+                if !pwd.is_empty() {
+                    config.server.password = pwd;
+                }
+            }
+        } else {
+            let mut bytes = [0u8; 3];
+            getrandom::fill(&mut bytes).expect("getrandom");
+            let num = ((bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32) % 1000000;
+            let password = format!("{:06}", num);
+            if let Err(e) = std::fs::write(&pwd_file, &password) {
+                tracing::warn!("Failed to save password: {}", e);
+            }
+            config.server.password = password;
+        }
+    }
+
+    // ── Extract embedded workspace files (first-run only) ────
+    // AGENTS.md, SOUL.md, TOOLS.md are compiled into the binary.
+    // On first run they are written to workspace; existing files are never overwritten.
+    for &(name, content) in EMBEDDED_FILES {
+        let path = std::path::Path::new(&workspace_dir).join(name);
+        if !path.exists() {
+            if let Err(e) = std::fs::write(&path, content) {
+                tracing::warn!("Failed to extract {}: {}", name, e);
+            } else {
+                info!("Extracted {} to workspace", name);
+            }
+        }
     }
 
     // Migrate existing config files from exe_dir → workspace (first-run upgrade)
