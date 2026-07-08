@@ -22,6 +22,23 @@ pub struct OpenAiProvider {
 
 // --- Internal streaming types ---
 
+/// Returns the correct JSON key for the max output tokens parameter.
+/// Newer OpenAI models (GPT-5, o1, o3, o4) require `max_completion_tokens`
+/// instead of the legacy `max_tokens`. All other OpenAI-compatible models
+/// (DeepSeek, Qwen, GPT-4, etc.) continue using `max_tokens`.
+fn max_tokens_key(model_name: &str) -> &'static str {
+    let lower = model_name.to_lowercase();
+    if lower.starts_with("gpt-5")
+        || lower.starts_with("o1")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+    {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct StreamChunk {
     choices: Option<Vec<StreamChoice>>,
@@ -112,8 +129,8 @@ impl OpenAiProvider {
             "messages": messages,
             "stream": true,
             "temperature": model.temperature,
-            "max_tokens": model.max_tokens,
         });
+        body[max_tokens_key(&model.name)] = serde_json::json!(model.max_tokens);
         if !tools.is_empty() {
             body["tools"] = serde_json::to_value(tools).unwrap();
             body["tool_choice"] = serde_json::json!("auto");
@@ -272,7 +289,7 @@ impl Llm for OpenAiProvider {
             body["temperature"] = serde_json::json!(temp);
         }
         if let Some(max) = request.config.max_tokens {
-            body["max_tokens"] = serde_json::json!(max);
+            body[max_tokens_key(&model.name)] = serde_json::json!(max);
         }
 
         let mut req = self.client.post(&url).header("Content-Type", "application/json");
