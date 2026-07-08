@@ -128,6 +128,7 @@ impl Heartbeat {
             ctx_window, ctx_window_threshold,
             tool_timeout,
             vec![],  // no images for heartbeat
+            None, None,  // no checkpoint for heartbeat
         ).await {
             Ok(mut stream) => {
                 use futures::StreamExt;

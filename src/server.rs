@@ -21,6 +21,7 @@ use crate::memory::MemoryStore;
 use crate::model::ChatMessage;
 use crate::permission::{PermissionResolver, PendingMap};
 use crate::runner::Runner;
+use crate::runner::ResumeState;
 use crate::scheduler::{Scheduler, CronTask};
 use crate::skill::SkillManager;
 use crate::config::McpServerConfig;
@@ -106,6 +107,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/tools/{name}/description", post(tools_desc_handler))
         .route("/api/config/files", get(config_files_handler))
         .route("/api/config/files/{name}", put(config_file_save_handler))
+        .route("/api/checkpoints", get(checkpoints_list_handler))
+        .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
         .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
 }
@@ -758,6 +761,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 ctx_window, ctx_window_threshold,
                                 tool_timeout as u64,
                                 images,
+                                None, None,  // normal chat — no checkpoint resume
                             ).await {
                                 Ok(mut event_stream) => {
                                     let mut assistant_text = String::new();
@@ -878,6 +882,159 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             let _ = sink
                                 .send(Message::Text(json!({"type":"cleared"}).to_string().into()))
                                 .await;
+                        }
+                        "resume" => {
+                            let cp_id = parsed["checkpoint_id"].as_str().unwrap_or("").to_string();
+                            if cp_id.is_empty() { continue; }
+
+                            // Load checkpoint from SQLite
+                            let cp = match state.memory_store.get_checkpoint(&cp_id) {
+                                Ok(Some(cp)) => cp,
+                                Ok(None) => {
+                                    let err = json!({"type":"error","message":"Checkpoint not found"}).to_string();
+                                    let mut sink = ws_sink.lock().await;
+                                    let _ = sink.send(Message::Text(err.into())).await;
+                                    continue;
+                                }
+                                Err(e) => {
+                                    let err = json!({"type":"error","message":format!("Failed to load checkpoint: {}", e)}).to_string();
+                                    let mut sink = ws_sink.lock().await;
+                                    let _ = sink.send(Message::Text(err.into())).await;
+                                    continue;
+                                }
+                            };
+
+                            // Deserialize history
+                            let history: Vec<ChatMessage> = match serde_json::from_str(&cp.history_json) {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    let err = json!({"type":"error","message":format!("Failed to deserialize checkpoint history: {}", e)}).to_string();
+                                    let mut sink = ws_sink.lock().await;
+                                    let _ = sink.send(Message::Text(err.into())).await;
+                                    continue;
+                                }
+                            };
+
+                            let model = cp.model_name.clone();
+                            let resume_state = ResumeState {
+                                history,
+                                start_iteration: cp.iteration,
+                            };
+                            let new_cp_id = uuid::Uuid::new_v4().to_string();
+
+                            info!("Resuming checkpoint {} (session: {}, model: {}, iter: {})",
+                                  cp_id, session_id, model, cp.iteration);
+
+                            // Send a status message to the UI
+                            let resume_event = serde_json::json!({
+                                "type": "text",
+                                "content": format!("\n\n*[Resuming interrupted task from iteration {}...]*\n\n", cp.iteration + 1),
+                                "invocation_id": session_id,
+                                "author": "system"
+                            });
+                            {
+                                let mut sink = ws_sink.lock().await;
+                                let _ = sink.send(Message::Text(resume_event.to_string().into())).await;
+                            }
+
+                            let ctx_window = {
+                                let mc = state.model_configs.read().await;
+                                mc.iter().find(|m| m.name == model).map(|m| m.context_window).unwrap_or(128000)
+                            };
+
+                            cancelled.store(false, Ordering::SeqCst);
+
+                            match state.runner.run(
+                                &cp.user_message, &session_id, &model, state.max_iterations,
+                                vec![],  // empty base history — resume_state provides it
+                                state.permissions.clone(), state.permission_pending.clone(),
+                                None, state.rabbit_hole_threshold,
+                                ctx_window, state.context_window_threshold,
+                                state.tool_timeout_secs as u64,
+                                vec![],  // no images
+                                Some(new_cp_id),
+                                Some(resume_state),
+                            ).await {
+                                Ok(mut event_stream) => {
+                                    let mut assistant_text = String::new();
+                                    loop {
+                                        tokio::select! {
+                                            result = event_stream.next() => {
+                                                match result {
+                                                    Some(Ok(event)) => {
+                                                        if let AgentEvent::TextDelta { content: c, .. } = &event {
+                                                            assistant_text.push_str(c);
+                                                        }
+                                                        let msg_str = event.to_ws_message();
+                                                        let mut sink = ws_sink.lock().await;
+                                                        if sink.send(Message::Text(msg_str.into())).await.is_err() {
+                                                            break;
+                                                        }
+                                                        if event.is_done() {
+                                                            break;
+                                                        }
+                                                    }
+                                                    Some(Err(e)) => {
+                                                        let err_event = AgentEvent::error(&e.to_string(), &session_id, "system");
+                                                        let msg_str = err_event.to_ws_message();
+                                                        let mut sink = ws_sink.lock().await;
+                                                        let _ = sink.send(Message::Text(msg_str.into())).await;
+                                                        break;
+                                                    }
+                                                    None => break,
+                                                }
+                                            }
+                                            msg = ws_rx.recv() => {
+                                                match msg {
+                                                    Some(Message::Text(ref t)) => {
+                                                        if let Ok(p) = serde_json::from_str::<Value>(t) {
+                                                            if p["type"].as_str() == Some("stop") {
+                                                                cancelled.store(true, Ordering::SeqCst);
+                                                            }
+                                                            if p["type"].as_str() == Some("permission_response") {
+                                                                let req_id = p["request_id"].as_str().unwrap_or("");
+                                                                let allowed = p["allowed"].as_bool().unwrap_or(false);
+                                                                state.permission_resolver.resolve(req_id, allowed).await;
+                                                            }
+                                                        }
+                                                    }
+                                                    Some(Message::Close(_)) => {
+                                                        cancelled.store(true, Ordering::SeqCst);
+                                                        break;
+                                                    }
+                                                    None => break,
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                        if cancelled.load(Ordering::SeqCst) {
+                                            info!("Agent execution stopped by user (resume)");
+                                            let stop_event = AgentEvent::text("\n\n*[Stopped by user]*", &session_id, "system");
+                                            let msg_str = stop_event.to_ws_message();
+                                            let mut sink = ws_sink.lock().await;
+                                            let _ = sink.send(Message::Text(msg_str.into())).await;
+                                            let done_event = AgentEvent::done(&session_id, "system");
+                                            let msg_str = done_event.to_ws_message();
+                                            let _ = sink.send(Message::Text(msg_str.into())).await;
+                                            break;
+                                        }
+                                    }
+
+                                    // Store in memory (SQLite)
+                                    if !assistant_text.is_empty() {
+                                        let _ = state.memory_store.store_entry(&session_id, "user", &cp.user_message, None);
+                                        let _ = state.memory_store.store_entry(&session_id, "assistant", &assistant_text, None);
+                                        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                                        let _ = state.memory_store.auto_summarize_date(&today);
+                                    }
+                                }
+                                Err(e) => {
+                                    let err_event = AgentEvent::error(&e.to_string(), &session_id, "system");
+                                    let msg_str = err_event.to_ws_message();
+                                    let mut sink = ws_sink.lock().await;
+                                    let _ = sink.send(Message::Text(msg_str.into())).await;
+                                }
+                            }
                         }
                         "permissions" => {
                             // Update permission settings (when not in agent execution)
@@ -1118,6 +1275,45 @@ async fn config_file_save_handler(
             Json(json!({ "success": true, "file": name }))
         }
         Err(e) => Json(json!({ "success": false, "error": format!("Failed to save: {}", e) })),
+    }
+}
+
+// ============================================================
+// Checkpoint Handlers
+// ============================================================
+
+async fn checkpoints_list_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    match state.memory_store.list_checkpoints() {
+        Ok(cps) => {
+            // Return metadata only — do NOT send the full history_json to the client.
+            let items: Vec<Value> = cps.iter().map(|cp| {
+                json!({
+                    "id": cp.id,
+                    "session_id": cp.session_id,
+                    "model_name": cp.model_name,
+                    "user_message": cp.user_message.chars().take(200).collect::<String>(),
+                    "iteration": cp.iteration,
+                    "tool_summary": cp.tool_summary,
+                    "created_at": cp.created_at,
+                    "updated_at": cp.updated_at,
+                })
+            }).collect();
+            Json(json!({ "checkpoints": items, "count": items.len() }))
+        }
+        Err(e) => Json(json!({ "error": e })),
+    }
+}
+
+async fn checkpoints_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    match state.memory_store.delete_checkpoint(&id) {
+        Ok(_) => {
+            info!("Checkpoint {} deleted via API", id);
+            Json(json!({ "ok": true }))
+        }
+        Err(e) => Json(json!({ "error": e })),
     }
 }
 

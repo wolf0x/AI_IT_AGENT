@@ -295,6 +295,20 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 /* Responsive */
 @media(max-width:1000px){.log-panel{display:none}.sidebar{width:160px}}
 @media(max-width:700px){body{padding:0}.container{height:100vh;border-radius:0;border:0}.sidebar{width:50px}.sidebar-hdr h2,.sidebar-hdr p,.nav-tab span,.sidebar-ftr{display:none}.msg-body{max-width:85%!important}}
+
+/* Checkpoint banner */
+.cp-banner{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:10px 14px;margin:0 12px 8px 12px;font-size:13px}
+.cp-banner-title{font-weight:600;color:#856404;margin-bottom:6px}
+.cp-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #ffeaa7}
+.cp-item:last-child{border-bottom:none}
+.cp-item-info{flex:1;min-width:0}
+.cp-item-msg{color:#333;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px}
+.cp-item-meta{color:#888;font-size:11px;margin-top:2px}
+.cp-item button{padding:3px 10px;border-radius:4px;border:1px solid #ccc;cursor:pointer;font-size:12px;background:#fff}
+.cp-item .cp-resume{background:#27ae60;color:#fff;border-color:#27ae60}
+.cp-item .cp-resume:hover{background:#219a52}
+.cp-item .cp-discard{color:#c0392b;border-color:#c0392b}
+.cp-item .cp-discard:hover{background:#c0392b;color:#fff}
 </style>
 </head>
 <body>
@@ -521,6 +535,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
       <div class="chat-panels">
         <div class="chat-main">
           <div class="conv-area" id="convArea"></div>
+          <div id="cpBanner"></div>
           <div class="img-preview-bar" id="imgPreviewBar"></div>
           <div class="input-bar">
             <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
@@ -703,6 +718,8 @@ function handleMsg(msg){
       finalizeTextBlock();
       curToolMap={};
       setAgentRunning(false);
+      // Refresh checkpoint banner (completed checkpoints are deleted server-side)
+      checkCheckpoints();
       // Process message queue
       if(msgQueue.length>0){
         const next=msgQueue.shift();
@@ -1590,10 +1607,64 @@ function respondPerm(requestId,allowed){
   addLog('Permission '+(allowed?'granted':'denied')+' for request '+requestId.substring(0,8),allowed?'info':'warn');
 }
 
+// ── Checkpoint Banner ──
+async function checkCheckpoints(){
+  try{
+    const r=await fetch('/api/checkpoints');
+    const d=await r.json();
+    if(d.checkpoints&&d.checkpoints.length>0){
+      showCheckpointBanner(d.checkpoints);
+    }
+  }catch(e){console.error('checkCheckpoints error',e)}
+}
+
+function showCheckpointBanner(cps){
+  const el=document.getElementById('cpBanner');
+  if(!el)return;
+  let html='<div class="cp-banner"><div class="cp-banner-title">Interrupted Tasks</div>';
+  cps.forEach(cp=>{
+    const time=new Date(cp.updated_at).toLocaleString();
+    html+='<div class="cp-item" id="cp-'+cp.id+'">';
+    html+='<div class="cp-item-info">';
+    html+='<div class="cp-item-msg">'+escHtml(cp.user_message)+'</div>';
+    html+='<div class="cp-item-meta">'+escHtml(cp.tool_summary)+' &middot; iter '+(cp.iteration+1)+' &middot; '+cp.model_name+' &middot; '+time+'</div>';
+    html+='</div>';
+    html+='<button class="cp-resume" onclick="resumeCheckpoint(\''+cp.id+'\')">Resume</button>';
+    html+='<button class="cp-discard" onclick="discardCheckpoint(\''+cp.id+'\')">Discard</button>';
+    html+='</div>';
+  });
+  html+='</div>';
+  el.innerHTML=html;
+}
+
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+async function resumeCheckpoint(cpId){
+  if(!ws||ws.readyState!==WebSocket.OPEN){addLog('Not connected','error');return}
+  ws.send(JSON.stringify({type:'resume',checkpoint_id:cpId}));
+  const item=document.getElementById('cp-'+cpId);
+  if(item)item.remove();
+  const remaining=document.querySelectorAll('#cpBanner .cp-item');
+  if(remaining.length===0){document.getElementById('cpBanner').innerHTML=''}
+  addLog('Resuming checkpoint '+cpId,'info');
+}
+
+async function discardCheckpoint(cpId){
+  try{
+    await fetch('/api/checkpoints/'+cpId,{method:'DELETE'});
+    const item=document.getElementById('cp-'+cpId);
+    if(item)item.remove();
+    const remaining=document.querySelectorAll('#cpBanner .cp-item');
+    if(remaining.length===0){document.getElementById('cpBanner').innerHTML=''}
+    addLog('Checkpoint discarded','info');
+  }catch(e){addLog('Failed to discard checkpoint','error')}
+}
+
 // 鈹€鈹€ Init 鈹€鈹€
 document.addEventListener('DOMContentLoaded',()=>{
   loadHist();
   renderPerms();
+  checkCheckpoints();
   if(!msgHist.length)addLog('RustAgent ready','info');
   updateStatus();
   const modelSel=document.getElementById('modelSel');

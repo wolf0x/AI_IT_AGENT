@@ -2,6 +2,7 @@
 mod agent;
 #[allow(dead_code)]
 mod callbacks;
+mod checkpoint;
 mod config;
 mod crypto;
 #[allow(dead_code)]
@@ -32,6 +33,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::agent::LlmAgent;
+use crate::checkpoint::TaskCheckpointer;
 use crate::config::Config;
 use crate::external_tools::ExternalToolsManager;
 use crate::log::ConversationLogger;
@@ -271,6 +273,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     info!("Memory store ready: {}", db_path.display());
 
+    // Clean up stale checkpoints (older than 24 hours) on startup
+    let _ = memory_store.cleanup_stale_checkpoints(24);
+
+    // Build task checkpointer for crash recovery (断点续跑)
+    let checkpointer = Arc::new(TaskCheckpointer::new(memory_store.clone()));
+
     // Build external tools manager (resolve tools dir from workspace)
     let tools_dir = std::path::Path::new(&workspace_dir).join("tools");
     let external_tools = Arc::new(Mutex::new(ExternalToolsManager::new(tools_dir.clone())));
@@ -298,6 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runner = Runner::builder()
         .agent(agent)
         .logger(logger.clone())
+        .checkpointer(checkpointer)
         .app_name("rust-agent")
         .build()
         .map_err(|e| format!("Failed to build runner: {}", e))?;

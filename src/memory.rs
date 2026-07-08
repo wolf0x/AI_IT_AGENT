@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationEntry {
@@ -27,6 +27,24 @@ pub struct SummaryEntry {
     pub date: String,
     pub summary: String,
     pub created_at: String,
+}
+
+/// A checkpoint of an in-progress agent task, persisted to SQLite
+/// so it can be resumed after a crash or restart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCheckpoint {
+    pub id: String,
+    pub session_id: String,
+    pub model_name: String,
+    pub user_message: String,
+    /// Full conversation history serialized as JSON array of ChatMessage.
+    pub history_json: String,
+    /// Iteration number when the checkpoint was saved.
+    pub iteration: usize,
+    /// Human-readable summary of tools used (e.g. "bash, read_file (3 rounds)").
+    pub tool_summary: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 pub struct MemoryStore {
@@ -323,6 +341,28 @@ impl MemoryStore {
                 .map_err(|e| format!("Version 2 insert failed: {}", e))?;
 
             info!("Schema v2 migration: FTS5 index created ({} entries indexed)", rows.len());
+        }
+
+        // ── Schema v3: Task checkpoints for crash recovery ──────
+        if version < 3 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS task_checkpoints (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    user_message TEXT NOT NULL,
+                    history_json TEXT NOT NULL,
+                    iteration INTEGER NOT NULL DEFAULT 0,
+                    tool_summary TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );"
+            ).map_err(|e| format!("Checkpoint table creation failed: {}", e))?;
+
+            conn.execute("INSERT INTO schema_version(version) VALUES(3)", [])
+                .map_err(|e| format!("Version 3 insert failed: {}", e))?;
+
+            info!("Schema v3 migration: task_checkpoints table created");
         }
 
         Ok(())
@@ -765,5 +805,103 @@ impl MemoryStore {
             "SELECT COUNT(*) FROM conversations", [], |row| row.get(0),
         ).map_err(|e| format!("Count failed: {}", e))?;
         Ok(count as usize)
+    }
+
+    // ── Task Checkpoint CRUD ──────────────────────────────────────
+
+    /// Save or update a task checkpoint (INSERT OR REPLACE).
+    pub fn save_checkpoint(&self, cp: &TaskCheckpoint) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO task_checkpoints \
+             (id, session_id, model_name, user_message, history_json, iteration, tool_summary, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                cp.id, cp.session_id, cp.model_name, cp.user_message,
+                cp.history_json, cp.iteration as i64, cp.tool_summary,
+                cp.created_at, cp.updated_at,
+            ],
+        ).map_err(|e| format!("Failed to save checkpoint: {}", e))?;
+        Ok(())
+    }
+
+    /// List all checkpoints, most recently updated first.
+    pub fn list_checkpoints(&self) -> Result<Vec<TaskCheckpoint>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, model_name, user_message, history_json, \
+                    iteration, tool_summary, created_at, updated_at \
+             FROM task_checkpoints ORDER BY updated_at DESC"
+        ).map_err(|e| format!("Checkpoint list prepare failed: {}", e))?;
+
+        let cps = stmt.query_map([], |row| {
+            Ok(TaskCheckpoint {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                model_name: row.get(2)?,
+                user_message: row.get(3)?,
+                history_json: row.get(4)?,
+                iteration: row.get::<_, i64>(5)? as usize,
+                tool_summary: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        }).map_err(|e| format!("Checkpoint list query failed: {}", e))?
+          .filter_map(|r| r.ok())
+          .collect();
+
+        Ok(cps)
+    }
+
+    /// Get a single checkpoint by ID.
+    pub fn get_checkpoint(&self, id: &str) -> Result<Option<TaskCheckpoint>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, model_name, user_message, history_json, \
+                    iteration, tool_summary, created_at, updated_at \
+             FROM task_checkpoints WHERE id = ?1"
+        ).map_err(|e| format!("Checkpoint get prepare failed: {}", e))?;
+
+        let result = stmt.query_row(params![id], |row| {
+            Ok(TaskCheckpoint {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                model_name: row.get(2)?,
+                user_message: row.get(3)?,
+                history_json: row.get(4)?,
+                iteration: row.get::<_, i64>(5)? as usize,
+                tool_summary: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        });
+
+        match result {
+            Ok(cp) => Ok(Some(cp)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("Checkpoint get failed: {}", e)),
+        }
+    }
+
+    /// Delete a checkpoint by ID.
+    pub fn delete_checkpoint(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM task_checkpoints WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to delete checkpoint: {}", e))?;
+        Ok(())
+    }
+
+    /// Delete checkpoints older than `max_age_hours` hours.
+    /// Returns the number of deleted rows.
+    pub fn cleanup_stale_checkpoints(&self, max_age_hours: i64) -> Result<usize, String> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
+            "DELETE FROM task_checkpoints WHERE updated_at < datetime('now', ?1)",
+            params![format!("-{} hours", max_age_hours)],
+        ).map_err(|e| format!("Failed to cleanup checkpoints: {}", e))?;
+        if deleted > 0 {
+            info!("Cleaned up {} stale checkpoint(s) (older than {}h)", deleted, max_age_hours);
+        }
+        Ok(deleted)
     }
 }

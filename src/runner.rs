@@ -8,12 +8,19 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::agent::{Agent, EventStream};
+use crate::checkpoint::ATaskCheckpointer;
 use crate::context::{InvocationContext, ReadonlyContext};
 use crate::error::{AgentError, AgentResult};
 use crate::log::ConversationLogger;
 use crate::model::ChatMessage;
 use crate::permission::PendingMap;
 use crate::session::{InMemorySessionService, SessionService};
+
+/// State restored from a checkpoint for resuming an interrupted task.
+pub struct ResumeState {
+    pub history: Vec<ChatMessage>,
+    pub start_iteration: usize,
+}
 
 /// The Runner is the outer orchestration runtime.
 /// It manages sessions, builds context, dispatches to the agent, and persists events.
@@ -23,6 +30,7 @@ pub struct Runner {
     session_service: Arc<dyn SessionService>,
     logger: Arc<ConversationLogger>,
     app_name: String,
+    checkpointer: Option<ATaskCheckpointer>,
 }
 
 /// Builder for Runner (modeled after ADK-RUST's RunnerConfig builder).
@@ -31,6 +39,7 @@ pub struct RunnerBuilder {
     session_service: Option<Arc<dyn SessionService>>,
     logger: Option<Arc<ConversationLogger>>,
     app_name: String,
+    checkpointer: Option<ATaskCheckpointer>,
 }
 
 impl RunnerBuilder {
@@ -40,6 +49,7 @@ impl RunnerBuilder {
             session_service: None,
             logger: None,
             app_name: "rust-agent".to_string(),
+            checkpointer: None,
         }
     }
 
@@ -63,6 +73,11 @@ impl RunnerBuilder {
         self
     }
 
+    pub fn checkpointer(mut self, cp: ATaskCheckpointer) -> Self {
+        self.checkpointer = Some(cp);
+        self
+    }
+
     pub fn build(self) -> AgentResult<Runner> {
         let agent = self.agent.ok_or_else(|| AgentError::config("Runner requires an agent"))?;
         let session_service = self.session_service
@@ -75,6 +90,7 @@ impl RunnerBuilder {
             session_service,
             logger,
             app_name: self.app_name,
+            checkpointer: self.checkpointer,
         })
     }
 }
@@ -101,6 +117,8 @@ impl Runner {
         context_window_threshold: usize,
         tool_timeout_secs: u64,
         images: Vec<String>,
+        checkpoint_id: Option<String>,
+        resume_checkpoint: Option<ResumeState>,
     ) -> AgentResult<EventStream> {
         info!("Runner dispatching to agent '{}' (session: {})", self.agent.name(), session_id);
 
@@ -111,7 +129,7 @@ impl Runner {
             self.agent.name().to_string(),
             session_id.to_string(),
         );
-        let ctx = InvocationContext::new(
+        let mut ctx = InvocationContext::new(
             base_ctx,
             self.agent.name().to_string(),
             model_name.to_string(),
@@ -124,6 +142,17 @@ impl Runner {
          .with_context_window(context_window)
          .with_context_window_threshold(context_window_threshold)
          .with_tool_timeout_secs(tool_timeout_secs);
+
+        // Wire checkpoint/resume state if provided.
+        if let Some(resume) = resume_checkpoint {
+            ctx = ctx.with_resume_state(resume.history, resume.start_iteration);
+        }
+        if let Some(cp_id) = checkpoint_id {
+            ctx = ctx.with_checkpoint_id(cp_id);
+        }
+        if let Some(ref cp) = self.checkpointer {
+            ctx = ctx.with_checkpointer(cp.clone());
+        }
 
         // Log user message
         self.logger.log_user_message(session_id, user_message);

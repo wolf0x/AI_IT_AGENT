@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::model::ChatMessage;
 use crate::permission::PendingMap;
+use crate::checkpoint::ATaskCheckpointer;
 
 /// Base identity context — immutable, passed through the entire pipeline.
 /// Modeled after ADK-RUST's ReadonlyContext.
@@ -117,6 +118,14 @@ pub struct InvocationContext {
     pub permissions: Arc<Mutex<HashMap<String, bool>>>,
     /// Shared pending map for permission requests
     pub permission_pending: PendingMap,
+    /// History restored from a checkpoint (resume mode — skips adding user message).
+    pub resume_history: Option<Vec<ChatMessage>>,
+    /// Starting iteration when resuming from a checkpoint.
+    pub resume_iteration: Option<usize>,
+    /// Checkpoint ID for save/delete operations during this invocation.
+    pub checkpoint_id: Option<String>,
+    /// Checkpointer for persisting task state.
+    pub checkpointer: Option<ATaskCheckpointer>,
     ended: Arc<AtomicBool>,
 }
 
@@ -143,6 +152,10 @@ impl InvocationContext {
             shared_state: HashMap::new(),
             permissions: Arc::new(Mutex::new(crate::permission::default_permissions())),
             permission_pending: pending,
+            resume_history: None,
+            resume_iteration: None,
+            checkpoint_id: None,
+            checkpointer: None,
             ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -192,6 +205,25 @@ impl InvocationContext {
     /// Set tool execution timeout in seconds.
     pub fn with_tool_timeout_secs(mut self, secs: u64) -> Self {
         self.tool_timeout_secs = secs;
+        self
+    }
+
+    /// Set resume state from a checkpoint (history + starting iteration).
+    pub fn with_resume_state(mut self, history: Vec<ChatMessage>, start_iteration: usize) -> Self {
+        self.resume_history = Some(history);
+        self.resume_iteration = Some(start_iteration);
+        self
+    }
+
+    /// Set the checkpoint ID for this invocation.
+    pub fn with_checkpoint_id(mut self, id: String) -> Self {
+        self.checkpoint_id = Some(id);
+        self
+    }
+
+    /// Set the checkpointer for persisting task state.
+    pub fn with_checkpointer(mut self, cp: ATaskCheckpointer) -> Self {
+        self.checkpointer = Some(cp);
         self
     }
 

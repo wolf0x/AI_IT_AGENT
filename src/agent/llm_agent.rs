@@ -472,10 +472,22 @@ impl Agent for LlmAgent {
                 let context_window_threshold = ctx.context_window_threshold;
                 // Calculate max history tokens: context_window * threshold%
                 let max_history_tokens: usize = context_window * context_window_threshold / 100;
+        let checkpointer = ctx.checkpointer.clone();
+        let checkpoint_id = ctx.checkpoint_id.clone();
+        let resume_history = ctx.resume_history.clone();
+        let resume_iteration = ctx.resume_iteration;
 
         tokio::spawn(async move {
             let mut effective_system_prompt = system_prompt.clone();
             let mut history: Vec<ChatMessage> = prev_history;
+
+            // ── Resume from checkpoint ──
+            let is_resumed = resume_history.is_some();
+            if let Some(resumed_hist) = resume_history {
+                info!("[session:{}] Resuming from checkpoint ({} history messages, start iter {:?})",
+                      session_id, resumed_hist.len(), resume_iteration);
+                history = resumed_hist;
+            }
 
             // Some OpenAI-compatible / local models strongly prioritize only the
             // FIRST system prompt. Fold injected memory blocks into that first
@@ -513,10 +525,12 @@ impl Agent for LlmAgent {
             info!("[session:{}] Context budget: system={} tokens, history_budget={} tokens (model={} tokens @ {}%)",
                   session_id, system_tokens, history_budget, context_window, context_window_threshold);
 
-            if !images.is_empty() {
-                history.push(ChatMessage::user_with_images(&user_message, &images));
-            } else {
-                history.push(ChatMessage::user(&user_message));
+            if !is_resumed {
+                if !images.is_empty() {
+                    history.push(ChatMessage::user_with_images(&user_message, &images));
+                } else {
+                    history.push(ChatMessage::user(&user_message));
+                }
             }
 
             // Rabbit hole detection: track identical tool calls (same name + same args)
@@ -527,7 +541,8 @@ impl Agent for LlmAgent {
             let mut has_executed_tools = false;
             let mut reprompt_count = 0u32;
 
-            for iteration in 0..max_iter {
+            let start_iter = resume_iteration.unwrap_or(0);
+            for iteration in start_iter..max_iter {
                 info!("[session:{}] Agent loop iteration {} (model: {})", session_id, iteration + 1, active_model);
 
                 // If the consumer (WebSocket client) dropped the event stream —
@@ -693,6 +708,13 @@ impl Agent for LlmAgent {
                             if !already_streamed && !final_content.trim().is_empty() {
                                 let _ = tx.send(Ok(AgentEvent::text(&final_content, &invocation_id, &author))).await;
                             }
+                            // Task completed normally — delete checkpoint
+                            if let Some(ref cp) = checkpointer {
+                                if let Some(ref cp_id) = checkpoint_id {
+                                    let _ = cp.delete(cp_id);
+                                    info!("[session:{}] Checkpoint deleted (task completed)", session_id);
+                                }
+                            }
                             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
                             return;
                         }
@@ -778,6 +800,20 @@ impl Agent for LlmAgent {
                                         ).await;
                                         history.push(msg);
                                     }
+                                }
+                            }
+                        }
+
+                        // ── Save checkpoint after tool execution ──
+                        if let Some(ref cp) = checkpointer {
+                            if let Some(ref cp_id) = checkpoint_id {
+                                if let Err(e) = cp.save(
+                                    cp_id, &session_id, &active_model,
+                                    &user_message, &history, iteration,
+                                ) {
+                                    warn!("[session:{}] Failed to save checkpoint: {}", session_id, e);
+                                } else {
+                                    info!("[session:{}] Checkpoint saved at iteration {}", session_id, iteration);
                                 }
                             }
                         }

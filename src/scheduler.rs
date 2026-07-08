@@ -291,6 +291,7 @@ impl Scheduler {
                     ctx_window, ctx_window_threshold,
                     tool_timeout,
                     vec![],  // no images for scheduled tasks
+                    None, None,  // no checkpoint for scheduled tasks
                 ).await {
                     Ok(mut stream) => {
                         use futures::StreamExt;
