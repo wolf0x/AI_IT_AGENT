@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use async_trait::async_trait;
+use serde_json::Value;
 use tracing::{error, info, warn};
 
 use crate::agent::{Agent, AgentEvent, EventStream};
@@ -12,6 +13,108 @@ use crate::model::ChatMessage;
 use crate::permission::{PermissionChecker, PendingMap};
 use crate::skill::SkillManager;
 use crate::tool::{ToolExecutionStrategy, ToolRegistry};
+
+/// Check if a character is a CJK (Chinese/Japanese/Korean) character.
+fn is_cjk_char(c: char) -> bool {
+    matches!(c,
+        '\u{4e00}'..='\u{9fff}'
+        | '\u{3400}'..='\u{4dbf}'
+        | '\u{f900}'..='\u{faff}'
+        | '\u{2e80}'..='\u{2eff}'
+        | '\u{3000}'..='\u{303f}'
+        | '\u{3040}'..='\u{309f}'
+        | '\u{30a0}'..='\u{30ff}'
+        | '\u{ac00}'..='\u{d7af}'
+    )
+}
+
+/// Estimate token count from text content.
+/// CJK text: ~1.5 chars per token (each CJK char ≈ 1-2 tokens).
+/// Latin text: ~4 chars per token (English average).
+fn estimate_tokens(text: &str) -> usize {
+    let mut cjk_count = 0usize;
+    let mut other_count = 0usize;
+    for ch in text.chars() {
+        if is_cjk_char(ch) { cjk_count += 1; }
+        else { other_count += 1; }
+    }
+    ((cjk_count as f64 / 1.5) + (other_count as f64 / 4.0)).ceil() as usize
+}
+
+/// Trim history messages to fit within a token budget using priority-based strategy:
+/// - System prompt (not in history) is always preserved
+/// - Recent messages (last 6) are never trimmed
+/// - Phase 1: Trim old tool results to 100 chars
+/// - Phase 2: Trim old assistant responses to 200 chars
+/// - Phase 3: Trim old user messages to 100 chars
+/// - Phase 4: Trim old tool results further to 50 chars
+fn trim_history_to_budget(history: &mut Vec<ChatMessage>, max_tokens: usize) {
+    let calc_tokens = |h: &[ChatMessage]| -> usize {
+        h.iter().map(|m| estimate_tokens(m.content_as_text().as_deref().unwrap_or(""))).sum()
+    };
+
+    if calc_tokens(history.as_slice()) <= max_tokens { return; }
+
+    let keep_recent = (history.len().saturating_sub(6)).max(3);
+
+    // Phase 1: Trim old tool results to 100 chars
+    for i in 0..keep_recent {
+        if history[i].role == "tool" {
+            let content = history[i].content_as_text().unwrap_or_default();
+            if content.len() > 100 {
+                let name = history[i].name.as_deref().unwrap_or("tool");
+                let preview: String = content.chars().take(100).collect();
+                history[i].content = Some(Value::String(
+                    format!("[Earlier {} result truncated: {}...]", name, preview)));
+            }
+        }
+    }
+    if calc_tokens(history.as_slice()) <= max_tokens { return; }
+
+    // Phase 2: Trim old assistant responses to 200 chars
+    for i in 0..keep_recent {
+        if history[i].role == "assistant" {
+            let content = history[i].content_as_text().unwrap_or_default();
+            if content.len() > 200 {
+                let preview: String = content.chars().take(200).collect();
+                history[i].content = Some(Value::String(
+                    format!("[Earlier assistant response truncated: {}...]", preview)));
+            }
+        }
+    }
+    if calc_tokens(history.as_slice()) <= max_tokens { return; }
+
+    // Phase 3: Trim old user messages to 100 chars
+    for i in 0..keep_recent {
+        if history[i].role == "user" {
+            let content = history[i].content_as_text().unwrap_or_default();
+            if content.len() > 100 {
+                let preview: String = content.chars().take(100).collect();
+                history[i].content = Some(Value::String(
+                    format!("[Earlier user message truncated: {}...]", preview)));
+            }
+        }
+    }
+    if calc_tokens(history.as_slice()) <= max_tokens { return; }
+
+    // Phase 4: Aggressive — trim old tool results to 50 chars
+    for i in 0..keep_recent {
+        if history[i].role == "tool" {
+            let content = history[i].content_as_text().unwrap_or_default();
+            if content.len() > 50 {
+                let name = history[i].name.as_deref().unwrap_or("tool");
+                let preview: String = content.chars().take(50).collect();
+                history[i].content = Some(Value::String(
+                    format!("[{} summary: {}...]", name, preview)));
+            }
+        }
+    }
+
+    let final_tokens = calc_tokens(history.as_slice());
+    if final_tokens > max_tokens {
+        warn!("History still exceeds budget after all trimming phases: {} tokens (limit: {})", final_tokens, max_tokens);
+    }
+}
 
 /// The core LLM-powered agent.
 /// Implements the Agent trait (modeled after ADK-RUST's LlmAgent).
@@ -336,7 +439,7 @@ impl Agent for LlmAgent {
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }
 
-    async fn run(&self, ctx: &InvocationContext, user_message: &str) -> AgentResult<EventStream> {
+    async fn run(&self, ctx: &InvocationContext, user_message: &str, images: Vec<String>) -> AgentResult<EventStream> {
         let model = &ctx.model_name;
         let invocation_id = &ctx.base.invocation_id;
         let author = &ctx.agent_name;
@@ -357,6 +460,7 @@ impl Agent for LlmAgent {
         let invocation_id = invocation_id.to_string();
         let author = author.to_string();
         let user_message = user_message.to_string();
+        let images = images;  // move into spawn
         let strategy = self.tool_execution_strategy;
         let prev_history = ctx.conversation_history.clone();
         let permissions = ctx.permissions.clone();
@@ -366,8 +470,8 @@ impl Agent for LlmAgent {
         let tool_timeout_secs = ctx.tool_timeout_secs;
                 let context_window = ctx.context_window;
                 let context_window_threshold = ctx.context_window_threshold;
-                // Calculate max history chars: context_window (tokens) * threshold% * ~4 chars/token
-                let max_history_chars: usize = context_window * context_window_threshold * 4 / 100;
+                // Calculate max history tokens: context_window * threshold%
+                let max_history_tokens: usize = context_window * context_window_threshold / 100;
 
         tokio::spawn(async move {
             let mut effective_system_prompt = system_prompt.clone();
@@ -380,9 +484,9 @@ impl Agent for LlmAgent {
             let mut memory_blocks = Vec::new();
             history.retain(|msg| {
                 if msg.role == "system" {
-                    if let Some(content) = msg.content.as_deref() {
+                    if let Some(content) = msg.content_as_text() {
                         if content.starts_with("[Memory Context") || content.starts_with("[Memory Recall") {
-                            memory_blocks.push(content.to_string());
+                            memory_blocks.push(content);
                             return false;
                         }
                     }
@@ -398,7 +502,22 @@ impl Agent for LlmAgent {
                 }
             }
 
-            history.push(ChatMessage::user(&user_message));
+            // Account for system prompt size in the token budget.
+            // System prompt is NOT part of history but consumes context window.
+            let system_tokens = estimate_tokens(&effective_system_prompt);
+            let history_budget = max_history_tokens.saturating_sub(system_tokens);
+            if system_tokens > max_history_tokens / 2 {
+                warn!("[session:{}] System prompt uses {} tokens ({}% of budget {}), history budget reduced to {} tokens",
+                      session_id, system_tokens, system_tokens * 100 / max_history_tokens, max_history_tokens, history_budget);
+            }
+            info!("[session:{}] Context budget: system={} tokens, history_budget={} tokens (model={} tokens @ {}%)",
+                  session_id, system_tokens, history_budget, context_window, context_window_threshold);
+
+            if !images.is_empty() {
+                history.push(ChatMessage::user_with_images(&user_message, &images));
+            } else {
+                history.push(ChatMessage::user(&user_message));
+            }
 
             // Rabbit hole detection: track identical tool calls (same name + same args)
             let mut call_signatures: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -420,32 +539,14 @@ impl Agent for LlmAgent {
                     return;
                 }
 
-                // Trim history if approaching context limit
-                let total_chars: usize = history.iter().map(|m| m.content.as_deref().unwrap_or("").len()).sum();
-                if total_chars > max_history_chars {
-                    warn!("[session:{}] History too large ({} chars, limit: {} = {}% of {} tokens), trimming old results",
-                          session_id, total_chars, max_history_chars, context_window_threshold, context_window);
-                    // Replace old tool results with summaries, keeping the latest 3 iterations worth
-                    let keep_recent = (history.len().saturating_sub(20)).max(6);
-                    for i in 0..history.len() {
-                        if i >= keep_recent { break; }
-                        let role = history[i].role.clone();
-                        let content_len = history[i].content.as_deref().unwrap_or("").len();
-                        if (role == "tool" || role == "assistant") && content_len > 500 {
-                            // Truncate old large messages to a summary
-                            let original = history[i].content.as_deref().unwrap_or("");
-                            let preview: String = original.chars().take(300).collect();
-                            let name = history[i].name.as_deref().unwrap_or("");
-                            let summary = if role == "tool" {
-                                format!("[Earlier {} result truncated: {}...]", name, preview)
-                            } else {
-                                format!("[Earlier assistant response truncated: {}...]", preview)
-                            };
-                            history[i].content = Some(summary);
-                        }
-                    }
-                    let new_chars: usize = history.iter().map(|m| m.content.as_deref().unwrap_or("").len()).sum();
-                    info!("[session:{}] History trimmed from {} to {} chars", session_id, total_chars, new_chars);
+                // Trim history if approaching context limit using token-based budget
+                let total_tokens: usize = history.iter().map(|m| estimate_tokens(m.content_as_text().as_deref().unwrap_or(""))).sum();
+                if total_tokens > history_budget {
+                    warn!("[session:{}] History too large ({} est. tokens, budget: {} tokens), trimming with priority strategy",
+                          session_id, total_tokens, history_budget);
+                    trim_history_to_budget(&mut history, history_budget);
+                    let new_tokens: usize = history.iter().map(|m| estimate_tokens(m.content_as_text().as_deref().unwrap_or(""))).sum();
+                    info!("[session:{}] History trimmed from {} to {} est. tokens", session_id, total_tokens, new_tokens);
                 }
 
                 let mut messages = vec![ChatMessage::system(&effective_system_prompt)];
@@ -1044,7 +1145,7 @@ fn generate_static_summary(history: &[ChatMessage], iterations: usize) -> String
 
     for msg in history {
         if msg.role == "tool" {
-            let content_str = msg.content.as_deref().unwrap_or("");
+            let content_str = msg.content_as_text().unwrap_or_default();
             let name = msg.name.as_deref().unwrap_or("tool");
             let preview: String = content_str.chars().take(200).collect();
             if content_str.contains("error") || content_str.contains("Error") {

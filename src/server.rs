@@ -163,7 +163,7 @@ async fn health_handler() -> Json<Value> {
 async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let models = state.model_configs.read().await;
     let list: Vec<Value> = models.iter().map(|m| {
-        json!({ "name": &m.name, "context_window": m.context_window })
+        json!({ "name": &m.name, "context_window": m.context_window, "supports_vision": m.supports_vision })
     }).collect();
     Json(json!({
         "models": list,
@@ -212,6 +212,7 @@ async fn providers_create_handler(
         context_window: body["context_window"].as_u64().map(|v| v as usize).unwrap_or(128000),
         max_tokens: body["max_tokens"].as_u64().map(|v| v as u32).unwrap_or(16384),
         temperature: body["temperature"].as_f64().unwrap_or(0.7),
+        supports_vision: body["supports_vision"].as_bool().unwrap_or(false),
     };
     let mut models = state.model_configs.write().await;
     if models.iter().any(|m| m.name == name) {
@@ -250,6 +251,7 @@ async fn providers_update_handler(
         context_window: body["context_window"].as_u64().map(|v| v as usize).unwrap_or(existing.context_window),
         max_tokens: body["max_tokens"].as_u64().map(|v| v as u32).unwrap_or(existing.max_tokens),
         temperature: body["temperature"].as_f64().unwrap_or(existing.temperature),
+        supports_vision: body["supports_vision"].as_bool().unwrap_or(existing.supports_vision),
     };
     crate::model_store::save_configs(&models, std::path::Path::new(&state.model_store_path));
     info!("Provider '{}' updated via API", name);
@@ -680,7 +682,31 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 mc.iter().find(|m| m.name == model).map(|m| m.context_window).unwrap_or(128000)
                             };
 
-                            if content.is_empty() {
+                            // Parse optional images (base64 data URIs or URLs)
+                            let images: Vec<String> = parsed["images"]
+                                .as_array()
+                                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                .unwrap_or_default();
+
+                            // If images are present, check that the model supports vision
+                            if !images.is_empty() {
+                                let supports_vision = {
+                                    let mc = state.model_configs.read().await;
+                                    mc.iter().find(|m| m.name == model).map(|m| m.supports_vision).unwrap_or(false)
+                                };
+                                if !supports_vision {
+                                    let err_msg = format!("Model '{}' does not support image input. Please select a vision-capable model (e.g., gpt-4o).", model);
+                                    let err_event = serde_json::json!({
+                                        "type": "error",
+                                        "message": err_msg
+                                    });
+                                    let mut sink = ws_sink.lock().await;
+                                    let _ = sink.send(Message::Text(err_event.to_string().into())).await;
+                                    continue;
+                                }
+                            }
+
+                            if content.is_empty() && images.is_empty() {
                                 continue;
                             }
 
@@ -731,6 +757,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 fallback_model, rabbit_hole,
                                 ctx_window, ctx_window_threshold,
                                 tool_timeout as u64,
+                                images,
                             ).await {
                                 Ok(mut event_stream) => {
                                     let mut assistant_text = String::new();

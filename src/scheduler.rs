@@ -290,6 +290,7 @@ impl Scheduler {
                     None, rabbit_hole,
                     ctx_window, ctx_window_threshold,
                     tool_timeout,
+                    vec![],  // no images for scheduled tasks
                 ).await {
                     Ok(mut stream) => {
                         use futures::StreamExt;

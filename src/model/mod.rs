@@ -11,13 +11,34 @@ use std::pin::Pin;
 use crate::error::AgentResult;
 
 // ============================================================
-// Chat message types (unchanged from original)
+// Chat message types
 // ============================================================
+
+/// Content part for multi-modal messages (OpenAI vision API format).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentPart {
+    pub r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<ImageUrlValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrlValue {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: Option<String>,
+    /// Content can be a plain string (text-only) or an array of content parts
+    /// (multi-modal). Using serde_json::Value allows both formats:
+    /// - String: serializes as `"content": "hello"` (backward compatible)
+    /// - Array: serializes as `"content": [{"type":"text",...},{"type":"image_url",...}]`
+    pub content: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,19 +77,61 @@ pub struct FunctionDefinition {
 
 impl ChatMessage {
     pub fn system(content: &str) -> Self {
-        Self { role: "system".to_string(), content: Some(content.to_string()), tool_calls: None, tool_call_id: None, name: None }
+        Self { role: "system".to_string(), content: Some(Value::String(content.to_string())), tool_calls: None, tool_call_id: None, name: None }
     }
     pub fn user(content: &str) -> Self {
-        Self { role: "user".to_string(), content: Some(content.to_string()), tool_calls: None, tool_call_id: None, name: None }
+        Self { role: "user".to_string(), content: Some(Value::String(content.to_string())), tool_calls: None, tool_call_id: None, name: None }
     }
     pub fn assistant(content: &str) -> Self {
-        Self { role: "assistant".to_string(), content: Some(content.to_string()), tool_calls: None, tool_call_id: None, name: None }
+        Self { role: "assistant".to_string(), content: Some(Value::String(content.to_string())), tool_calls: None, tool_call_id: None, name: None }
     }
     pub fn assistant_with_tool_calls(tool_calls: Vec<ToolCallDelta>) -> Self {
         Self { role: "assistant".to_string(), content: None, tool_calls: Some(tool_calls), tool_call_id: None, name: None }
     }
     pub fn tool_result(tool_call_id: &str, name: &str, content: &str) -> Self {
-        Self { role: "tool".to_string(), content: Some(content.to_string()), tool_calls: None, tool_call_id: Some(tool_call_id.to_string()), name: Some(name.to_string()) }
+        Self { role: "tool".to_string(), content: Some(Value::String(content.to_string())), tool_calls: None, tool_call_id: Some(tool_call_id.to_string()), name: Some(name.to_string()) }
+    }
+
+    /// Create a user message with text and images (multi-modal).
+    /// Images should be base64 data URIs (e.g., "data:image/png;base64,...") or URLs.
+    pub fn user_with_images(text: &str, images: &[String]) -> Self {
+        if images.is_empty() {
+            return Self::user(text);
+        }
+        let mut parts: Vec<Value> = Vec::new();
+        if !text.is_empty() {
+            parts.push(serde_json::json!({
+                "type": "text",
+                "text": text
+            }));
+        }
+        for img in images {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": img }
+            }));
+        }
+        Self { role: "user".to_string(), content: Some(Value::Array(parts)), tool_calls: None, tool_call_id: None, name: None }
+    }
+
+    /// Extract plain text from content (handles both string and multi-modal array).
+    pub fn content_as_text(&self) -> Option<String> {
+        match &self.content {
+            None => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(Value::Array(parts)) => {
+                let texts: Vec<String> = parts.iter().filter_map(|p| {
+                    p.get("text").and_then(|t| t.as_str()).map(String::from)
+                }).collect();
+                if texts.is_empty() { None } else { Some(texts.join("\n")) }
+            }
+            Some(other) => Some(other.to_string()),
+        }
+    }
+
+    /// Get the character length of the text content (for history trimming).
+    pub fn content_text_len(&self) -> usize {
+        self.content_as_text().map(|s| s.len()).unwrap_or(0)
     }
 }
 

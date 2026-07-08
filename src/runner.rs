@@ -100,6 +100,7 @@ impl Runner {
         context_window: usize,
         context_window_threshold: usize,
         tool_timeout_secs: u64,
+        images: Vec<String>,
     ) -> AgentResult<EventStream> {
         info!("Runner dispatching to agent '{}' (session: {})", self.agent.name(), session_id);
 
@@ -128,7 +129,7 @@ impl Runner {
         self.logger.log_user_message(session_id, user_message);
 
         // Dispatch to agent
-        let event_stream = self.agent.run(&ctx, user_message).await?;
+        let event_stream = self.agent.run(&ctx, user_message, images).await?;
 
         // Wrap the stream to log events
         let logger = self.logger.clone();

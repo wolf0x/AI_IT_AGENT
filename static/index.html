@@ -272,6 +272,13 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .input-bar input{flex:1;padding:12px 16px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);color:var(--t1);font-size:14px;outline:0;font-family:inherit;height:44px}
 .input-bar input:focus{border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,.1)}
 .input-bar .btn{height:44px;display:flex;align-items:center;padding:10px 24px}
+.btn-img{height:44px;width:44px;display:flex;align-items:center;justify-content:center;padding:0;background:#e8f4fd;border:1px solid #3498db;border-radius:var(--rs);cursor:pointer;font-size:20px;color:#3498db;flex-shrink:0}
+.btn-img:hover{background:#d0e9f9}
+.btn-img.disabled{opacity:0.4;cursor:not-allowed;background:#f0f0f0;border-color:#bdc3c7;color:#bdc3c7}
+.img-preview-bar{display:flex;gap:8px;padding:8px 20px 0;flex-wrap:wrap}
+.img-preview-item{position:relative;width:64px;height:64px;border-radius:6px;overflow:hidden;border:1px solid #bdc3c7}
+.img-preview-item img{width:100%;height:100%;object-fit:cover}
+.img-preview-item .remove-img{position:absolute;top:1px;right:1px;width:18px;height:18px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;font-size:12px;line-height:18px;text-align:center;cursor:pointer;padding:0}
 
 /* Typing dots */
 .dots span{animation:dotB 1.4s infinite;font-weight:700}
@@ -514,7 +521,10 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
       <div class="chat-panels">
         <div class="chat-main">
           <div class="conv-area" id="convArea"></div>
+          <div class="img-preview-bar" id="imgPreviewBar"></div>
           <div class="input-bar">
+            <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
+            <button class="btn-img disabled" id="imgBtn" onclick="document.getElementById('imgFileInput').click()" title="Attach image (vision models only)" disabled>&#128247;</button>
             <input type="text" id="msgInput" placeholder="Type a message..." disabled onkeydown="if(event.key==='Enter')sendMsg()">
             <button class="btn btn-p btn-send" id="sendBtn" onclick="sendMsg()" disabled>Send</button>
             <button class="btn btn-stop" id="stopBtn" onclick="stopAgent()">Stop</button>
@@ -697,7 +707,7 @@ function handleMsg(msg){
       if(msgQueue.length>0){
         const next=msgQueue.shift();
         addLog('Processing queued message ('+msgQueue.length+' remaining)','info');
-        setTimeout(()=>doSend(next),500);
+        setTimeout(()=>doSend(next.txt,next.imgs),500);
       }
       scrollBottom();break;
   }
@@ -834,19 +844,61 @@ function toggleBlock(hdr){
 }
 
 // 鈹€鈹€ Send 鈹€鈹€
+function updateImgBtnState(){
+  const sel=document.getElementById('modelSel');
+  const btn=document.getElementById('imgBtn');
+  if(!sel||!btn)return;
+  const supportsVision=modelVisionMap[sel.value]||false;
+  if(supportsVision){btn.classList.remove('disabled');btn.disabled=false;btn.title='Attach image';}
+  else{btn.classList.add('disabled');btn.disabled=true;btn.title='Attach image (vision models only)';}
+}
+function handleImageFiles(files){
+  for(const f of files){
+    if(!f.type.startsWith('image/'))continue;
+    if(pendingImages.length>=5){addLog('Max 5 images per message','warn');break;}
+    const reader=new FileReader();
+    reader.onload=(e)=>{
+      pendingImages.push({name:f.name,data:e.target.result});
+      renderImagePreviews();
+    };
+    reader.readAsDataURL(f);
+  }
+}
+function renderImagePreviews(){
+  const bar=document.getElementById('imgPreviewBar');
+  bar.innerHTML='';
+  pendingImages.forEach((img,idx)=>{
+    const div=document.createElement('div');
+    div.className='img-preview-item';
+    div.innerHTML='<img src="'+img.data+'" alt="'+img.name+'"><button class="remove-img" onclick="removeImage('+idx+')">&times;</button>';
+    bar.appendChild(div);
+  });
+}
+function removeImage(idx){
+  pendingImages.splice(idx,1);
+  renderImagePreviews();
+}
+document.addEventListener('DOMContentLoaded',function(){
+  const imgInput=document.getElementById('imgFileInput');
+  if(imgInput)imgInput.addEventListener('change',function(e){handleImageFiles(e.target.files);e.target.value='';});
+  const modelSel=document.getElementById('modelSel');
+  if(modelSel)modelSel.addEventListener('change',updateImgBtnState);
+});
 function sendMsg(){
   const inp=document.getElementById('msgInput');const txt=inp.value.trim();
-  if(!txt||!connected)return;
-  showUserMsg(txt);inp.value='';
-  msgHist.push({role:'user',text:txt,time:new Date().toLocaleTimeString()});saveHist();
+  if((!txt&&pendingImages.length===0)||!connected)return;
+  const imgs=pendingImages.map(i=>i.data);
+  showUserMsg(txt,imgs);inp.value='';
+  msgHist.push({role:'user',text:txt,time:new Date().toLocaleTimeString(),images:imgs.length?imgs:undefined});saveHist();
+  pendingImages=[];renderImagePreviews();
   if(agentRunning){
-    msgQueue.push(txt);
+    msgQueue.push({txt,imgs});
     addLog('Message queued ('+msgQueue.length+' pending)','info');
     return;
   }
-  doSend(txt);
+  doSend(txt,imgs);
 }
-function doSend(txt){
+function doSend(txt,imgs){
   const model=document.getElementById('modelSel').value;
   const fallback=document.getElementById('fallbackSel').value;
   const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
@@ -854,7 +906,9 @@ function doSend(txt){
   const ctxThreshold=parseInt(document.getElementById('ctxWindowThreshold').value)||80;
   const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
   sendPerms();
-  ws.send(JSON.stringify({type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout}));
+  const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout};
+  if(imgs&&imgs.length)msg.images=imgs;
+  ws.send(JSON.stringify(msg));
   showTyping();
   setAgentRunning(true);
 }
@@ -873,9 +927,18 @@ function setAgentRunning(running){
     stopBtn.classList.remove('visible');
   }
 }
-function showUserMsg(txt,time){
+function showUserMsg(txt,imgsOrTime,time){
+  let imgs=null;
+  if(Array.isArray(imgsOrTime)){imgs=imgsOrTime;}
+  else if(typeof imgsOrTime==='string'){time=imgsOrTime;}
   const d=document.createElement('div');d.className='msg user';
-  d.innerHTML='<div class="msg-avatar">&#128100;</div><div class="msg-body"><div class="msg-role">You</div><div class="msg-content">'+esc(txt)+'</div><div class="msg-time">'+(time||new Date().toLocaleTimeString())+'</div></div>';
+  let imgHtml='';
+  if(imgs&&imgs.length){
+    imgHtml='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">';
+    imgs.forEach(src=>{imgHtml+='<img src="'+src+'" style="max-width:200px;max-height:200px;border-radius:6px;border:1px solid #bdc3c7;object-fit:cover">';});
+    imgHtml+='</div>';
+  }
+  d.innerHTML='<div class="msg-avatar">&#128100;</div><div class="msg-body"><div class="msg-role">You</div><div class="msg-content">'+esc(txt)+(imgs?imgHtml:'')+'</div><div class="msg-time">'+(time||new Date().toLocaleTimeString())+'</div></div>';
   document.getElementById('convArea').appendChild(d);scrollBottom();
 }
 function appendToConv(el){document.getElementById('convArea').appendChild(el);scrollBottom()}
@@ -905,6 +968,8 @@ function addLog(text,cls){
 }
 
 // 鈹€鈹€ API 鈹€鈹€
+let pendingImages=[];
+let modelVisionMap={};
 async function loadModels(){
   try{const r=await fetch('/api/models');const d=await r.json();
     const sel=document.getElementById('modelSel');
@@ -913,9 +978,12 @@ async function loadModels(){
     const prevFallback=localStorage.getItem(FALLBACK_MODEL_KEY)||fbSel.value;
     sel.innerHTML='';
     fbSel.innerHTML='<option value="">None</option>';
+    modelVisionMap={};
     (d.models||[]).forEach(m=>{
       const name = typeof m === 'string' ? m : m.name;
       const ctx = m.context_window ? (' ('+Math.round(m.context_window/1000)+'K ctx)') : '';
+      const vision = m.supports_vision || false;
+      modelVisionMap[name]=vision;
       const o=document.createElement('option');o.value=name;o.textContent=name+ctx;sel.appendChild(o);
       const o2=document.createElement('option');o2.value=name;o2.textContent=name+ctx;fbSel.appendChild(o2);
     });
@@ -927,6 +995,7 @@ async function loadModels(){
     if(d.max_iterations) document.getElementById('maxIterInput').value = d.max_iterations;
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
     if(d.tool_timeout_secs) document.getElementById('toolTimeoutInput').value = d.tool_timeout_secs;
+    updateImgBtnState();
   }catch(e){addLog('Load models failed','error')}
 }
 // --- Provider Management ---
@@ -1363,7 +1432,7 @@ function addCopyBtns(container){
 // 鈹€鈹€ Helpers 鈹€鈹€
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function scrollBottom(smooth){requestAnimationFrame(()=>{const a=document.getElementById('convArea');if(a)a.scrollTo({top:a.scrollHeight,behavior:smooth===false?'auto':'smooth'});const l=document.getElementById('logArea');if(l)l.scrollTop=l.scrollHeight})}
-function saveHist(){try{localStorage.setItem('ra_msgs',JSON.stringify(msgHist.slice(-200)));localStorage.setItem('ra_logs',JSON.stringify(logHist.slice(-200)))}catch(e){}}
+function saveHist(){try{const stripped=msgHist.slice(-200).map(m=>{if(m.images){const c={...m};delete c.images;return c;}return m;});localStorage.setItem('ra_msgs',JSON.stringify(stripped));localStorage.setItem('ra_logs',JSON.stringify(logHist.slice(-200)))}catch(e){}}
 function showAssistantMsg(txt,time){
   const d=document.createElement('div');d.className='msg assistant';
   d.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+renderMd(txt||'')+'</div><div class="msg-time">'+(time||'')+'</div></div>';

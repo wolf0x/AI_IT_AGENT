@@ -36,5 +36,6 @@ pub trait Agent: Send + Sync {
 
     /// Run the agent and return a stream of events.
     /// The agent loop runs inside this method, producing events as it goes.
-    async fn run(&self, ctx: &InvocationContext, user_message: &str) -> AgentResult<EventStream>;
+    /// `images` is a list of base64 data URIs or URLs for multi-modal input.
+    async fn run(&self, ctx: &InvocationContext, user_message: &str, images: Vec<String>) -> AgentResult<EventStream>;
 }

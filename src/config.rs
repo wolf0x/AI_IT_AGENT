@@ -61,6 +61,9 @@ pub struct ModelConfig {
     /// Sampling temperature (default: 0.7)
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// Whether this model supports image/vision input (default: false)
+    #[serde(default)]
+    pub supports_vision: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
