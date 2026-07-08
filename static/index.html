@@ -402,6 +402,11 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             <input type="number" id="toolTimeoutInput" value="300" min="10" max="3600">
             <small style="color:var(--t3)">Max time allowed for a single tool execution</small>
           </div>
+          <div class="form-group">
+            <label>Timezone Offset (UTC)</label>
+            <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1">
+            <small style="color:var(--t3)">Chat message timestamps will be displayed in this timezone (default: UTC+8)</small>
+          </div>
         </div>
         <div class="settings-section">
           <h3>&#128196; Config</h3>
@@ -565,6 +570,12 @@ const MODEL_KEY='ra_model';
 const FALLBACK_MODEL_KEY='ra_fallback_model';
 const WS_URL_KEY='ra_ws_url';
 const WS_PWD_KEY='ra_ws_pwd';
+const TZ_OFFSET_KEY='ra_tz_offset';
+function getTzOffset(){const v=parseFloat(localStorage.getItem(TZ_OFFSET_KEY));return isNaN(v)?8:v}
+function fmtTime(d){const offset=getTzOffset();const utc=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds());const local=new Date(utc+offset*3600000);const h=String(local.getUTCHours()).padStart(2,'0');const m=String(local.getUTCMinutes()).padStart(2,'0');const s=String(local.getUTCSeconds()).padStart(2,'0');return h+':'+m+':'+s}
+function nowTimeStr(){return fmtTime(new Date())}
+function fmtTimeFromRfc3339(ts){try{return fmtTime(new Date(ts))}catch(e){return ts||''}}
+function fmtDateTime(d){const offset=getTzOffset();const utc=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds());const local=new Date(utc+offset*3600000);const y=local.getUTCFullYear();const mo=String(local.getUTCMonth()+1).padStart(2,'0');const da=String(local.getUTCDate()).padStart(2,'0');const h=String(local.getUTCHours()).padStart(2,'0');const m=String(local.getUTCMinutes()).padStart(2,'0');const s=String(local.getUTCSeconds()).padStart(2,'0');return y+'-'+mo+'-'+da+' '+h+':'+m+':'+s}
 
 // Permission categories with defaults
 const PERM_CATEGORIES=[
@@ -714,7 +725,7 @@ function handleMsg(msg){
       break;
     case 'done':
       hideTyping();finalizeThink();
-      if(textAccum){msgHist.push({role:'assistant',text:textAccum.trim(),time:new Date().toLocaleTimeString()});saveHist()}
+      if(textAccum){msgHist.push({role:'assistant',text:textAccum.trim(),time:nowTimeStr()});saveHist()}
       finalizeTextBlock();
       curToolMap={};
       setAgentRunning(false);
@@ -766,12 +777,12 @@ function finalizeTextBlock(){
           content.innerHTML='<span style="color:var(--t3);font-style:italic">Thinking...</span>';
         }
       }
-      const t=curTextEl.querySelector('.msg-time');if(t)t.textContent=new Date().toLocaleTimeString()
+      const t=curTextEl.querySelector('.msg-time');if(t)t.textContent=nowTimeStr()
     } else {
       // No text accumulated - show thinking placeholder
       const content=curTextEl.querySelector('.msg-content');
       if(content)content.innerHTML='<span style="color:var(--t3);font-style:italic">Thinking...</span>';
-      const t=curTextEl.querySelector('.msg-time');if(t)t.textContent=new Date().toLocaleTimeString()
+      const t=curTextEl.querySelector('.msg-time');if(t)t.textContent=nowTimeStr()
     }
   }
   curTextEl=null;textAccum='';
@@ -906,7 +917,7 @@ function sendMsg(){
   if((!txt&&pendingImages.length===0)||!connected)return;
   const imgs=pendingImages.map(i=>i.data);
   showUserMsg(txt,imgs);inp.value='';
-  msgHist.push({role:'user',text:txt,time:new Date().toLocaleTimeString(),images:imgs.length?imgs:undefined});saveHist();
+  msgHist.push({role:'user',text:txt,time:nowTimeStr(),images:imgs.length?imgs:undefined});saveHist();
   pendingImages=[];renderImagePreviews();
   if(agentRunning){
     msgQueue.push({txt,imgs});
@@ -955,7 +966,7 @@ function showUserMsg(txt,imgsOrTime,time){
     imgs.forEach(src=>{imgHtml+='<img src="'+src+'" style="max-width:200px;max-height:200px;border-radius:6px;border:1px solid #bdc3c7;object-fit:cover">';});
     imgHtml+='</div>';
   }
-  d.innerHTML='<div class="msg-avatar">&#128100;</div><div class="msg-body"><div class="msg-role">You</div><div class="msg-content">'+esc(txt)+(imgs?imgHtml:'')+'</div><div class="msg-time">'+(time||new Date().toLocaleTimeString())+'</div></div>';
+  d.innerHTML='<div class="msg-avatar">&#128100;</div><div class="msg-body"><div class="msg-role">You</div><div class="msg-content">'+esc(txt)+(imgs?imgHtml:'')+'</div><div class="msg-time">'+(time||nowTimeStr())+'</div></div>';
   document.getElementById('convArea').appendChild(d);scrollBottom();
 }
 function appendToConv(el){document.getElementById('convArea').appendChild(el);scrollBottom()}
@@ -978,7 +989,7 @@ function exportChat(){
 function addLog(text,cls){
   const log=document.getElementById('logArea');
   const e=document.createElement('div');e.className='log-entry '+(cls||'info');
-  const t=document.createElement('span');t.className='log-time';t.textContent=new Date().toLocaleTimeString();
+  const t=document.createElement('span');t.className='log-time';t.textContent=nowTimeStr();
   e.appendChild(t);e.appendChild(document.createTextNode(' '+text));
   log.appendChild(e);log.scrollTop=log.scrollHeight;
   logHist.push({text,cls:cls||'info',time:t.textContent});saveHist();
@@ -1232,7 +1243,7 @@ async function loadCron(){
     if(!tasks.length){el.innerHTML='<span style="color:var(--t3)">No scheduled tasks</span>';return}
     el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Schedule</th><th>Message</th><th>Status</th><th>Last Run</th><th>Actions</th></tr></thead><tbody>'+tasks.map(t=>{
       const status=t.enabled?'<span style="color:var(--green)">&#9679; Active</span>':'<span style="color:var(--t3)">&#9679; Disabled</span>';
-      const lastRun=t.last_run?new Date(t.last_run).toLocaleString():'Never';
+      const lastRun=t.last_run?fmtDateTime(new Date(t.last_run)):'Never';
       const msgPreview=(t.message||'').substring(0,40)+(t.message&&t.message.length>40?'...':'');
       return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(t.name)+'</strong></td><td>'+esc(t.schedule)+'</td><td style="color:var(--t3)">'+esc(msgPreview)+'</td><td>'+status+'</td><td style="font-size:11px;color:var(--t3)">'+lastRun+'</td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleCron(\''+t.id+'\')">'+(t.enabled?'Disable':'Enable')+'</button> <button class="btn btn-d" style="padding:4px 8px;font-size:11px" onclick="deleteCron(\''+t.id+'\')">Delete</button></td></tr>';
     }).join('')+'</tbody></table>';
@@ -1459,7 +1470,7 @@ function showNotification(message, timestamp, skipHist){
   const conv=document.getElementById('convArea');
   // Create notification card with Markdown rendering (same pipeline as main chat)
   const d=document.createElement('div');d.className='msg notification-msg';
-  const time=new Date(timestamp||Date.now()).toLocaleTimeString();
+  const time=fmtTime(new Date(timestamp||Date.now()));
   // Clean text same as main chat finalizeTextBlock
   const cleaned=message.replace(/^[\s\u00B7\u2026]+/,'').replace(/[\s\u00B7\u2026]+$/,'').trim();
   d.innerHTML='<div class="msg-avatar" style="background:var(--orange,#f39c12)">&#128276;</div><div class="msg-body"><div class="msg-role" style="color:var(--orange,#f39c12)">&#128276; Reminder</div><div class="msg-content md-content" style="background:#fef9e7;border:1px solid #f9e79f;border-radius:14px;color:#7d6608">'+renderMd(cleaned)+'</div><div class="msg-time">'+time+'</div></div>';
@@ -1497,7 +1508,7 @@ function loadHist(){
     try{m=JSON.parse(localStorage.getItem('ra_msgs')||'[]')}catch(e){m=[]}
     if(m.length>0){renderHistMessages(m);msgHist=m}
   };
-  fetch('/api/history?days=3&limit=200')
+  fetch('/api/history?days=3&limit=200&tz_offset='+getTzOffset())
     .then(r=>r.json())
     .then(d=>{
       if(d.messages&&d.messages.length>0){
@@ -1570,7 +1581,7 @@ function renderPermRequest(msg){
       else if(argsObj.app||argsObj.program)summary+=' Application: <code>'+esc(argsObj.app||argsObj.program)+'</code>';
     }catch(e){}
   }
-  agentMsg.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+summary+'</div><div class="msg-time">'+new Date().toLocaleTimeString()+'</div></div>';
+  agentMsg.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+summary+'</div><div class="msg-time">'+nowTimeStr()+'</div></div>';
   conv.appendChild(agentMsg);
   // Add permission card
   const card=document.createElement('div');
@@ -1623,7 +1634,7 @@ function showCheckpointBanner(cps){
   if(!el)return;
   let html='<div class="cp-banner"><div class="cp-banner-title">Interrupted Tasks</div>';
   cps.forEach(cp=>{
-    const time=new Date(cp.updated_at).toLocaleString();
+    const time=fmtDateTime(new Date(cp.updated_at));
     html+='<div class="cp-item" id="cp-'+cp.id+'">';
     html+='<div class="cp-item-info">';
     html+='<div class="cp-item-msg">'+escHtml(cp.user_message)+'</div>';
@@ -1671,6 +1682,16 @@ document.addEventListener('DOMContentLoaded',()=>{
   const fallbackSel=document.getElementById('fallbackSel');
   if(modelSel)modelSel.addEventListener('change',()=>localStorage.setItem(MODEL_KEY,modelSel.value||''));
   if(fallbackSel)fallbackSel.addEventListener('change',()=>localStorage.setItem(FALLBACK_MODEL_KEY,fallbackSel.value||''));
+  // Restore timezone offset setting
+  const tzInput=document.getElementById('tzOffsetInput');
+  if(tzInput){
+    const savedTz=localStorage.getItem(TZ_OFFSET_KEY);
+    if(savedTz!==null)tzInput.value=savedTz;
+    tzInput.addEventListener('change',()=>{
+      const v=parseFloat(tzInput.value);
+      if(!isNaN(v)&&v>=-12&&v<=14){localStorage.setItem(TZ_OFFSET_KEY,v);addLog('Timezone set to UTC'+(v>=0?'+':'')+v,'info')}
+    });
+  }
   // Auto-connect if credentials are saved
   try{
     const savedUrl=localStorage.getItem(WS_URL_KEY);

@@ -1157,10 +1157,13 @@ struct HistoryQuery {
     days: usize,
     #[serde(default = "default_history_limit")]
     limit: usize,
+    #[serde(default = "default_tz_offset")]
+    tz_offset: i32,
 }
 
 fn default_history_days() -> usize { 3 }
 fn default_history_limit() -> usize { 50 }
+fn default_tz_offset() -> i32 { 8 }
 
 async fn history_handler(
     State(state): State<Arc<AppState>>,
@@ -1168,6 +1171,8 @@ async fn history_handler(
 ) -> Json<Value> {
     let days = query.days.max(1).min(30);
     let limit = query.limit.max(1).min(200);
+    let tz_secs = query.tz_offset.clamp(-12, 14) * 3600;
+    let tz = chrono::FixedOffset::east_opt(tz_secs).unwrap_or_else(|| chrono::FixedOffset::east_opt(8 * 3600).unwrap());
     match state.memory_store.get_recent_entries(days) {
         Ok(entries) => {
             // Filter to user/assistant roles and take the last N entries
@@ -1182,7 +1187,7 @@ async fn history_handler(
                     "role": e.role,
                     "text": e.content,
                     "time": chrono::DateTime::parse_from_rfc3339(&e.timestamp)
-                        .map(|dt| dt.format("%H:%M:%S").to_string())
+                        .map(|dt| dt.with_timezone(&tz).format("%H:%M:%S").to_string())
                         .unwrap_or_default(),
                     "session_id": e.session_id,
                 }))
