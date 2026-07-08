@@ -290,6 +290,7 @@ impl Scheduler {
                     None, rabbit_hole,
                     ctx_window, ctx_window_threshold,
                     tool_timeout,
+                    2,     // default max_tool_retries for scheduled tasks
                     vec![],  // no images for scheduled tasks
                     None, None,  // no checkpoint for scheduled tasks
                 ).await {

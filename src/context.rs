@@ -112,6 +112,8 @@ pub struct InvocationContext {
     pub context_window_threshold: usize,
     /// Tool execution timeout in seconds
     pub tool_timeout_secs: u64,
+    /// Maximum automatic retries for retryable tool failures
+    pub max_tool_retries: usize,
     pub conversation_history: Vec<ChatMessage>,
     pub shared_state: HashMap<String, Value>,
     /// Permission settings (category -> allowed)
@@ -148,6 +150,7 @@ impl InvocationContext {
             context_window: 128000,
             context_window_threshold: 80,
             tool_timeout_secs: 300,
+            max_tool_retries: 2,
             conversation_history: Vec::new(),
             shared_state: HashMap::new(),
             permissions: Arc::new(Mutex::new(crate::permission::default_permissions())),
@@ -205,6 +208,12 @@ impl InvocationContext {
     /// Set tool execution timeout in seconds.
     pub fn with_tool_timeout_secs(mut self, secs: u64) -> Self {
         self.tool_timeout_secs = secs;
+        self
+    }
+
+    /// Set maximum automatic retries for retryable tool failures.
+    pub fn with_max_tool_retries(mut self, retries: usize) -> Self {
+        self.max_tool_retries = retries;
         self
     }
 

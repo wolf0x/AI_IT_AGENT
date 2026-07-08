@@ -52,6 +52,7 @@ pub struct AppState {
     pub rabbit_hole_threshold: usize,
     pub context_window_threshold: usize,
     pub tool_timeout_secs: usize,
+    pub max_tool_retries: usize,
     /// Per-session conversation history for multi-turn context
     pub sessions: Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>,
     /// Permission settings (category -> allowed), shared across connections
@@ -174,6 +175,7 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "max_iterations": state.max_iterations,
         "rabbit_hole_threshold": state.rabbit_hole_threshold,
         "tool_timeout_secs": state.tool_timeout_secs,
+        "max_tool_retries": state.max_tool_retries,
     }))
 }
 
@@ -680,6 +682,10 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 .as_u64()
                                 .map(|v| v as usize)
                                 .unwrap_or(state.tool_timeout_secs);
+                            let max_retries = parsed["max_tool_retries"]
+                                .as_u64()
+                                .map(|v| v as usize)
+                                .unwrap_or(state.max_tool_retries);
                             let ctx_window = {
                                 let mc = state.model_configs.read().await;
                                 mc.iter().find(|m| m.name == model).map(|m| m.context_window).unwrap_or(128000)
@@ -760,6 +766,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 fallback_model, rabbit_hole,
                                 ctx_window, ctx_window_threshold,
                                 tool_timeout as u64,
+                                max_retries,
                                 images,
                                 None, None,  // normal chat — no checkpoint resume
                             ).await {
@@ -951,6 +958,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 None, state.rabbit_hole_threshold,
                                 ctx_window, state.context_window_threshold,
                                 state.tool_timeout_secs as u64,
+                                state.max_tool_retries,
                                 vec![],  // no images
                                 Some(new_cp_id),
                                 Some(resume_state),

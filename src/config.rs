@@ -41,6 +41,9 @@ pub struct AgentConfig {
     /// Maximum seconds allowed for a single tool execution (default: 300)
     #[serde(default = "default_tool_timeout_secs")]
     pub tool_timeout_secs: usize,
+    /// Maximum automatic retries for retryable tool failures (default: 2)
+    #[serde(default = "default_max_tool_retries")]
+    pub max_tool_retries: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -120,6 +123,7 @@ impl Default for Config {
                 rabbit_hole_threshold: default_rabbit_hole_threshold(),
                 context_window_threshold: default_context_window_threshold(),
                 tool_timeout_secs: default_tool_timeout_secs(),
+                max_tool_retries: default_max_tool_retries(),
             },
             models: vec![],
             mcp_servers: vec![],
@@ -144,6 +148,7 @@ fn default_rabbit_hole_threshold() -> usize { 5 }
 fn default_context_window() -> usize { 128000 }
 fn default_context_window_threshold() -> usize { 80 }
 fn default_tool_timeout_secs() -> usize { 300 }
+fn default_max_tool_retries() -> usize { 2 }
 fn default_max_tokens() -> u32 { 16384 }
 fn default_temperature() -> f64 { 0.7 }
 

@@ -116,6 +116,7 @@ impl Runner {
         context_window: usize,
         context_window_threshold: usize,
         tool_timeout_secs: u64,
+        max_tool_retries: usize,
         images: Vec<String>,
         checkpoint_id: Option<String>,
         resume_checkpoint: Option<ResumeState>,
@@ -141,7 +142,8 @@ impl Runner {
          .with_rabbit_hole_threshold(rabbit_hole_threshold)
          .with_context_window(context_window)
          .with_context_window_threshold(context_window_threshold)
-         .with_tool_timeout_secs(tool_timeout_secs);
+         .with_tool_timeout_secs(tool_timeout_secs)
+         .with_max_tool_retries(max_tool_retries);
 
         // Wire checkpoint/resume state if provided.
         if let Some(resume) = resume_checkpoint {

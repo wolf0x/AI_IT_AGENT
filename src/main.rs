@@ -387,6 +387,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rabbit_hole_threshold: config.agent.rabbit_hole_threshold,
         context_window_threshold: config.agent.context_window_threshold,
         tool_timeout_secs: config.agent.tool_timeout_secs,
+        max_tool_retries: config.agent.max_tool_retries,
         sessions: Mutex::new(std::collections::HashMap::new()),
         permissions,
         permission_resolver,

@@ -468,6 +468,7 @@ impl Agent for LlmAgent {
         let fallback_model = ctx.fallback_model.clone();
         let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
         let tool_timeout_secs = ctx.tool_timeout_secs;
+        let max_tool_retries = ctx.max_tool_retries;
                 let context_window = ctx.context_window;
                 let context_window_threshold = ctx.context_window_threshold;
                 // Calculate max history tokens: context_window * threshold%
@@ -751,7 +752,7 @@ impl Agent for LlmAgent {
                                         ))).await;
                                     }
                                     let msg = execute_tool_call(
-                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs,
+                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                     ).await;
                                     history.push(msg);
                                 }
@@ -790,13 +791,13 @@ impl Agent for LlmAgent {
                                 if all_read_only && tool_calls.len() > 1 {
                                     info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
                                     let msgs = execute_tools_concurrent(
-                                        &*tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs,
+                                        &*tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &*tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs,
+                                            &*tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1006,16 +1007,79 @@ fn extract_json_object(text: &str) -> Option<String> {
     None
 }
 
-/// Execute a single tool call and emit events.
-/// Returns the tool-result `ChatMessage` (caller appends it to history so that
-/// the function can be used both sequentially and concurrently).
+/// Classification of tool errors for retry decisions.
+#[derive(Debug, Clone, PartialEq)]
+enum ToolErrorClass {
+    /// Transient error — worth retrying (timeout, network, resource busy).
+    Retryable,
+    /// Permanent error — retrying won't help (bad args, permission denied, not found).
+    NonRetryable,
+    /// User cancelled or consumer disconnected — do NOT retry.
+    Cancelled,
+}
+
+/// Classify a tool execution error to decide whether to retry.
+fn classify_tool_error(error_msg: &str) -> ToolErrorClass {
+    let lower = error_msg.to_lowercase();
+
+    // User-initiated cancellations — never retry
+    if lower.contains("cancelled by user") || lower.contains("consumer disconnected") {
+        return ToolErrorClass::Cancelled;
+    }
+
+    // Permission / auth errors — not retryable
+    if lower.contains("permission denied") || lower.contains("unauthorized")
+        || lower.contains("not allowed") || lower.contains("access denied") {
+        return ToolErrorClass::NonRetryable;
+    }
+
+    // Argument / input errors — not retryable (same args will fail again)
+    if lower.contains("missing") && lower.contains("parameter") {
+        return ToolErrorClass::NonRetryable;
+    }
+    if lower.contains("unknown tool") || lower.contains("invalid argument") {
+        return ToolErrorClass::NonRetryable;
+    }
+
+    // Timeout — retryable (transient resource contention)
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return ToolErrorClass::Retryable;
+    }
+
+    // Network / IO transient errors — retryable
+    if lower.contains("connection") || lower.contains("network")
+        || lower.contains("temporarily unavailable") || lower.contains("resource busy")
+        || lower.contains("too many open files") || lower.contains("deadlock")
+        || lower.contains("broken pipe") || lower.contains("connection reset") {
+        return ToolErrorClass::Retryable;
+    }
+
+    // Panics — retryable (might be transient state issue)
+    if lower.contains("panicked") || lower.contains("panic") {
+        return ToolErrorClass::Retryable;
+    }
+
+    // File not found — not retryable (file won't appear by itself)
+    if lower.contains("not found") || lower.contains("does not exist") || lower.contains("no such file") {
+        return ToolErrorClass::NonRetryable;
+    }
+
+    // Default: treat unknown errors as non-retryable to avoid wasted work
+    ToolErrorClass::NonRetryable
+}
+
+/// Execute a single tool call with automatic retry for transient failures.
 ///
-/// Features:
-/// - **Timeout**: 5-minute hard limit per tool call
-/// - **Heartbeat**: Sends `progress` events every 5 seconds so the UI knows
-///   the tool is still running (prevents the "frozen" appearance).
-/// - **Consumer disconnect**: If the WebSocket client disconnects (e.g. user
-///   clicks STOP), the tool execution is aborted immediately.
+/// Spawns the tool's `execute()` as a child task and races it against:
+/// - A heartbeat interval (sends `progress` events to the UI every 5s)
+/// - A timeout (aborts the tool after `tool_timeout_secs`)
+/// - Consumer disconnect (aborts immediately if the UI stops reading events)
+///
+/// On retryable errors (timeouts, network issues, panics), retries up to
+/// `max_retries` times with exponential backoff (1s, 2s, 4s...). The LLM
+/// receives enriched error messages indicating retry attempts.
+/// Non-retryable errors (permission denied, bad arguments, not found) are
+/// returned immediately without retry.
 async fn execute_tool_call(
     tools: &tokio::sync::RwLock<ToolRegistry>,
     tc: &crate::model::ToolCallDelta,
@@ -1025,6 +1089,7 @@ async fn execute_tool_call(
     tx: &tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
     permission: &PermissionChecker,
     tool_timeout_secs: u64,
+    max_retries: usize,
 ) -> ChatMessage {
     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
@@ -1041,77 +1106,140 @@ async fn execute_tool_call(
         info!("Tool '{}' denied by user permission", tool_name);
         serde_json::json!({ "error": "Permission denied by user" })
     } else {
-        // Look up the tool while holding the read lock briefly
-        let tool = tools.read().await.get(tool_name);
-        match tool {
-            Some(tool) => {
-                let ctx = ToolContext::simple(working_dir.to_string());
-                let args_clone = args.clone();
+        // Retry loop for transient failures
+        let mut attempt = 0usize;
 
-                // Spawn the actual tool execution as a separate task
-                let mut tool_handle = tokio::spawn(async move {
-                    tool.execute(args_clone, &ctx).await
-                });
+        loop {
+            // Look up the tool while holding the read lock briefly
+            let tool = tools.read().await.get(tool_name);
+            let tool_result = match tool {
+                Some(tool) => {
+                    let ctx = ToolContext::simple(working_dir.to_string());
+                    let args_clone = args.clone();
 
-                // Race: tool execution vs heartbeat vs timeout vs consumer disconnect
-                let timeout_duration = std::time::Duration::from_secs(tool_timeout_secs);
-                let heartbeat_interval = std::time::Duration::from_secs(5);
-                let start = std::time::Instant::now();
-                let mut interval = tokio::time::interval(heartbeat_interval);
-                interval.tick().await; // consume the immediate first tick
+                    // Spawn the actual tool execution as a separate task
+                    let mut tool_handle = tokio::spawn(async move {
+                        tool.execute(args_clone, &ctx).await
+                    });
 
-                loop {
-                    tokio::select! {
-                        // Tool execution completed
-                        tool_result = &mut tool_handle => {
-                            match tool_result {
-                                Ok(Ok(val)) => break val,
-                                Ok(Err(e)) => {
-                                    error!("Tool {} error: {}", tool_name, e);
-                                    break serde_json::json!({ "error": e.to_string() });
-                                }
-                                Err(e) => {
-                                    error!("Tool {} panicked: {}", tool_name, e);
-                                    break serde_json::json!({ "error": format!("Tool execution panicked: {}", e) });
+                    // Race: tool execution vs heartbeat vs timeout vs consumer disconnect
+                    let timeout_duration = std::time::Duration::from_secs(tool_timeout_secs);
+                    let heartbeat_interval = std::time::Duration::from_secs(5);
+                    let start = std::time::Instant::now();
+                    let mut interval = tokio::time::interval(heartbeat_interval);
+                    interval.tick().await; // consume the immediate first tick
+
+                    loop {
+                        tokio::select! {
+                            // Tool execution completed
+                            tool_result = &mut tool_handle => {
+                                match tool_result {
+                                    Ok(Ok(val)) => break Some(val),
+                                    Ok(Err(e)) => {
+                                        error!("Tool {} error: {}", tool_name, e);
+                                        break Some(serde_json::json!({ "error": e.to_string() }));
+                                    }
+                                    Err(e) => {
+                                        error!("Tool {} panicked: {}", tool_name, e);
+                                        break Some(serde_json::json!({ "error": format!("Tool execution panicked: {}", e) }));
+                                    }
                                 }
                             }
-                        }
 
-                        // Heartbeat: send progress event every 5 seconds
-                        _ = interval.tick() => {
-                            let elapsed = start.elapsed().as_secs();
-                            let progress = AgentEvent::progress(
-                                tool_name,
-                                &format!("Still running... ({}s)", elapsed),
-                                elapsed,
-                                invocation_id,
-                                author,
-                            );
-                            if tx.send(Ok(progress)).await.is_err() {
-                                // Consumer gone — abort tool execution
-                                info!("[session] Consumer disconnected during tool '{}', aborting", tool_name);
+                            // Heartbeat: send progress event every 5 seconds
+                            _ = interval.tick() => {
+                                let elapsed = start.elapsed().as_secs();
+                                let progress = AgentEvent::progress(
+                                    tool_name,
+                                    &format!("Still running... ({}s)", elapsed),
+                                    elapsed,
+                                    invocation_id,
+                                    author,
+                                );
+                                if tx.send(Ok(progress)).await.is_err() {
+                                    info!("[session] Consumer disconnected during tool '{}', aborting", tool_name);
+                                    tool_handle.abort();
+                                    break Some(serde_json::json!({ "error": "Cancelled by user (consumer disconnected)" }));
+                                }
+                            }
+
+                            // Consumer disconnected (STOP button)
+                            _ = tx.closed() => {
+                                info!("Consumer disconnected during tool '{}', aborting", tool_name);
                                 tool_handle.abort();
-                                break serde_json::json!({ "error": "Cancelled by user (consumer disconnected)" });
+                                break Some(serde_json::json!({ "error": "Cancelled by user" }));
                             }
-                        }
 
-                        // Consumer disconnected (STOP button)
-                        _ = tx.closed() => {
-                            info!("Consumer disconnected during tool '{}', aborting", tool_name);
-                            tool_handle.abort();
-                            break serde_json::json!({ "error": "Cancelled by user" });
-                        }
-
-                        // Timeout
-                        _ = tokio::time::sleep(timeout_duration) => {
-                            warn!("Tool '{}' timed out after {}s", tool_name, timeout_duration.as_secs());
-                            tool_handle.abort();
-                            break serde_json::json!({ "error": format!("Tool execution timed out after {}s", timeout_duration.as_secs()) });
+                            // Timeout
+                            _ = tokio::time::sleep(timeout_duration) => {
+                                warn!("Tool '{}' timed out after {}s", tool_name, timeout_duration.as_secs());
+                                tool_handle.abort();
+                                break Some(serde_json::json!({ "error": format!("Tool execution timed out after {}s", timeout_duration.as_secs()) }));
+                            }
                         }
                     }
                 }
+                None => {
+                    // Unknown tool — never retry
+                    break serde_json::json!({ "error": format!("Unknown tool: {}", tool_name) });
+                }
+            };
+
+            let result_val = match tool_result {
+                Some(v) => v,
+                None => serde_json::json!({ "error": "Tool execution returned no result" }),
+            };
+
+            // Check if this is an error that should be retried
+            if let Some(err_val) = result_val.get("error") {
+                let err_msg = err_val.as_str().unwrap_or("unknown error").to_string();
+                let classification = classify_tool_error(&err_msg);
+
+                match classification {
+                    ToolErrorClass::Cancelled => {
+                        // Never retry cancellations
+                        break result_val;
+                    }
+                    ToolErrorClass::NonRetryable => {
+                        // Don't retry, but enrich the error with context if we already retried
+                        if attempt > 0 {
+                            break serde_json::json!({
+                                "error": err_msg,
+                                "retry_info": format!("Failed after {} attempt(s). This error is not retryable.", attempt + 1)
+                            });
+                        }
+                        break result_val;
+                    }
+                    ToolErrorClass::Retryable => {
+                        attempt += 1;
+                        if attempt > max_retries {
+                            warn!("Tool '{}' failed after {} attempts, giving up", tool_name, attempt);
+                            break serde_json::json!({
+                                "error": err_msg,
+                                "retry_info": format!("Exhausted {} retry attempt(s). Last error: {}", max_retries, err_msg)
+                            });
+                        }
+                        let backoff_secs = 1u64 << (attempt - 1); // 1s, 2s, 4s, ...
+                        warn!("Tool '{}' failed (attempt {}/{}), retrying in {}s: {}",
+                              tool_name, attempt, max_retries, backoff_secs, err_msg);
+                        // Notify the UI about the retry
+                        let retry_event = AgentEvent::progress(
+                            tool_name,
+                            &format!("Retry {}/{} after {}s (error: {})", attempt, max_retries, backoff_secs, err_msg),
+                            0,
+                            invocation_id,
+                            author,
+                        );
+                        let _ = tx.send(Ok(retry_event)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                        // Continue the loop to retry
+                        continue;
+                    }
+                }
+            } else {
+                // Success — no error field
+                break result_val;
             }
-            None => serde_json::json!({ "error": format!("Unknown tool: {}", tool_name) }),
         }
     };
 
@@ -1141,10 +1269,11 @@ async fn execute_tools_concurrent<'a>(
     tx: &'a tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
     permission: &'a PermissionChecker,
     tool_timeout_secs: u64,
+    max_retries: usize,
 ) -> Vec<ChatMessage> {
     use futures::future::join_all;
     let futs = tool_calls.iter().map(|tc| {
-        execute_tool_call(tools, tc, working_dir, invocation_id, author, tx, permission, tool_timeout_secs)
+        execute_tool_call(tools, tc, working_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries)
     });
     join_all(futs).await
 }

@@ -403,6 +403,11 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             <small style="color:var(--t3)">Max time allowed for a single tool execution</small>
           </div>
           <div class="form-group">
+            <label>Tool Max Retries</label>
+            <input type="number" id="toolMaxRetriesInput" value="2" min="0" max="10">
+            <small style="color:var(--t3)">Auto-retry count for transient tool failures (timeouts, network errors)</small>
+          </div>
+          <div class="form-group">
             <label>Timezone Offset (UTC)</label>
             <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1">
             <small style="color:var(--t3)">Chat message timestamps will be displayed in this timezone (default: UTC+8)</small>
@@ -933,8 +938,9 @@ function doSend(txt,imgs){
   const rabbitHole=parseInt(document.getElementById('rabbitHoleInput').value)||5;
   const ctxThreshold=parseInt(document.getElementById('ctxWindowThreshold').value)||80;
   const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
+  const toolMaxRetries=parseInt(document.getElementById('toolMaxRetriesInput').value)||2;
   sendPerms();
-  const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout};
+  const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout,max_tool_retries:toolMaxRetries};
   if(imgs&&imgs.length)msg.images=imgs;
   ws.send(JSON.stringify(msg));
   showTyping();
@@ -1023,6 +1029,7 @@ async function loadModels(){
     if(d.max_iterations) document.getElementById('maxIterInput').value = d.max_iterations;
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
     if(d.tool_timeout_secs) document.getElementById('toolTimeoutInput').value = d.tool_timeout_secs;
+    if(d.max_tool_retries !== undefined) document.getElementById('toolMaxRetriesInput').value = d.max_tool_retries;
     updateImgBtnState();
   }catch(e){addLog('Load models failed','error')}
 }

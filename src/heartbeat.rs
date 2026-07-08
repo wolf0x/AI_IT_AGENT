@@ -127,6 +127,7 @@ impl Heartbeat {
             None, rabbit_hole,
             ctx_window, ctx_window_threshold,
             tool_timeout,
+            2,     // default max_tool_retries for heartbeat
             vec![],  // no images for heartbeat
             None, None,  // no checkpoint for heartbeat
         ).await {
