@@ -54,6 +54,18 @@ impl BrowserSkillTool {
         Ok(sid)
     }
 
+    /// Resolve bsk binary: prefer {workspace}/tools/bsk.exe, fallback to PATH.
+    fn bsk_bin(&self) -> String {
+        let tools_path = std::path::Path::new(&self.workspace_dir)
+            .join("tools")
+            .join(if cfg!(windows) { "bsk.exe" } else { "bsk" });
+        if tools_path.exists() {
+            tools_path.to_string_lossy().to_string()
+        } else {
+            "bsk".to_string()
+        }
+    }
+
     /// Run a bsk CLI command and return parsed JSON output.
     async fn run_bsk(&self, args: &[&str], session_id: Option<&str>) -> Result<Value, String> {
         let mut cmd_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -66,9 +78,10 @@ impl BrowserSkillTool {
             }
         }
 
+        let bsk = self.bsk_bin();
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(BSK_TIMEOUT_SECS),
-            tokio::process::Command::new("bsk")
+            tokio::process::Command::new(&bsk)
                 .args(&cmd_args)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -76,7 +89,7 @@ impl BrowserSkillTool {
         )
         .await
         .map_err(|_| format!("bsk command timed out after {}s", BSK_TIMEOUT_SECS))?
-        .map_err(|e| format!("Failed to execute bsk: {}. Is BrowserSkill CLI installed? (install via: https://github.com/Tencent/BrowserSkill)", e))?;
+        .map_err(|e| format!("Failed to execute bsk (tried: {}): {}. Install BrowserSkill CLI to workspace/tools/ or system PATH. (https://github.com/Tencent/BrowserSkill)", bsk, e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
