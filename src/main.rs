@@ -368,8 +368,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.register(Arc::new(crate::tool::memory_md::MemoryMdTool::new(workspace_dir.clone())));
         reg.register(Arc::new(crate::tool::todo_update::TodoUpdateTool::new(workspace_dir.clone())));
         reg.register(Arc::new(crate::tool::browser_cdp::BrowserCdpTool::new(browser_session)));
+        reg.register(crate::tool::browser_skill::BrowserSkillTool::new(workspace_dir.clone()));
     }
-    info!("Registered cron_manage + memory_md + todo_update + browser_cdp tools");
+    info!("Registered cron_manage + memory_md + todo_update + browser_cdp + browser_skill tools");
 
     // Build app state
     let state = Arc::new(AppState {
