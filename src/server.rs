@@ -103,6 +103,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/memory", get(memory_entries_handler))
         .route("/api/memory/summarize", post(memory_summarize_handler))
         .route("/api/history", get(history_handler))
+        .route("/api/usage", get(usage_handler))
+        .route("/api/usage/today", get(usage_today_handler))
         .route("/api/tools", get(tools_handler))
         .route("/api/tools/{name}/toggle", post(tools_toggle_handler))
         .route("/api/tools/{name}/description", post(tools_desc_handler))
@@ -781,6 +783,10 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                                         if let AgentEvent::TextDelta { content: c, .. } = &event {
                                                             assistant_text.push_str(c);
                                                         }
+                                                        // Persist token usage to database
+                                                        if let AgentEvent::Usage { model, prompt_tokens, completion_tokens, total_tokens, .. } = &event {
+                                                            let _ = state.memory_store.record_usage(model, *prompt_tokens, *completion_tokens, *total_tokens, &session_id);
+                                                        }
                                                         let msg_str = event.to_ws_message();
                                                         let mut sink = ws_sink.lock().await;
                                                         if sink.send(Message::Text(msg_str.into())).await.is_err() {
@@ -972,6 +978,10 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                                     Some(Ok(event)) => {
                                                         if let AgentEvent::TextDelta { content: c, .. } = &event {
                                                             assistant_text.push_str(c);
+                                                        }
+                                                        // Persist token usage to database
+                                                        if let AgentEvent::Usage { model, prompt_tokens, completion_tokens, total_tokens, .. } = &event {
+                                                            let _ = state.memory_store.record_usage(model, *prompt_tokens, *completion_tokens, *total_tokens, &session_id);
                                                         }
                                                         let msg_str = event.to_ws_message();
                                                         let mut sink = ws_sink.lock().await;
@@ -1346,4 +1356,36 @@ fn is_recall_query(text: &str) -> bool {
         "earlier conversation", "before we",
     ];
     KEYWORDS.iter().any(|k| lower.contains(k))
+}
+
+// ============================================================
+// Token usage tracking API
+// ============================================================
+
+#[derive(Deserialize)]
+struct UsageQuery {
+    #[serde(default = "default_usage_days")]
+    days: usize,
+}
+
+fn default_usage_days() -> usize { 7 }
+
+async fn usage_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<UsageQuery>,
+) -> Json<Value> {
+    let days = query.days.max(1).min(90);
+    match state.memory_store.get_usage_stats(days) {
+        Ok(data) => Json(json!({ "days": days, "data": data })),
+        Err(e) => Json(json!({ "error": e })),
+    }
+}
+
+async fn usage_today_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<Value> {
+    match state.memory_store.get_today_usage() {
+        Ok(data) => Json(data),
+        Err(e) => Json(json!({ "error": e })),
+    }
 }

@@ -90,6 +90,21 @@ pub enum AgentEvent {
         #[serde(flatten)]
         meta: EventMeta,
     },
+
+    /// Token usage statistics from an LLM API call.
+    #[serde(rename = "usage")]
+    Usage {
+        #[serde(flatten)]
+        meta: EventMeta,
+        /// Model name used for this call.
+        model: String,
+        /// Input/prompt tokens.
+        prompt_tokens: u64,
+        /// Output/completion tokens.
+        completion_tokens: u64,
+        /// Total tokens (prompt + completion).
+        total_tokens: u64,
+    },
 }
 
 /// Event metadata — identity, timing, and provenance.
@@ -208,6 +223,16 @@ impl AgentEvent {
         }
     }
 
+    pub fn usage(model: &str, prompt_tokens: u64, completion_tokens: u64, total_tokens: u64, invocation_id: &str, author: &str) -> Self {
+        AgentEvent::Usage {
+            meta: EventMeta::new(invocation_id, author),
+            model: model.to_string(),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        }
+    }
+
     // --- Getters ---
 
     pub fn meta(&self) -> &EventMeta {
@@ -220,6 +245,7 @@ impl AgentEvent {
             | Self::Error { meta, .. }
             | Self::PermissionRequest { meta, .. }
             | Self::PermissionResponse { meta, .. }
+            | Self::Usage { meta, .. }
             | Self::Done { meta } => meta,
         }
     }

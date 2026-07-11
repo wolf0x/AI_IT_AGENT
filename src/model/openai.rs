@@ -119,7 +119,7 @@ impl OpenAiProvider {
         tx: mpsc::Sender<AgentResult<crate::agent::AgentEvent>>,
         invocation_id: &str,
         author: &str,
-    ) -> Result<(String, String, Vec<ToolCallDelta>), String> {
+    ) -> Result<(String, String, Vec<ToolCallDelta>, Option<crate::model::UsageMetadata>), String> {
         let model = self.find_model(model_name).await.ok_or("No model configured")?;
         let api_key = model.resolved_api_key();
         let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
@@ -128,6 +128,7 @@ impl OpenAiProvider {
             "model": model.name,
             "messages": messages,
             "stream": true,
+            "stream_options": {"include_usage": true},
             "temperature": model.temperature,
         });
         body[max_tokens_key(&model.name)] = serde_json::json!(model.max_tokens);
@@ -155,6 +156,7 @@ impl OpenAiProvider {
         let mut full_reasoning = String::new();
         let mut tool_calls_map: Vec<ToolCallAccum> = Vec::new();
         let mut buffer = String::new();
+        let mut captured_usage: Option<crate::model::UsageMetadata> = None;
 
         // If the consumer (agent stream / WebSocket) drops the receiver, there is
         // no point continuing to read the HTTP stream. We watch for that with a
@@ -224,6 +226,14 @@ impl OpenAiProvider {
                                     }
                                 }
                             }
+                            // Capture usage from the last chunk (stream_options.include_usage=true)
+                            if let Some(ref raw) = chunk.usage {
+                                captured_usage = Some(crate::model::UsageMetadata {
+                                    prompt_tokens: raw.prompt_tokens,
+                                    completion_tokens: raw.completion_tokens,
+                                    total_tokens: raw.total_tokens,
+                                });
+                            }
                         }
                         Err(e) => { debug!("Failed to parse chunk: {} | data: {}", e, data); }
                     }
@@ -259,7 +269,7 @@ impl OpenAiProvider {
             })
             .collect();
 
-        Ok((full_content, full_reasoning, tool_calls))
+        Ok((full_content, full_reasoning, tool_calls, captured_usage))
     }
 }
 

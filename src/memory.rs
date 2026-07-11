@@ -365,6 +365,28 @@ impl MemoryStore {
             info!("Schema v3 migration: task_checkpoints table created");
         }
 
+        // ── Schema v4: Token usage tracking ─────────────────────
+        if version < 4 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS usage_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    session_id TEXT,
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_stats(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_stats(model_name);"
+            ).map_err(|e| format!("Usage stats table creation failed: {}", e))?;
+
+            conn.execute("INSERT INTO schema_version(version) VALUES(4)", [])
+                .map_err(|e| format!("Version 4 insert failed: {}", e))?;
+
+            info!("Schema v4 migration: usage_stats table created");
+        }
+
         Ok(())
     }
 
@@ -903,5 +925,105 @@ impl MemoryStore {
             info!("Cleaned up {} stale checkpoint(s) (older than {}h)", deleted, max_age_hours);
         }
         Ok(deleted)
+    }
+
+    /// Record a token usage entry.
+    pub fn record_usage(&self, model_name: &str, prompt_tokens: u64, completion_tokens: u64, total_tokens: u64, session_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO usage_stats (timestamp, model_name, session_id, prompt_tokens, completion_tokens, total_tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![now, model_name, session_id, prompt_tokens as i64, completion_tokens as i64, total_tokens as i64],
+        ).map_err(|e| format!("Failed to record usage: {}", e))?;
+        Ok(())
+    }
+
+    /// Get aggregated usage stats grouped by model and day.
+    /// Returns JSON array of {date, model, total_calls, total_prompt, total_completion, total_tokens}.
+    pub fn get_usage_stats(&self, days: usize) -> Result<serde_json::Value, String> {
+        let conn = self.conn.lock().unwrap();
+        let since = chrono::Utc::now() - chrono::Duration::days(days as i64);
+        let since_str = since.to_rfc3339();
+
+        let mut stmt = conn.prepare(
+            "SELECT DATE(timestamp) as date, model_name,
+                    COUNT(*) as calls,
+                    SUM(prompt_tokens) as prompt_sum,
+                    SUM(completion_tokens) as completion_sum,
+                    SUM(total_tokens) as total_sum
+             FROM usage_stats
+             WHERE timestamp >= ?1
+             GROUP BY date, model_name
+             ORDER BY date DESC, model_name"
+        ).map_err(|e| format!("Failed to prepare usage query: {}", e))?;
+
+        let rows = stmt.query_map(params![since_str], |row| {
+            Ok(serde_json::json!({
+                "date": row.get::<_, String>(0)?,
+                "model": row.get::<_, String>(1)?,
+                "calls": row.get::<_, i64>(2)?,
+                "prompt_tokens": row.get::<_, i64>(3)?,
+                "completion_tokens": row.get::<_, i64>(4)?,
+                "total_tokens": row.get::<_, i64>(5)?,
+            }))
+        }).map_err(|e| format!("Failed to query usage: {}", e))?;
+
+        let mut result: Vec<serde_json::Value> = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("Row error: {}", e))?);
+        }
+        Ok(serde_json::Value::Array(result))
+    }
+
+    /// Get today's total token usage summary.
+    pub fn get_today_usage(&self) -> Result<serde_json::Value, String> {
+        let conn = self.conn.lock().unwrap();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+        let mut stmt = conn.prepare(
+            "SELECT model_name,
+                    COUNT(*) as calls,
+                    SUM(prompt_tokens) as prompt_sum,
+                    SUM(completion_tokens) as completion_sum,
+                    SUM(total_tokens) as total_sum
+             FROM usage_stats
+             WHERE DATE(timestamp) = ?1
+             GROUP BY model_name
+             ORDER BY total_sum DESC"
+        ).map_err(|e| format!("Failed to prepare today's usage query: {}", e))?;
+
+        let rows = stmt.query_map(params![today], |row| {
+            Ok(serde_json::json!({
+                "model": row.get::<_, String>(0)?,
+                "calls": row.get::<_, i64>(1)?,
+                "prompt_tokens": row.get::<_, i64>(2)?,
+                "completion_tokens": row.get::<_, i64>(3)?,
+                "total_tokens": row.get::<_, i64>(4)?,
+            }))
+        }).map_err(|e| format!("Failed to query today's usage: {}", e))?;
+
+        let mut by_model: Vec<serde_json::Value> = Vec::new();
+        let mut total_calls: i64 = 0;
+        let mut total_prompt: i64 = 0;
+        let mut total_completion: i64 = 0;
+        let mut total_tokens: i64 = 0;
+
+        for row in rows {
+            let v = row.map_err(|e| format!("Row error: {}", e))?;
+            total_calls += v["calls"].as_i64().unwrap_or(0);
+            total_prompt += v["prompt_tokens"].as_i64().unwrap_or(0);
+            total_completion += v["completion_tokens"].as_i64().unwrap_or(0);
+            total_tokens += v["total_tokens"].as_i64().unwrap_or(0);
+            by_model.push(v);
+        }
+
+        Ok(serde_json::json!({
+            "date": today,
+            "total_calls": total_calls,
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "total_tokens": total_tokens,
+            "by_model": by_model,
+        }))
     }
 }

@@ -118,6 +118,16 @@ impl ConversationLogger {
             AgentEvent::Done { .. } => return,
             // Skip logging heartbeat/progress events to avoid noise
             AgentEvent::Progress { .. } => return,
+            AgentEvent::Usage { model, prompt_tokens, completion_tokens, total_tokens, .. } => json!({
+                "ts": Utc::now().to_rfc3339(),
+                "session": session_id,
+                "role": "system",
+                "type": "usage",
+                "model": model,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            }),
         };
         self.write_entry(&entry);
     }

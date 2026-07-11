@@ -577,7 +577,14 @@ impl Agent for LlmAgent {
                     .await;
 
                 match result {
-                    Ok((content, reasoning, tool_calls)) => {
+                    Ok((content, reasoning, tool_calls, usage)) => {
+                        // Emit token usage event if available
+                        if let Some(ref u) = usage {
+                            let prompt_t = u.prompt_tokens.unwrap_or(0);
+                            let completion_t = u.completion_tokens.unwrap_or(0);
+                            let total_t = u.total_tokens.unwrap_or(prompt_t + completion_t);
+                            let _ = tx.send(Ok(AgentEvent::usage(&active_model, prompt_t, completion_t, total_t, &invocation_id, &author))).await;
+                        }
                         // If the consumer disappeared mid-stream, don't continue
                         // executing tools or making further LLM calls.
                         if tx.is_closed() {
@@ -692,7 +699,7 @@ impl Agent for LlmAgent {
                                 summary_msgs.extend(history.clone());
                                 // One more LLM call for summary (no tools) - streams to client
                                 match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
-                                    Ok((summary_content, _, _)) => {
+                                    Ok((summary_content, _, _, _)) => {
                                         if summary_content.trim().is_empty() {
                                             (generate_static_summary(&history, iteration + 1), false)
                                         } else {
@@ -859,7 +866,7 @@ impl Agent for LlmAgent {
             let mut summary_msgs = vec![ChatMessage::system(&system_prompt)];
             summary_msgs.extend(history.clone());
             match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
-                Ok((summary_content, _, _)) => {
+                Ok((summary_content, _, _, _)) => {
                     if summary_content.trim().is_empty() {
                         // LLM returned empty, send static summary
                         let fallback = generate_static_summary(&history, max_iter);
