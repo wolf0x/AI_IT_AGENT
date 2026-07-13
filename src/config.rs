@@ -1,14 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub agent: AgentConfig,
-    #[serde(default)]
-    pub models: Vec<ModelConfig>,
-    #[serde(default)]
-    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -17,10 +12,6 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_password")]
-    pub password: String,
-    #[serde(default = "default_log_dir")]
-    pub log_dir: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +20,7 @@ pub struct AgentConfig {
     pub working_dir: String,
     /// Agent workspace directory — the agent's "home" where AGENTS.md, SOUL.md, TOOLS.md live.
     /// Defaults to %USERPROFILE%\.RustAgent\workspace
+    #[allow(dead_code)]
     #[serde(default = "default_workspace_dir")]
     pub workspace_dir: String,
     #[serde(default = "default_max_iterations")]
@@ -113,8 +105,6 @@ impl Default for Config {
             server: ServerConfig {
                 host: default_host(),
                 port: default_port(),
-                password: default_password(),
-                log_dir: default_log_dir(),
             },
             agent: AgentConfig {
                 working_dir: default_working_dir(),
@@ -125,16 +115,12 @@ impl Default for Config {
                 tool_timeout_secs: default_tool_timeout_secs(),
                 max_tool_retries: default_max_tool_retries(),
             },
-            models: vec![],
-            mcp_servers: vec![],
         }
     }
 }
 
 fn default_host() -> String { "0.0.0.0".to_string() }
 fn default_port() -> u16 { 7788 }
-fn default_password() -> String { "123".to_string() }
-fn default_log_dir() -> String { "logs".to_string() }
 fn default_working_dir() -> String { ".".to_string() }
 fn default_workspace_dir() -> String {
     if let Ok(userprofile) = std::env::var("USERPROFILE") {
@@ -153,15 +139,57 @@ fn default_max_tokens() -> u32 { 16384 }
 fn default_temperature() -> f64 { 0.7 }
 
 impl Config {
-    pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let p = Path::new(path);
-        if p.exists() {
-            let content = std::fs::read_to_string(p)?;
+    /// Load config from the workspace directory. If no config exists, check the
+    /// exe directory for backward compatibility, then generate a minimal default
+    /// config.toml in the workspace.
+    pub fn load(workspace_dir: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let config_path = std::path::Path::new(workspace_dir).join("config.toml");
+
+        if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path)?;
             let config: Config = toml::from_str(&content)?;
             Ok(config)
         } else {
-            tracing::warn!("Config file {} not found, using defaults", path);
+            // Backward compatibility: try exe_dir config.toml
+            if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+                let old_config_path = exe_dir.join("config.toml");
+                if old_config_path.exists() {
+                    tracing::info!("Migrating config.toml from exe dir to workspace");
+                    let _ = std::fs::copy(&old_config_path, &config_path);
+                    let content = std::fs::read_to_string(&config_path)?;
+                    // Parse with relaxed deserialization — ignore unknown fields from old format
+                    let config: Config = toml::from_str(&content).unwrap_or_default();
+                    return Ok(config);
+                }
+            }
+            // No config anywhere — generate minimal default
+            Self::generate_default(workspace_dir)?;
             Ok(Config::default())
         }
+    }
+
+    /// Generate a minimal config.toml in the workspace with essential fields only.
+    fn generate_default(workspace_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let config_content = r#"# RustAgent Configuration (minimal)
+# Models are managed via models.json, MCP servers via mcp_servers.json.
+# Settings can also be changed via the Web UI Settings page.
+
+[server]
+host = "0.0.0.0"
+port = 7788
+
+[agent]
+workspace_dir = "."
+working_dir = "."
+max_iterations = 100
+rabbit_hole_threshold = 5
+context_window_threshold = 80
+tool_timeout_secs = 300
+max_tool_retries = 2
+"#;
+        let config_path = std::path::Path::new(workspace_dir).join("config.toml");
+        std::fs::write(&config_path, config_content)?;
+        tracing::info!("Generated default config.toml in workspace: {}", config_path.display());
+        Ok(())
     }
 }

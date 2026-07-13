@@ -70,29 +70,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     info!("Executable directory: {}", exe_dir.display());
 
-    // Load config from exe directory
-    let config_path = exe_dir.join("config.toml");
-    let mut config = Config::load(config_path.to_str().unwrap_or("config.toml"))?;
-    info!(
-        "Config loaded: {} models, {} MCP servers",
-        config.models.len(),
-        config.mcp_servers.len()
-    );
-
-    // Build tool registry (built-in tools)
-    // The notification broadcast channel is created early so tools that need to
-    // push messages to WebSocket clients (e.g. sys_remind) can hold a sender.
-    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
-
-    // Resolve workspace directory (agent's "home")
-    let workspace_dir = if config.agent.workspace_dir.is_empty() || config.agent.workspace_dir == "." {
-        if let Ok(userprofile) = std::env::var("USERPROFILE") {
-            format!("{}\\.RustAgent\\workspace", userprofile)
-        } else {
-            exe_dir.join(".workspace").to_string_lossy().to_string()
-        }
+    // ── Resolve workspace directory (before config, using defaults) ──
+    let workspace_dir = if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        format!("{}\\.RustAgent\\workspace", userprofile)
     } else {
-        config.agent.workspace_dir.clone()
+        exe_dir.join(".workspace").to_string_lossy().to_string()
     };
     // Create workspace directory and all subdirectories
     if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
@@ -106,17 +88,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = std::fs::create_dir_all(&p);
     }
 
+    // Load config from workspace (generates default config.toml on first run)
+    let config = Config::load(&workspace_dir)?;
+    info!("Config loaded from workspace");
+
+    // Build tool registry (built-in tools)
+    // The notification broadcast channel is created early so tools that need to
+    // push messages to WebSocket clients (e.g. sys_remind) can hold a sender.
+    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+
     // ── Random password (first-run) ──────────────────────────
     // Each installation gets its own random 6-digit password, persisted to .password.
     // Subsequent runs reuse the same password — no more default "123".
-    {
+    let password = {
         let pwd_file = std::path::Path::new(&workspace_dir).join(".password");
         if pwd_file.exists() {
-            if let Ok(pwd) = std::fs::read_to_string(&pwd_file) {
-                let pwd = pwd.trim().to_string();
-                if !pwd.is_empty() {
-                    config.server.password = pwd;
-                }
+            let pwd = std::fs::read_to_string(&pwd_file)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if pwd.is_empty() {
+                // .password file exists but empty — regenerate
+                let mut bytes = [0u8; 3];
+                getrandom::fill(&mut bytes).expect("getrandom");
+                let num = ((bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32) % 1000000;
+                let new_pwd = format!("{:06}", num);
+                let _ = std::fs::write(&pwd_file, &new_pwd);
+                new_pwd
+            } else {
+                pwd
             }
         } else {
             let mut bytes = [0u8; 3];
@@ -126,9 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = std::fs::write(&pwd_file, &password) {
                 tracing::warn!("Failed to save password: {}", e);
             }
-            config.server.password = password;
+            password
         }
-    }
+    };
 
     // ── Extract embedded workspace files (first-run only) ────
     // AGENTS.md, SOUL.md, TOOLS.md are compiled into the binary.
@@ -180,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Migrate logs/ → workspace/logs/
     {
-        let old_logs = exe_dir.join(&config.server.log_dir);
+        let old_logs = exe_dir.join("logs");
         let new_logs = std::path::Path::new(&workspace_dir).join("logs");
         if old_logs.exists() && !new_logs.exists() {
             let _ = std::fs::rename(&old_logs, &new_logs);
@@ -214,11 +214,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mcp_manager.connect(&persisted).await;
     }
 
-    // Also connect servers from static config.yaml (if not already loaded from persist)
-    if !config.mcp_servers.is_empty() {
-        mcp_manager.connect(&config.mcp_servers).await;
-    }
-
     // Register all MCP tools into the tool registry
     let mcp_tools = mcp_manager.get_tools();
     for tool in &mcp_tools {
@@ -244,18 +239,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build LLM provider (implements Llm trait)
     // Load persisted model configs (from models.json in workspace, api_keys auto-decrypted)
     let model_store_path = std::path::Path::new(&workspace_dir).join("models.json");
-    let persisted_models = model_store::load_configs(&model_store_path);
-    let initial_models = if !persisted_models.is_empty() {
-        info!("Loaded {} persisted model config(s)", persisted_models.len());
-        persisted_models
-    } else if !config.models.is_empty() {
-        // First run: seed models.json from config.toml
-        info!("Seeding models.json from config.toml ({} models)", config.models.len());
-        model_store::save_configs(&config.models, &model_store_path);
-        config.models.clone()
-    } else {
-        vec![]
-    };
+    let initial_models = model_store::load_configs(&model_store_path);
+    if !initial_models.is_empty() {
+        info!("Loaded {} model config(s) from models.json", initial_models.len());
+    }
     let model_names: Vec<String> = initial_models.iter().map(|m| m.name.clone()).collect();
     let shared_models = Arc::new(tokio::sync::RwLock::new(initial_models));
     let provider = Arc::new(OpenAiProvider::new_with_shared(shared_models.clone()));
@@ -297,7 +284,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_iterations(config.agent.max_iterations)
         .working_dir(&working_dir)
         .workspace_dir(&workspace_dir)
-        .model_configs(config.models.clone())
         .build()
         .map_err(|e| format!("Failed to build agent: {}", e))?;
     let agent: Arc<dyn agent::Agent> = Arc::new(agent);
@@ -381,7 +367,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         logger,
         memory_store,
         external_tools,
-        password: config.server.password.clone(),
+        password: password.clone(),
         model_configs: shared_models.clone(),
         model_store_path: model_store_path.to_str().unwrap_or("models.json").to_string(),
         max_iterations: config.agent.max_iterations,
@@ -405,7 +391,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("=== RustAgent is running ===");
     info!("Local:   http://localhost:{}", config.server.port);
     info!("Network: http://{}:{}", get_local_ip(), config.server.port);
-    info!("Password: {}", config.server.password);
+    info!("Password: {}", password);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
