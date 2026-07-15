@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug};
 
 use crate::agent::AgentEvent;
 use crate::permission::PendingMap;
@@ -83,7 +83,7 @@ impl Heartbeat {
         let heartbeat_content = match self.read_heartbeat_file() {
             Some(c) => c,
             None => {
-                info!("Heartbeat: HEARTBEAT.md not found or empty, skipping");
+                debug!("Heartbeat: HEARTBEAT.md not found or empty, skipping");
                 return;
             }
         };
