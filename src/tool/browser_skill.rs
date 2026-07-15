@@ -115,8 +115,8 @@ impl BrowserSkillTool {
         }
     }
 
-    fn screenshots_dir(&self) -> std::path::PathBuf {
-        let dir = std::path::Path::new(&self.workspace_dir).join("screenshots");
+    fn output_dir(&self) -> std::path::PathBuf {
+        let dir = std::path::Path::new(&self.workspace_dir).join("output");
         let _ = std::fs::create_dir_all(&dir);
         dir
     }
@@ -135,7 +135,7 @@ impl Tool for BrowserSkillTool {
          - session_stop: Stop the current session \
          - navigate: Go to a URL (requires 'url') \
          - snapshot: Get accessibility tree with @eN element refs for interaction \
-         - screenshot: Take a screenshot (saved to workspace/screenshots/) \
+         - screenshot: Take a screenshot (saved to workspace/output/) \
          - get_html: Get page or element HTML (optional 'ref' to scope) \
          - click: Click an element (requires 'ref' from snapshot, or 'selector') \
          - fill: Fill an input field (requires 'ref'/'selector' + 'text') \
@@ -246,7 +246,7 @@ impl Tool for BrowserSkillTool {
                     p.to_string()
                 } else {
                     let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                    self.screenshots_dir()
+                    self.output_dir()
                         .join(format!("bsk_{}.png", ts))
                         .to_string_lossy()
                         .to_string()

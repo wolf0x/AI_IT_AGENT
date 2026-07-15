@@ -27,7 +27,7 @@ impl Tool for IrReportTool {
                 },
                 "output_path": {
                     "type": "string",
-                    "description": "File path to save the HTML report (default: workspace/ir_report_TIMESTAMP.html)"
+                    "description": "File path to save the HTML report (default: workspace/output/ir_report_TIMESTAMP.html)"
                 },
                 "title": {
                     "type": "string",
@@ -58,7 +58,7 @@ impl Tool for IrReportTool {
 
         let output_path = args["output_path"].as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{}/ir_report_{}.html", ctx.working_dir, file_ts));
+            .unwrap_or_else(|| format!("{}/output/ir_report_{}.html", ctx.working_dir, file_ts));
 
         // Build findings rows
         let mut findings_rows = String::new();

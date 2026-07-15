@@ -18,4 +18,7 @@ pub struct Skill {
     pub metadata: SkillMetadata,
     pub content: String,
     pub file_path: String,
+    /// Directory path of the skill (e.g., skills/VulnerabilityPrioritization).
+    /// Every skill is a directory containing SKILL.md and optional supporting files.
+    pub skill_dir: String,
 }

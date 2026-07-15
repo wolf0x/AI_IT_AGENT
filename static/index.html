@@ -765,6 +765,9 @@ function handleMsg(msg){
       hideTyping();finalizeThink();finalizeTextBlock();
       showNotification(msg.message, msg.timestamp);
       break;
+    case 'skills_changed':
+      loadSkills();
+      break;
     case 'done':
       hideTyping();finalizeThink();
       if(textAccum){msgHist.push({role:'assistant',text:textAccum.trim(),time:nowTimeStr()});saveHist()}

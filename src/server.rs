@@ -124,7 +124,7 @@ async fn static_handler(State(state): State<Arc<AppState>>, Path(path): Path<Str
     StaticServer::serve_file(&path, &state.workspace_dir)
 }
 
-/// Serve files from workspace directory (e.g., screenshots).
+/// Serve files from workspace directory (e.g., output files, screenshots).
 /// Includes path traversal protection — only serves files within workspace_dir.
 async fn workspace_file_handler(State(state): State<Arc<AppState>>, Path(path): Path<String>) -> Response {
     use axum::http::{header, StatusCode};

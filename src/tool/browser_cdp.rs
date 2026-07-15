@@ -121,8 +121,8 @@ impl BrowserCdpTool {
         Self { session }
     }
 
-    fn screenshots_dir(&self) -> PathBuf {
-        let dir = PathBuf::from(&self.session.workspace_dir).join("screenshots");
+    fn output_dir(&self) -> PathBuf {
+        let dir = PathBuf::from(&self.session.workspace_dir).join("output");
         let _ = std::fs::create_dir_all(&dir);
         dir
     }
@@ -139,7 +139,7 @@ impl Tool for BrowserCdpTool {
          - 'get_text': Get page text or element text. Optional 'selector' (CSS).\n\
          - 'click': Click an element. Provide 'selector' (CSS).\n\
          - 'type_text': Type into an element. Provide 'selector' and 'text'.\n\
-         - 'screenshot': Take a screenshot. Optional 'path' (defaults to workspace/screenshots/).\n\
+         - 'screenshot': Take a screenshot. Optional 'path' (defaults to workspace/output/).\n\
          - 'get_url': Get current page URL.\n\
          - 'get_html': Get page or element HTML. Optional 'selector' (CSS).\n\
          - 'execute_js': Run JavaScript. Provide 'js'.\n\
@@ -179,7 +179,7 @@ impl Tool for BrowserCdpTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File path for screenshot (optional, defaults to workspace/screenshots/)"
+                    "description": "File path for screenshot (optional, defaults to workspace/output/)"
                 }
             },
             "required": ["action"]
@@ -292,7 +292,7 @@ impl Tool for BrowserCdpTool {
             "screenshot" => {
                 let filename = format!("screenshot_{}.png",
                     chrono::Local::now().format("%Y%m%d_%H%M%S"));
-                // Always save into workspace/screenshots/ — if user provides 'path',
+                // Always save into workspace/output/ — if user provides 'path',
                 // only use its file_name component (discard any directory portion).
                 let file_name = if let Some(p) = args["path"].as_str() {
                     let pb = PathBuf::from(p);
@@ -302,7 +302,7 @@ impl Tool for BrowserCdpTool {
                 } else {
                     filename
                 };
-                let path = self.screenshots_dir().join(&file_name);
+                let path = self.output_dir().join(&file_name);
                 let params = CaptureScreenshotParams {
                     format: Some(CaptureScreenshotFormat::Png),
                     ..Default::default()
@@ -310,7 +310,7 @@ impl Tool for BrowserCdpTool {
                 page.save_screenshot(params, &path)
                     .await
                     .map_err(|e| format!("Screenshot failed: {}", e))?;
-                let url = format!("/workspace/screenshots/{}", file_name);
+                let url = format!("/workspace/output/{}", file_name);
                 Ok(json!({
                     "success": true,
                     "action": "screenshot",

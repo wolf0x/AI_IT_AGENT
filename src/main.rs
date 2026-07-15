@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         info!("Workspace directory: {}", workspace_dir);
     }
-    let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "screenshots"];
+    let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output"];
     for sub in &ws_subdirs {
         let p = std::path::Path::new(&workspace_dir).join(sub);
         let _ = std::fs::create_dir_all(&p);
@@ -226,7 +226,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load skills (resolve skills dir from workspace)
     let skills_dir = std::path::Path::new(&workspace_dir).join("skills");
-    let skill_manager = Arc::new(SkillManager::new(skills_dir.to_str().unwrap_or("skills")));
+    let skill_manager = Arc::new(SkillManager::new_with_notify(
+        skills_dir.to_str().unwrap_or("skills"),
+        Some(notify_tx.clone()),
+    ));
     let skills = skill_manager.list();
     info!("Loaded {} skills", skills.len());
 
