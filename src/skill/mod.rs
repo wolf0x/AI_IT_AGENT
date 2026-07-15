@@ -27,6 +27,30 @@ fn sanitize_dir_name(name: &str) -> String {
     sanitized.trim_matches(|c| c == ' ' || c == '.').to_string()
 }
 
+/// Quote a string for safe inclusion in YAML frontmatter.
+/// Wraps in double quotes and escapes internal backslashes and double quotes.
+fn yaml_quote(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{}\"", escaped)
+}
+
+/// Strip a leading YAML frontmatter block (--- ... ---) from content.
+/// If the content doesn't start with ---, returns it unchanged.
+fn strip_frontmatter(content: &str) -> &str {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return content;
+    }
+    let rest = &trimmed[3..];
+    if let Some(end_pos) = rest.find("\n---") {
+        // Skip past the closing --- and any trailing newline
+        let after = &rest[end_pos + 4..];
+        after.strip_prefix('\n').unwrap_or(after)
+    } else {
+        content
+    }
+}
+
 pub struct SkillManager {
     skills: Arc<RwLock<Vec<Skill>>>,
     skills_dir: PathBuf,
@@ -73,15 +97,15 @@ impl SkillManager {
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
                     match parse_skill_file(&path, skill_dir) {
-                        Some(mut skill) => {
+                        Ok(mut skill) => {
                             if let Some(enabled) = state.get(&skill.metadata.name) {
                                 skill.metadata.enabled = *enabled;
                             }
                             info!("Loaded skill: {} from {} (enabled={})", skill.metadata.name, path.display(), skill.metadata.enabled);
                             skills.push(skill);
                         }
-                        None => {
-                            warn!("Failed to parse skill file: {}", path.display());
+                        Err(e) => {
+                            warn!("{}", e);
                         }
                     }
                 }
@@ -233,10 +257,11 @@ impl SkillManager {
         std::fs::create_dir_all(&self.skills_dir)
             .map_err(|e| format!("Failed to create dir: {}", e))?;
 
-        let triggers_yaml: Vec<String> = triggers.iter().map(|t| format!("  - {}", t)).collect();
+        let triggers_yaml: Vec<String> = triggers.iter().map(|t| format!("  - {}", yaml_quote(t))).collect();
+        let clean_content = strip_frontmatter(content);
         let md_content = format!(
             "---\nname: {}\ndescription: {}\ntriggers:\n{}\n---\n\n{}\n",
-            name, description, triggers_yaml.join("\n"), content
+            yaml_quote(name), yaml_quote(description), triggers_yaml.join("\n"), clean_content
         );
 
         // Always create directory: skills/{dir_name}/SKILL.md
@@ -360,12 +385,15 @@ impl SkillManager {
     }
 }
 
-fn parse_skill_file(path: &Path, skill_dir: String) -> Option<Skill> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let (frontmatter, body) = split_frontmatter(&content)?;
-    let metadata: SkillMetadata = serde_yaml::from_str(&frontmatter).ok()?;
+fn parse_skill_file(path: &Path, skill_dir: String) -> Result<Skill, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let (frontmatter, body) = split_frontmatter(&content)
+        .ok_or_else(|| format!("No valid frontmatter (--- delimiters) in {}", path.display()))?;
+    let metadata: SkillMetadata = serde_yaml::from_str(&frontmatter)
+        .map_err(|e| format!("YAML parse error in {}: {} | frontmatter: {}", path.display(), e, frontmatter.chars().take(200).collect::<String>()))?;
 
-    Some(Skill {
+    Ok(Skill {
         metadata,
         content: body.trim().to_string(),
         file_path: path.to_string_lossy().to_string(),
@@ -456,10 +484,11 @@ impl Tool for InstallSkillTool {
             .map(|s| sanitize_dir_name(s))
             .unwrap_or_else(|| sanitize_dir_name(name));
 
-        let triggers_yaml: Vec<String> = triggers.iter().map(|t| format!("  - {}", t)).collect();
+        let triggers_yaml: Vec<String> = triggers.iter().map(|t| format!("  - {}", yaml_quote(t))).collect();
+        let clean_content = strip_frontmatter(&content);
         let md_content = format!(
             "---\nname: {}\ndescription: {}\ntriggers:\n{}\n---\n\n{}\n",
-            name, desc, triggers_yaml.join("\n"), content
+            yaml_quote(name), yaml_quote(desc), triggers_yaml.join("\n"), clean_content
         );
 
         std::fs::create_dir_all(&self.skills_dir)
@@ -501,7 +530,7 @@ impl Tool for InstallSkillTool {
         // Reload skills
         let mut skills = self.skills.write().unwrap();
         let dir_str = skill_dir.to_string_lossy().to_string();
-        if let Some(skill) = parse_skill_file(&skill_md, dir_str) {
+        if let Ok(skill) = parse_skill_file(&skill_md, dir_str) {
             skills.push(skill);
         }
 
