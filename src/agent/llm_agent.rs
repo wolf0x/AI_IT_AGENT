@@ -402,11 +402,12 @@ You have two layers of memory:\n\n\
             );
         }
 
-        // ── Active Skills ──
+        // ── Active Skills (weighted scoring, top-K) ──
         let matching_skills = self.skill_manager.find_matching(user_message);
         if !matching_skills.is_empty() {
             prompt.push_str("\n## Active Skills Context\n");
-            for skill_content in &matching_skills {
+            for (skill_content, score) in &matching_skills {
+                tracing::debug!("Skill matched with score {:.3}", score);
                 prompt.push_str(&format!("\n{}\n", skill_content));
             }
             prompt.push('\n');

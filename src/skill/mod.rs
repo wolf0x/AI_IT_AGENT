@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
-use self::types::{Skill, SkillMetadata};
+use self::types::{SelectionPolicy, Skill, SkillMetadata};
 use super::server::NotifyTx;
 use super::tool::Tool;
 use crate::context::ToolContext;
@@ -85,40 +85,115 @@ impl SkillManager {
             .collect()
     }
 
-    pub fn find_matching(&self, user_message: &str) -> Vec<String> {
-        let skills = self.skills.read().unwrap();
-        let msg_lower = user_message.to_lowercase();
-        skills
-            .iter()
-            .filter(|s| {
-                if !s.metadata.enabled { return false; }
-                // Primary: trigger phrase matching
-                if s.metadata.triggers.iter().any(|t| msg_lower.contains(&t.to_lowercase())) {
-                    return true;
-                }
-                // Fallback: description keyword matching (when no triggers defined)
-                if s.metadata.triggers.is_empty() && !s.metadata.description.is_empty() {
-                    return Self::description_matches(&s.metadata.description, &msg_lower);
-                }
-                false
-            })
-            .map(|s| s.content.clone())
-            .collect()
+    pub fn find_matching(&self, user_message: &str) -> Vec<(String, f32)> {
+        self.find_matching_with(user_message, &SelectionPolicy::default())
     }
 
-    /// Extract meaningful keywords from description and check if any appear in the message.
-    fn description_matches(description: &str, message: &str) -> bool {
-        const STOP_WORDS: &[&str] = &[
-            "when", "used", "uses", "that", "with", "from", "this", "into",
-            "also", "more", "than", "them", "then", "these", "those", "some",
-            "such", "each", "which", "their", "will", "would", "could", "should",
-            "about", "after", "before", "between", "through", "during", "without",
-            "needs", "need", "done", "just", "only", "very", "often", "always",
-        ];
-        description.split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-            .filter(|w| w.len() >= 4 && !STOP_WORDS.contains(&w.as_str()))
-            .any(|kw| message.contains(&kw))
+    /// Score and rank skills by weighted token overlap with the user message.
+    ///
+    /// Scoring weights (inspired by adk-skill's lexical overlap model):
+    /// - Name match:         ×4.0
+    /// - Description match:  ×2.5
+    /// - Trigger token match: ×2.0
+    /// - Body token overlap: ×1.0
+    /// - Trigger substring bonus: +10.0 (when a full trigger phrase appears in the message)
+    ///
+    /// The raw score is normalized by `sqrt(body_token_count)` to prevent
+    /// large documents (e.g. 33KB VPS skill) from dominating via sheer token volume.
+    pub fn find_matching_with(&self, user_message: &str, policy: &SelectionPolicy) -> Vec<(String, f32)> {
+        let skills = self.skills.read().unwrap();
+        let query_tokens = Self::tokenize(user_message);
+        if query_tokens.is_empty() {
+            return Vec::new();
+        }
+
+        let mut scored: Vec<(String, f32)> = skills
+            .iter()
+            .filter(|s| s.metadata.enabled)
+            .filter_map(|s| {
+                let score = Self::score_skill(s, &query_tokens, user_message);
+                if score >= policy.min_score {
+                    Some((s.content.clone(), score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by score descending, take top-K
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(policy.top_k);
+        scored
+    }
+
+    /// Compute weighted relevance score for a single skill against query tokens.
+    fn score_skill(skill: &Skill, query_tokens: &[String], message: &str) -> f32 {
+        let mut score: f32 = 0.0;
+        let msg_lower = message.to_lowercase();
+
+        // Name token overlap (weight: 4.0)
+        let name_tokens = Self::tokenize(&skill.metadata.name);
+        let name_hits = query_tokens.iter().filter(|t| name_tokens.contains(t)).count();
+        score += name_hits as f32 * 4.0;
+
+        // Description token overlap (weight: 2.5)
+        let desc_tokens = Self::tokenize(&skill.metadata.description);
+        let desc_hits = query_tokens.iter().filter(|t| desc_tokens.contains(t)).count();
+        score += desc_hits as f32 * 2.5;
+
+        // Trigger token overlap (weight: 2.0)
+        for trigger in &skill.metadata.triggers {
+            let trigger_tokens = Self::tokenize(trigger);
+            let trigger_hits = query_tokens.iter().filter(|t| trigger_tokens.contains(t)).count();
+            score += trigger_hits as f32 * 2.0;
+            // Bonus: full trigger phrase appears as substring in the message
+            if !trigger.is_empty() && msg_lower.contains(&trigger.to_lowercase()) {
+                score += 10.0;
+            }
+        }
+
+        // Body token overlap (weight: 1.0)
+        let body_tokens = Self::tokenize(&skill.content);
+        let body_hits = query_tokens.iter().filter(|t| body_tokens.contains(t)).count();
+        score += body_hits as f32 * 1.0;
+
+        // Normalize: prevent large documents from dominating
+        let body_token_count = body_tokens.len().max(1);
+        score / (body_token_count as f32).sqrt()
+    }
+
+    /// Tokenize text into lowercase matchable units.
+    ///
+    /// ASCII words (≥3 chars) are extracted as whole tokens.
+    /// CJK characters are emitted individually so that unsegmented
+    /// Chinese/Japanese/Korean text still produces meaningful overlap.
+    fn tokenize(text: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+
+        for ch in text.chars() {
+            if ch.is_ascii_alphanumeric() {
+                current.push(ch.to_ascii_lowercase());
+            } else if !ch.is_ascii() && ch.is_alphanumeric() {
+                // CJK and other non-ASCII alphabetic: emit as individual tokens
+                if current.len() >= 3 {
+                    tokens.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
+                tokens.push(ch.to_lowercase().to_string());
+            } else {
+                if current.len() >= 3 {
+                    tokens.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
+            }
+        }
+        if current.len() >= 3 {
+            tokens.push(current);
+        }
+        tokens
     }
 
     #[allow(dead_code)]
