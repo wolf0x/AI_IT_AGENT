@@ -386,8 +386,9 @@ impl Tool for InstallSkillTool {
     fn name(&self) -> &str { "install_skill" }
     fn description(&self) -> &str {
         "Install a new skill as a directory (skills/{name}/SKILL.md). \
-         Only 'name' and 'content' are required; 'description', 'triggers', 'files' are optional. \
-         Provide 'files' array for additional files (templates, scripts, references) within the skill directory."
+         For large skills, write the content to a file first with file_write, then pass 'content_file' \
+         (workspace-relative path) instead of inline 'content'. \
+         Similarly, use 'source_path' in files[] entries to read additional files from the workspace."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -396,7 +397,8 @@ impl Tool for InstallSkillTool {
                 "name": { "type": "string", "description": "Skill name identifier (also used as directory name, lowercased with spaces→underscores)" },
                 "description": { "type": "string", "description": "Skill description for matching and display" },
                 "triggers": { "type": "array", "items": { "type": "string" }, "description": "Trigger phrases for skill matching (optional, falls back to description keywords)" },
-                "content": { "type": "string", "description": "Skill instructions (markdown body of SKILL.md)" },
+                "content": { "type": "string", "description": "Skill instructions inline (markdown body of SKILL.md). Use only for small skills; for large ones use content_file." },
+                "content_file": { "type": "string", "description": "Workspace-relative path to a file containing the skill instructions (e.g. 'output/my_skill.md'). Alternative to 'content' for large skills." },
                 "dir_name": { "type": "string", "description": "Override skill directory name (optional, defaults to lowercased name with spaces→underscores)" },
                 "files": {
                     "type": "array",
@@ -404,24 +406,35 @@ impl Tool for InstallSkillTool {
                         "type": "object",
                         "properties": {
                             "path": { "type": "string", "description": "Relative path within skill directory (e.g., 'reference.md', 'templates/report.html')" },
-                            "content": { "type": "string", "description": "File content" }
+                            "content": { "type": "string", "description": "File content inline (for small files)" },
+                            "source_path": { "type": "string", "description": "Workspace-relative path to read file content from (for large files)" }
                         },
-                        "required": ["path", "content"]
+                        "required": ["path"]
                     },
-                    "description": "Additional files (templates, scripts, references) within the skill directory."
+                    "description": "Additional files within the skill directory. Provide either 'content' (inline) or 'source_path' (workspace file) for each."
                 }
             },
-            "required": ["name", "content"]
+            "required": ["name"]
         })
     }
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let name = args["name"].as_str().ok_or_else(|| "Missing 'name'".to_string())?;
-        let content = args["content"].as_str().ok_or_else(|| "Missing 'content'".to_string())?;
         let desc = args["description"].as_str().unwrap_or("");
         let triggers: Vec<String> = args["triggers"]
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
+
+        // Resolve skill body: inline 'content' or read from 'content_file'
+        let content = if let Some(inline) = args["content"].as_str() {
+            inline.to_string()
+        } else if let Some(file_path) = args["content_file"].as_str() {
+            let full_path = Path::new(&ctx.working_dir).join(file_path);
+            std::fs::read_to_string(&full_path)
+                .map_err(|e| format!("Failed to read content_file '{}': {}", full_path.display(), e))?
+        } else {
+            return Err("Provide either 'content' (inline) or 'content_file' (workspace path) with the skill instructions.".into());
+        };
 
         // Auto-derive directory name from 'name' (or use explicit override)
         let dir_name = args["dir_name"].as_str()
@@ -445,18 +458,26 @@ impl Tool for InstallSkillTool {
         std::fs::write(&skill_md, &md_content)
             .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
 
-        // Write optional extra files
+        // Write optional extra files (inline content or read from source_path)
         let mut file_count = 0usize;
         if let Some(files_arr) = args["files"].as_array() {
             for item in files_arr {
                 let rel_path = item["path"].as_str().ok_or_else(|| "Missing 'path' in files entry".to_string())?;
-                let file_content = item["content"].as_str().ok_or_else(|| "Missing 'content' in files entry".to_string())?;
+                let file_content = if let Some(inline) = item["content"].as_str() {
+                    inline.to_string()
+                } else if let Some(src) = item["source_path"].as_str() {
+                    let full_path = Path::new(&ctx.working_dir).join(src);
+                    std::fs::read_to_string(&full_path)
+                        .map_err(|e| format!("Failed to read source_path '{}': {}", full_path.display(), e))?
+                } else {
+                    return Err(format!("files[{}]: provide either 'content' or 'source_path'", rel_path).into());
+                };
                 let file_path = skill_dir.join(rel_path);
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("Failed to create subdirectory: {}", e))?;
                 }
-                std::fs::write(&file_path, file_content)
+                std::fs::write(&file_path, &file_content)
                     .map_err(|e| format!("Failed to write {}: {}", rel_path, e))?;
                 file_count += 1;
             }

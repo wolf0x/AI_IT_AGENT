@@ -1104,7 +1104,24 @@ async fn execute_tool_call(
 ) -> ChatMessage {
     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
-    let args: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+    let args: serde_json::Value = match serde_json::from_str(args_str) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Tool '{}' arguments JSON parse failed ({} chars, likely truncated): {}. Returning error to LLM.",
+                  tool_name, args_str.len(), e);
+            // Return parse error as tool result so the LLM can retry with correct JSON
+            let _ = tx.send(Ok(AgentEvent::tool_call(tool_name, &tc.id, serde_json::json!({}), invocation_id, author))).await;
+            let err_msg = format!(
+                "ERROR: Tool call arguments could not be parsed (JSON malformed, likely truncated by output token limit). \
+                 Error: {}. For large content, use file_write to save content to a file first, then pass the file path \
+                 via 'content_file' parameter instead of inline 'content'.",
+                e
+            );
+            let err_result = serde_json::json!({ "error": err_msg });
+            let result_msg = ChatMessage::tool_result(&tc.id, tool_name, &err_result.to_string());
+            return result_msg;
+        }
+    };
 
     // Emit tool_call event
     let call_event = AgentEvent::tool_call(tool_name, &tc.id, args.clone(), invocation_id, author);
