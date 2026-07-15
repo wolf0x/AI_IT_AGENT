@@ -13,6 +13,42 @@ use crate::error::AgentResult;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+/// Normalize a skill name into a consistent snake_case directory name.
+/// Handles PascalCase, camelCase, kebab-case, spaces, and mixed formats:
+///   "VulnerabilityPrioritization" → "vulnerability_prioritization"
+///   "Vulnerability-Prioritization" → "vulnerability_prioritization"
+///   "vulnerability prioritization" → "vulnerability_prioritization"
+///   "My Cool Skill" → "my_cool_skill"
+fn normalize_dir_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() + 4);
+    let chars: Vec<char> = name.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == '-' || ch == ' ' || ch == '.' {
+            // Replace separators with underscore
+            if !result.is_empty() && !result.ends_with('_') {
+                result.push('_');
+            }
+        } else if ch.is_uppercase() {
+            // Insert underscore before uppercase if preceded by lowercase,
+            // or before the last uppercase in a run (e.g., "XMLParser" → "xml_parser")
+            let prev_is_lower = i > 0 && chars[i - 1].is_lowercase();
+            let next_is_lower = i + 1 < chars.len() && chars[i + 1].is_lowercase();
+            let prev_is_upper = i > 0 && chars[i - 1].is_uppercase();
+            if prev_is_lower || (prev_is_upper && next_is_lower) {
+                if !result.is_empty() && !result.ends_with('_') {
+                    result.push('_');
+                }
+            }
+            result.push(ch.to_lowercase().next().unwrap());
+        } else {
+            result.push(ch.to_lowercase().next().unwrap_or(ch));
+        }
+    }
+    // Trim leading/trailing underscores and collapse multiples
+    let parts: Vec<&str> = result.split('_').filter(|s| !s.is_empty()).collect();
+    parts.join("_")
+}
+
 pub struct SkillManager {
     skills: Arc<RwLock<Vec<Skill>>>,
     skills_dir: PathBuf,
@@ -215,7 +251,7 @@ impl SkillManager {
         content: &str,
         files: Option<Vec<(String, String)>>,
     ) -> Result<String, String> {
-        let dir_name = name.to_lowercase().replace(' ', "_");
+        let dir_name = normalize_dir_name(name);
         std::fs::create_dir_all(&self.skills_dir)
             .map_err(|e| format!("Failed to create dir: {}", e))?;
 
@@ -385,7 +421,9 @@ struct InstallSkillTool {
 impl Tool for InstallSkillTool {
     fn name(&self) -> &str { "install_skill" }
     fn description(&self) -> &str {
-        "Install a new skill as a directory (skills/{name}/SKILL.md). \
+        "Install a new skill as a directory (skills/{snake_case_name}/SKILL.md). \
+         The directory name is auto-normalized to snake_case (e.g. 'MySkill' → 'my_skill', 'My-Skill' → 'my_skill'). \
+         Use the exact name the user requested; directory naming is handled automatically. \
          For large skills, write the content to a file first with file_write, then pass 'content_file' \
          (workspace-relative path) instead of inline 'content'. \
          Similarly, use 'source_path' in files[] entries to read additional files from the workspace."
@@ -394,12 +432,12 @@ impl Tool for InstallSkillTool {
         json!({
             "type": "object",
             "properties": {
-                "name": { "type": "string", "description": "Skill name identifier (also used as directory name, lowercased with spaces→underscores)" },
+                "name": { "type": "string", "description": "Skill name identifier. Use the exact name the user requested. Directory name is auto-derived as snake_case (e.g. 'VulnerabilityPrioritization' → 'vulnerability_prioritization')." },
                 "description": { "type": "string", "description": "Skill description for matching and display" },
                 "triggers": { "type": "array", "items": { "type": "string" }, "description": "Trigger phrases for skill matching (optional, falls back to description keywords)" },
                 "content": { "type": "string", "description": "Skill instructions inline (markdown body of SKILL.md). Use only for small skills; for large ones use content_file." },
                 "content_file": { "type": "string", "description": "Workspace-relative path to a file containing the skill instructions (e.g. 'output/my_skill.md'). Alternative to 'content' for large skills." },
-                "dir_name": { "type": "string", "description": "Override skill directory name (optional, defaults to lowercased name with spaces→underscores)" },
+                "dir_name": { "type": "string", "description": "Override skill directory name (optional, auto-normalized to snake_case). Usually not needed." },
                 "files": {
                     "type": "array",
                     "items": {
@@ -436,10 +474,10 @@ impl Tool for InstallSkillTool {
             return Err("Provide either 'content' (inline) or 'content_file' (workspace path) with the skill instructions.".into());
         };
 
-        // Auto-derive directory name from 'name' (or use explicit override)
+        // Auto-derive directory name from 'name' (or use explicit override), always normalized
         let dir_name = args["dir_name"].as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| name.to_lowercase().replace(' ', "_"));
+            .map(|s| normalize_dir_name(s))
+            .unwrap_or_else(|| normalize_dir_name(name));
 
         let triggers_yaml: Vec<String> = triggers.iter().map(|t| format!("  - {}", t)).collect();
         let md_content = format!(
@@ -557,7 +595,7 @@ impl Tool for RemoveSkillTool {
         let pos = skills.iter().position(|s| s.metadata.name == name)
             .or_else(|| skills.iter().position(|s| s.metadata.name.to_lowercase() == name_lower))
             .or_else(|| {
-                let dir_name = name.to_lowercase().replace(' ', "_");
+                let dir_name = normalize_dir_name(name);
                 skills.iter().position(|s| {
                     Path::new(&s.skill_dir).file_name()
                         .map(|n| n.to_string_lossy().to_lowercase() == dir_name)
