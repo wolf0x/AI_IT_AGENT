@@ -29,8 +29,17 @@ const CATEGORIES: &[&str] = &["facts", "decisions", "lessons", "preferences", "s
 #[derive(Debug, Clone)]
 struct DistilledEntry {
     category: String,
+    /// Short descriptive title (used as the markdown heading)
+    title: String,
+    /// What happened / what was done (the core knowledge)
     content: String,
+    /// What triggered this knowledge (user report, error, tool usage, etc.)
+    trigger: String,
+    /// Why it happened / background context (root cause, circumstances)
+    context: String,
+    /// How this knowledge was derived (session reference)
     source: String,
+    /// Confidence level
     confidence: String,
 }
 
@@ -91,12 +100,13 @@ pub async fn distill_session(
 
         let file_path = knowledge_dir.join(format!("{}.md", entry.category));
         let block = format!(
-            "\n### {}\n\
-             - **Date:** {}\n\
-             - **Session:** {}\n\
+            "\n## {} — {}\n\
+             - **Content:** {}\n\
+             - **Trigger:** {}\n\
+             - **Context:** {}\n\
              - **Source:** {}\n\
              - **Confidence:** {}\n",
-            entry.content, today, short_sid, entry.source, entry.confidence
+            today, entry.title, entry.content, entry.trigger, entry.context, entry.source, entry.confidence
         );
 
         // Create file with header if it doesn't exist, then append
@@ -153,8 +163,11 @@ fn build_distillation_messages(summary: &str) -> Vec<ChatMessage> {
          and workflow patterns.\n\n\
          For each item, output a JSON object with these fields:\n\
          - \"category\": one of \"facts\", \"decisions\", \"lessons\", \"preferences\", \"skill_hints\"\n\
-         - \"content\": concise statement (1-2 sentences, in the user's language)\n\
-         - \"source\": brief description of what triggered this (e.g. \"user stated\", \"error occurred\", \"tool used\")\n\
+         - \"title\": short descriptive title (5-10 words, like a heading)\n\
+         - \"content\": the core knowledge (1-2 sentences, in the user's language)\n\
+         - \"trigger\": what triggered this knowledge (e.g. \"user reported error X\", \"user stated preference\", \"tool failed because...\")\n\
+         - \"context\": why it happened / background (root cause, circumstances, 1-2 sentences)\n\
+         - \"source\": brief reference (e.g. \"user stated\", \"error occurred\", \"debugging session\")\n\
          - \"confidence\": \"high\", \"medium\", or \"low\"\n\n\
          Rules:\n\
          - Skip trivial exchanges (greetings, simple confirmations).\n\
@@ -185,7 +198,10 @@ fn parse_distillation_response(response: &str) -> Result<Vec<DistilledEntry>, St
     let mut entries = Vec::new();
     for item in arr {
         let category = item["category"].as_str().unwrap_or("").to_string();
+        let title = item["title"].as_str().unwrap_or("").to_string();
         let content = item["content"].as_str().unwrap_or("").to_string();
+        let trigger = item["trigger"].as_str().unwrap_or("").to_string();
+        let context = item["context"].as_str().unwrap_or("").to_string();
         let source = item["source"].as_str().unwrap_or("unknown").to_string();
         let confidence = item["confidence"].as_str().unwrap_or("medium").to_string();
 
@@ -193,13 +209,23 @@ fn parse_distillation_response(response: &str) -> Result<Vec<DistilledEntry>, St
             continue;
         }
 
+        // Use content as fallback title if title is empty
+        let title = if title.is_empty() {
+            content.chars().take(50).collect::<String>()
+        } else {
+            title
+        };
+
         entries.push(DistilledEntry {
             category: if CATEGORIES.contains(&category.as_str()) {
                 category
             } else {
                 "facts".to_string() // fallback to facts for unknown categories
             },
+            title,
             content,
+            trigger,
+            context,
             source,
             confidence,
         });
