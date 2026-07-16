@@ -402,48 +402,6 @@ You have two layers of memory:\n\n\
             );
         }
 
-        // ── Distilled Knowledge (auto-extracted from past sessions) ──
-        if !workspace.is_empty() {
-            let knowledge_dir = std::path::Path::new(workspace).join("knowledge");
-            if knowledge_dir.is_dir() {
-                let categories = ["facts", "decisions", "lessons", "preferences", "skill_hints"];
-                let mut knowledge_section = String::new();
-                let mut total_chars = 0usize;
-                const MAX_PER_CATEGORY: usize = 2000;
-                const MAX_TOTAL_KNOWLEDGE: usize = 6000;
-
-                for cat in &categories {
-                    let file_path = knowledge_dir.join(format!("{}.md", cat));
-                    if let Ok(content) = std::fs::read_to_string(&file_path) {
-                        if content.trim().is_empty() { continue; }
-                        // Skip the file header (first line starting with #), take the entries
-                        let entries = content.lines()
-                            .skip_while(|l| l.starts_with('#') || l.trim().is_empty() || l.starts_with("Auto-distilled"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if entries.trim().is_empty() { continue; }
-                        let truncated = if entries.len() > MAX_PER_CATEGORY {
-                            format!("{}...\n[truncated]", &entries[..MAX_PER_CATEGORY])
-                        } else {
-                            entries
-                        };
-                        if total_chars + truncated.len() > MAX_TOTAL_KNOWLEDGE {
-                            break;
-                        }
-                        knowledge_section.push_str(&format!("\n### {}\n{}\n",
-                            cat.replace('_', " ").to_uppercase(), truncated));
-                        total_chars += truncated.len();
-                    }
-                }
-
-                if !knowledge_section.is_empty() {
-                    prompt.push_str("\n## Distilled Knowledge\n");
-                    prompt.push_str("The following was auto-extracted from past conversations. Use it as background context.\n");
-                    prompt.push_str(&knowledge_section);
-                }
-            }
-        }
-
         // ── Active Skills (weighted scoring, top-K) ──
         let matching_skills = self.skill_manager.find_matching(user_message);
         if !matching_skills.is_empty() {
