@@ -109,6 +109,54 @@ impl OpenAiProvider {
         models.iter().find(|m| m.name == name).cloned().or_else(|| models.first().cloned())
     }
 
+    /// Non-streaming LLM call for lightweight tasks (e.g. knowledge distillation).
+    /// Returns the assistant's text content directly. No tool support, lower token limit.
+    pub async fn chat_simple(
+        &self,
+        model_name: &str,
+        messages: &[ChatMessage],
+    ) -> Result<String, String> {
+        let model = self.find_model(model_name).await.ok_or("No model configured")?;
+        let api_key = model.resolved_api_key();
+        let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
+
+        let mut body = serde_json::json!({
+            "model": model.name,
+            "messages": messages,
+            "stream": false,
+            "temperature": 0.3,
+        });
+        body[max_tokens_key(&model.name)] = serde_json::json!(4096u32);
+
+        let mut req = self.client.post(&url).header("Content-Type", "application/json");
+        if !api_key.is_empty() {
+            req = req.bearer_auth(&api_key);
+        }
+
+        let resp = req.json(&body).send().await
+            .map_err(|e| format!("LLM request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_body = resp.text().await.unwrap_or_default();
+            return Err(format!("LLM error {}: {}", status, err_body));
+        }
+
+        let parsed: serde_json::Value = resp.json().await
+            .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
+
+        let content = parsed["choices"][0]["message"]["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        if content.is_empty() {
+            return Err("LLM returned empty content".to_string());
+        }
+
+        Ok(content)
+    }
+
     /// Legacy chat_stream method for backward compat (used by agent loop internally).
     /// Sends text deltas through an mpsc channel and returns (content, tool_calls).
     pub async fn chat_stream(

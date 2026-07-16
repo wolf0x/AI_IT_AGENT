@@ -5,6 +5,7 @@ mod callbacks;
 mod checkpoint;
 mod config;
 mod crypto;
+mod distill;
 #[allow(dead_code)]
 mod context;
 #[allow(dead_code)]
@@ -82,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         info!("Workspace directory: {}", workspace_dir);
     }
-    let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output"];
+    let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output", "knowledge"];
     for sub in &ws_subdirs {
         let p = std::path::Path::new(&workspace_dir).join(sub);
         let _ = std::fs::create_dir_all(&p);
@@ -249,6 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_names: Vec<String> = initial_models.iter().map(|m| m.name.clone()).collect();
     let shared_models = Arc::new(tokio::sync::RwLock::new(initial_models));
     let provider = Arc::new(OpenAiProvider::new_with_shared(shared_models.clone()));
+    let provider_for_state = provider.clone();
     info!("Models available: {:?}", model_names);
 
     // Build logger (resolve log dir from workspace)
@@ -385,6 +387,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scheduler,
         notify_tx,
         workspace_dir,
+        provider: provider_for_state,
     });
 
     // Create router and start server

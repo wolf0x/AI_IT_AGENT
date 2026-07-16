@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::agent::AgentEvent;
 use crate::log::ConversationLogger;
@@ -29,6 +29,8 @@ use crate::external_tools::ExternalToolsManager;
 use crate::tool::mcp_client::McpClientManager;
 use crate::tool::ToolRegistry;
 use crate::web::StaticServer;
+use crate::model::openai::OpenAiProvider;
+use crate::distill;
 
 /// Type alias for the broadcast channel used to push notifications to all WS clients.
 pub type NotifyTx = tokio::sync::broadcast::Sender<String>;
@@ -67,6 +69,8 @@ pub struct AppState {
     pub notify_tx: NotifyTx,
     /// Agent workspace directory (where AGENTS.md, SOUL.md, TOOLS.md live)
     pub workspace_dir: String,
+    /// LLM provider for end-of-session knowledge distillation
+    pub provider: Arc<OpenAiProvider>,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -1080,6 +1084,21 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
             }
             _ => {}
         }
+    }
+
+    // ── End-of-session knowledge distillation ──
+    let history = state.sessions.lock().await.get(&session_id).cloned().unwrap_or_default();
+    if history.len() >= 4 {
+        let provider = state.provider.clone();
+        let model_name = state.model_configs.read().await.first().map(|m| m.name.clone()).unwrap_or_default();
+        let workspace_dir = state.workspace_dir.clone();
+        let sid = session_id.clone();
+        tokio::spawn(async move {
+            match distill::distill_session(&sid, &history, provider, &model_name, &workspace_dir).await {
+                Ok(n) => info!("Session {} distilled {} knowledge entries", &sid[..8.min(sid.len())], n),
+                Err(e) => warn!("Session {} distillation failed: {}", &sid[..8.min(sid.len())], e),
+            }
+        });
     }
 }
 
