@@ -905,9 +905,38 @@ fn extract_tool_calls_from_content(content: &str) -> Vec<crate::model::ToolCallD
     let mut calls = Vec::new();
     let mut id_counter = 0u32;
 
-    // Helper: try to parse a JSON string into a ToolCallDelta
+    // Helper: try to parse a JSON string into a ToolCallDelta.
+    // If strict parse fails, attempts to repair incomplete JSON (truncated by max_tokens).
     let try_parse = |json_str: &str, id_counter: &mut u32| -> Option<ToolCallDelta> {
-        let val: serde_json::Value = serde_json::from_str(json_str.trim()).ok()?;
+        let trimmed = json_str.trim();
+        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => {
+                // Attempt repair: add missing closing braces/brackets
+                let mut repaired = trimmed.to_string();
+                let mut open_braces = 0i32;
+                let mut open_brackets = 0i32;
+                let mut in_str = false;
+                let mut esc = false;
+                for c in repaired.chars() {
+                    if esc { esc = false; continue; }
+                    if c == '\\' && in_str { esc = true; continue; }
+                    if c == '"' { in_str = !in_str; continue; }
+                    if in_str { continue; }
+                    match c {
+                        '{' => open_braces += 1,
+                        '[' => open_brackets += 1,
+                        '}' => open_braces -= 1,
+                        ']' => open_brackets -= 1,
+                        _ => {}
+                    }
+                }
+                if in_str { repaired.push('"'); }
+                for _ in 0..open_brackets { repaired.push(']'); }
+                for _ in 0..open_braces { repaired.push('}'); }
+                serde_json::from_str(&repaired).ok()?
+            }
+        };
         let name = val
             .get("name")
             .or_else(|| val.get("tool"))
@@ -955,6 +984,14 @@ fn extract_tool_calls_from_content(content: &str) -> Vec<crate::model::ToolCallD
             }
             remaining = &remaining[end + 3..];
         } else {
+            // No closing fence — output may be truncated. Try to parse
+            // whatever remains as JSON (with repair for incomplete braces).
+            let json_str = remaining.trim();
+            if !json_str.is_empty() {
+                if let Some(tc) = try_parse(json_str, &mut id_counter) {
+                    calls.push(tc);
+                }
+            }
             break;
         }
     }
@@ -988,6 +1025,8 @@ fn extract_tool_calls_from_content(content: &str) -> Vec<crate::model::ToolCallD
 
 /// Extract a complete JSON object starting at the beginning of `text`.
 /// Tracks brace depth and string state to handle nested objects.
+/// If braces don't balance (truncated output), returns the text as-is
+/// so the caller can attempt repair.
 fn extract_json_object(text: &str) -> Option<String> {
     if !text.starts_with('{') {
         return None;
@@ -995,7 +1034,9 @@ fn extract_json_object(text: &str) -> Option<String> {
     let mut depth = 0i32;
     let mut in_string = false;
     let mut escape = false;
+    let mut last_pos = 0usize;
     for (i, c) in text.char_indices() {
+        last_pos = i;
         if escape {
             escape = false;
             continue;
@@ -1022,7 +1063,12 @@ fn extract_json_object(text: &str) -> Option<String> {
             _ => {}
         }
     }
-    None
+    // Braces didn't balance — return what we have (may be truncated)
+    if depth > 0 && last_pos > 0 {
+        Some(text[..=last_pos].to_string())
+    } else {
+        None
+    }
 }
 
 /// Classification of tool errors for retry decisions.
