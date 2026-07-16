@@ -266,3 +266,43 @@ impl ToolRegistry {
         }
     }
 }
+
+// ============================================================
+// Binary resolution — Windows-style search path
+// ============================================================
+
+/// Resolve an external binary path using a 3-tier search order:
+///
+/// 1. Application directory (where rust-agent.exe lives) — for bundled tools
+/// 2. `{workspace}/tools/` — for user-installed tools
+/// 3. System PATH — fallback to OS resolution
+///
+/// This follows the Windows convention where application-local binaries
+/// take priority over user tools, which take priority over system-wide tools.
+///
+/// Returns the full path if found in tiers 1-2, or the bare name for PATH fallback.
+pub fn resolve_binary(name: &str, workspace_dir: &str) -> String {
+    // Tier 1: Application directory (where the rust-agent executable lives)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let candidate = exe_dir.join(name);
+            if candidate.exists() {
+                tracing::debug!("Binary '{}' resolved from app dir: {}", name, candidate.display());
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    // Tier 2: workspace/tools/ directory
+    let tools_candidate = std::path::Path::new(workspace_dir)
+        .join("tools")
+        .join(name);
+    if tools_candidate.exists() {
+        tracing::debug!("Binary '{}' resolved from workspace/tools: {}", name, tools_candidate.display());
+        return tools_candidate.to_string_lossy().to_string();
+    }
+
+    // Tier 3: System PATH — return bare name, let OS resolve it
+    tracing::debug!("Binary '{}' not found locally, falling back to system PATH", name);
+    name.to_string()
+}

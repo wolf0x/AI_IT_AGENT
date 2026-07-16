@@ -54,16 +54,11 @@ impl BrowserSkillTool {
         Ok(sid)
     }
 
-    /// Resolve bsk binary: prefer {workspace}/tools/bsk.exe, fallback to PATH.
+    /// Resolve bsk binary using the standard 3-tier search:
+    /// app dir → workspace/tools/ → system PATH
     fn bsk_bin(&self) -> String {
-        let tools_path = std::path::Path::new(&self.workspace_dir)
-            .join("tools")
-            .join(if cfg!(windows) { "bsk.exe" } else { "bsk" });
-        if tools_path.exists() {
-            tools_path.to_string_lossy().to_string()
-        } else {
-            "bsk".to_string()
-        }
+        let bin_name = if cfg!(windows) { "bsk.exe" } else { "bsk" };
+        super::resolve_binary(bin_name, &self.workspace_dir)
     }
 
     /// Run a bsk CLI command and return parsed JSON output.
