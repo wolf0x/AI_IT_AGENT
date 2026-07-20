@@ -1395,7 +1395,31 @@ async fn usage_handler(
 ) -> Json<Value> {
     let days = query.days.max(1).min(90);
     match state.memory_store.get_usage_stats(days) {
-        Ok(data) => Json(json!({ "days": days, "data": data })),
+        Ok(data) => {
+            // Compute summary totals from the data array
+            let mut total_calls: i64 = 0;
+            let mut total_prompt: i64 = 0;
+            let mut total_completion: i64 = 0;
+            let mut total_tokens: i64 = 0;
+            if let Some(arr) = data.as_array() {
+                for item in arr {
+                    total_calls += item["calls"].as_i64().unwrap_or(0);
+                    total_prompt += item["prompt_tokens"].as_i64().unwrap_or(0);
+                    total_completion += item["completion_tokens"].as_i64().unwrap_or(0);
+                    total_tokens += item["total_tokens"].as_i64().unwrap_or(0);
+                }
+            }
+            Json(json!({
+                "days": days,
+                "data": data,
+                "summary": {
+                    "total_calls": total_calls,
+                    "total_prompt_tokens": total_prompt,
+                    "total_completion_tokens": total_completion,
+                    "total_tokens": total_tokens,
+                }
+            }))
+        },
         Err(e) => Json(json!({ "error": e })),
     }
 }

@@ -547,21 +547,23 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
       <div class="settings-scroll">
         <div class="settings-section">
           <h3>&#128202; Token Usage Dashboard</h3>
+          <div class="form-group" style="margin-bottom:14px">
+            <label>Time Range</label>
+            <select id="dashDays" onchange="loadDashboard()">
+              <option value="1">Today</option>
+              <option value="3">Last 3 days</option>
+              <option value="7" selected>Last 7 days</option>
+              <option value="14">Last 14 days</option>
+              <option value="30">Last 30 days</option>
+            </select>
+          </div>
           <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap">
             <div id="dashTodayCards" style="display:flex;gap:12px;flex-wrap:wrap;width:100%"></div>
           </div>
           <div id="dashTodayByModel" style="margin-bottom:18px"></div>
         </div>
         <div class="settings-section">
-          <h3>Historical Usage</h3>
-          <div class="form-group" style="margin-bottom:12px">
-            <label>Time Range</label>
-            <select id="dashDays" onchange="loadDashHistory()">
-              <option value="7" selected>Last 7 days</option>
-              <option value="14">Last 14 days</option>
-              <option value="30">Last 30 days</option>
-            </select>
-          </div>
+          <h3>Daily Breakdown</h3>
           <div id="dashHistoryTable" style="font-size:13px;color:var(--t2)">Loading...</div>
         </div>
         <div class="settings-section">
@@ -1754,33 +1756,42 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 // ─── Dashboard ───
 async function loadDashboard(){
-  loadDashToday();
-  loadDashHistory();
-}
-
-async function loadDashToday(){
+  const days=document.getElementById('dashDays').value||7;
   try{
-    const r=await fetch('/api/usage/today');
+    const r=await fetch('/api/usage?days='+days);
     const d=await r.json();
     if(d.error){document.getElementById('dashTodayCards').innerHTML='<div style="color:#e74c3c">'+d.error+'</div>';return;}
+    const s=d.summary||{};
+    const rows=d.data||[];
+    const rangeLabel=days==='1'?'Today':days==='3'?'Last 3 days':'Last '+days+' days';
+    // Stat cards: Total Tokens, Input Tokens, Output Tokens, API Calls
     const cards=[
-      {label:'Total Tokens',value:fmtNum(d.total_tokens||0),color:'#3498db'},
-      {label:'Prompt Tokens',value:fmtNum(d.prompt_tokens||d.total_prompt_tokens||0),color:'#2ecc71'},
-      {label:'Completion Tokens',value:fmtNum(d.completion_tokens||d.total_completion_tokens||0),color:'#e67e22'},
-      {label:'API Calls',value:fmtNum(d.total_calls||0),color:'#9b59b6'},
+      {label:'Total Tokens',value:fmtNum(s.total_tokens||0),color:'#3498db'},
+      {label:'Input Tokens',value:fmtNum(s.total_prompt_tokens||0),color:'#2ecc71'},
+      {label:'Output Tokens',value:fmtNum(s.total_completion_tokens||0),color:'#e67e22'},
+      {label:'API Calls',value:fmtNum(s.total_calls||0),color:'#9b59b6'},
     ];
     document.getElementById('dashTodayCards').innerHTML=cards.map(c=>
       '<div style="flex:1;min-width:140px;padding:16px;background:white;border-radius:8px;border-left:4px solid '+c.color+';box-shadow:0 1px 3px rgba(0,0,0,.08)">'+
       '<div style="font-size:11px;color:#95a5a6;text-transform:uppercase;letter-spacing:.5px">'+c.label+'</div>'+
       '<div style="font-size:24px;font-weight:700;color:'+c.color+';margin-top:4px">'+c.value+'</div>'+
-      '<div style="font-size:11px;color:#bdc3c7;margin-top:2px">'+(d.date||'')+'</div></div>'
+      '<div style="font-size:11px;color:#bdc3c7;margin-top:2px">'+rangeLabel+'</div></div>'
     ).join('');
-    // By-model breakdown
-    const byModel=d.by_model||[];
+    // By-model breakdown (aggregate across the selected period)
+    const modelMap={};
+    rows.forEach(r=>{
+      const k=r.model;
+      if(!modelMap[k])modelMap[k]={model:k,calls:0,prompt_tokens:0,completion_tokens:0,total_tokens:0};
+      modelMap[k].calls+=r.calls;
+      modelMap[k].prompt_tokens+=r.prompt_tokens;
+      modelMap[k].completion_tokens+=r.completion_tokens;
+      modelMap[k].total_tokens+=r.total_tokens;
+    });
+    const byModel=Object.values(modelMap).sort((a,b)=>b.total_tokens-a.total_tokens);
     if(byModel.length>0){
       let h='<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="border-bottom:2px solid #ecf0f1">'+
         '<th style="text-align:left;padding:8px;color:#7f8c8d">Model</th><th style="text-align:right;padding:8px;color:#7f8c8d">Calls</th>'+
-        '<th style="text-align:right;padding:8px;color:#7f8c8d">Prompt</th><th style="text-align:right;padding:8px;color:#7f8c8d">Completion</th>'+
+        '<th style="text-align:right;padding:8px;color:#7f8c8d">Input</th><th style="text-align:right;padding:8px;color:#7f8c8d">Output</th>'+
         '<th style="text-align:right;padding:8px;color:#7f8c8d">Total</th></tr>';
       byModel.forEach(m=>{
         h+='<tr style="border-bottom:1px solid #f0f3f5"><td style="padding:8px;font-weight:500">'+m.model+'</td>'+
@@ -1792,37 +1803,29 @@ async function loadDashToday(){
       h+='</table>';
       document.getElementById('dashTodayByModel').innerHTML=h;
     }else{
-      document.getElementById('dashTodayByModel').innerHTML='<div style="color:#95a5a6;font-size:13px">No usage data for today yet.</div>';
+      document.getElementById('dashTodayByModel').innerHTML='<div style="color:#95a5a6;font-size:13px">No usage data in this period.</div>';
+    }
+    // Daily breakdown table
+    if(rows.length===0){
+      document.getElementById('dashHistoryTable').innerHTML='<div style="color:#95a5a6">No usage data in this period.</div>';
+    }else{
+      let h='<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="border-bottom:2px solid #ecf0f1">'+
+        '<th style="text-align:left;padding:8px;color:#7f8c8d">Date</th><th style="text-align:left;padding:8px;color:#7f8c8d">Model</th>'+
+        '<th style="text-align:right;padding:8px;color:#7f8c8d">Calls</th><th style="text-align:right;padding:8px;color:#7f8c8d">Input</th>'+
+        '<th style="text-align:right;padding:8px;color:#7f8c8d">Output</th><th style="text-align:right;padding:8px;color:#7f8c8d">Total</th></tr>';
+      rows.forEach(r=>{
+        h+='<tr style="border-bottom:1px solid #f0f3f5"><td style="padding:8px">'+r.date+'</td>'+
+          '<td style="padding:8px;font-weight:500">'+r.model+'</td>'+
+          '<td style="text-align:right;padding:8px">'+fmtNum(r.calls)+'</td>'+
+          '<td style="text-align:right;padding:8px">'+fmtNum(r.prompt_tokens)+'</td>'+
+          '<td style="text-align:right;padding:8px">'+fmtNum(r.completion_tokens)+'</td>'+
+          '<td style="text-align:right;padding:8px;font-weight:600">'+fmtNum(r.total_tokens)+'</td></tr>';
+      });
+      h+='</table>';
+      document.getElementById('dashHistoryTable').innerHTML=h;
     }
   }catch(e){
     document.getElementById('dashTodayCards').innerHTML='<div style="color:#e74c3c">Failed to load: '+e+'</div>';
-  }
-}
-
-async function loadDashHistory(){
-  const days=document.getElementById('dashDays').value||7;
-  try{
-    const r=await fetch('/api/usage?days='+days);
-    const d=await r.json();
-    if(d.error){document.getElementById('dashHistoryTable').innerHTML='<div style="color:#e74c3c">'+d.error+'</div>';return;}
-    const rows=d.data||[];
-    if(rows.length===0){document.getElementById('dashHistoryTable').innerHTML='<div style="color:#95a5a6">No usage data in this period.</div>';return;}
-    let h='<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="border-bottom:2px solid #ecf0f1">'+
-      '<th style="text-align:left;padding:8px;color:#7f8c8d">Date</th><th style="text-align:left;padding:8px;color:#7f8c8d">Model</th>'+
-      '<th style="text-align:right;padding:8px;color:#7f8c8d">Calls</th><th style="text-align:right;padding:8px;color:#7f8c8d">Prompt</th>'+
-      '<th style="text-align:right;padding:8px;color:#7f8c8d">Completion</th><th style="text-align:right;padding:8px;color:#7f8c8d">Total</th></tr>';
-    rows.forEach(r=>{
-      h+='<tr style="border-bottom:1px solid #f0f3f5"><td style="padding:8px">'+r.date+'</td>'+
-        '<td style="padding:8px;font-weight:500">'+r.model+'</td>'+
-        '<td style="text-align:right;padding:8px">'+fmtNum(r.calls)+'</td>'+
-        '<td style="text-align:right;padding:8px">'+fmtNum(r.prompt_tokens)+'</td>'+
-        '<td style="text-align:right;padding:8px">'+fmtNum(r.completion_tokens)+'</td>'+
-        '<td style="text-align:right;padding:8px;font-weight:600">'+fmtNum(r.total_tokens)+'</td></tr>';
-    });
-    h+='</table>';
-    document.getElementById('dashHistoryTable').innerHTML=h;
-  }catch(e){
-    document.getElementById('dashHistoryTable').innerHTML='<div style="color:#e74c3c">Failed to load: '+e+'</div>';
   }
 }
 
@@ -1837,8 +1840,8 @@ function dashAddLiveEvent(msg){
   el.style.cssText='padding:4px 0;border-bottom:1px solid #f0f3f5';
   el.innerHTML='<span style="color:#bdc3c7">'+ts+'</span> '+
     '<span style="color:#3498db;font-weight:600">'+(msg.model||'?')+'</span> '+
-    '<span style="color:#2ecc71">P:'+fmtNum(msg.prompt_tokens||0)+'</span> '+
-    '<span style="color:#e67e22">C:'+fmtNum(msg.completion_tokens||0)+'</span> '+
+    '<span style="color:#2ecc71">In:'+fmtNum(msg.prompt_tokens||0)+'</span> '+
+    '<span style="color:#e67e22">Out:'+fmtNum(msg.completion_tokens||0)+'</span> '+
     '<span style="color:#3498db;font-weight:600">T:'+fmtNum(msg.total_tokens||0)+'</span>';
   feed.insertBefore(el,feed.firstChild);
   // Keep max 50 entries
