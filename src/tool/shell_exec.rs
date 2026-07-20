@@ -31,6 +31,28 @@ impl Tool for ShellExecTool {
         let shell = args["shell"].as_str().unwrap_or("powershell");
         let timeout = args["timeout_secs"].as_u64().unwrap_or(30);
 
+        // ── Dangerous command detection ──
+        // Prevent using shell_exec to bypass permission controls on destructive operations.
+        // If the user denied file_delete, the agent must not use shell_exec as a workaround.
+        let cmd_lower = command.to_lowercase();
+        let destructive_patterns = [
+            "remove-item", "del ", "del`", "rm ", "rm`",
+            "rmdir ", "rmdir`", "rd ", "rd`",
+            "erase ", "erase`",
+            "format ", "format`",
+            "rmdir /s", "rd /s", "del /f", "del /q",
+        ];
+        for pattern in &destructive_patterns {
+            if cmd_lower.contains(pattern) {
+                return Err(format!(
+                    "BLOCKED: shell_exec cannot perform destructive file operations. \
+                     Detected '{}' in command. Use the `file_delete` tool instead, \
+                     which has proper permission controls.",
+                    pattern.trim()
+                ).into());
+            }
+        }
+
         let mut cmd = match shell {
             "cmd" => {
                 let mut c = Command::new("cmd");

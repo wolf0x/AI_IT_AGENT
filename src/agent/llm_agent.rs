@@ -295,6 +295,19 @@ injected into your context as SYSTEM messages labeled **[Memory Context]** or **
   earlier conversations.\n",
         );
 
+        // ── Permission Respect Rules ──
+        prompt.push_str(
+            "\n## CRITICAL: Permission Denial Rules\n\
+When the user DENIES a tool permission (you receive 'PERMISSION DENIED'):\n\
+- The denial is FINAL. Do NOT retry the same tool.\n\
+- Do NOT attempt to achieve the same result through alternative tools. For example:\n\
+  - If `file_delete` is denied, do NOT use `shell_exec` with `Remove-Item`, `del`, `rm`, or any other command to delete the file.\n\
+  - If `file_write` is denied, do NOT use `shell_exec` with `echo`, `Set-Content`, or `Out-File` to write the file.\n\
+  - If any tool is denied, do NOT circumvent it via PowerShell, CMD, or any other indirect method.\n\
+- Simply inform the user that the action was denied and ask if they want to do something else.\n\
+- A permission denial means the user does NOT want this action to happen — regardless of which tool performs it.\n",
+        );
+
         // ── Scheduled Tasks: RustAgent CRON vs Windows Schtasks ──
         prompt.push_str(
             "\n## Scheduled Tasks: CRON vs System Tasks\n\
@@ -1185,7 +1198,15 @@ async fn execute_tool_call(
 
     let result = if !allowed {
         info!("Tool '{}' denied by user permission", tool_name);
-        serde_json::json!({ "error": "Permission denied by user" })
+        serde_json::json!({
+            "error": format!(
+                "PERMISSION DENIED: The user has denied the tool '{}' for this action. \
+                 This decision is FINAL. You MUST NOT attempt to achieve the same result \
+                 through alternative tools (e.g., shell_exec, PowerShell, CMD, or any other method). \
+                 Respect the user's decision and inform them that the action was denied.",
+                tool_name
+            )
+        })
     } else {
         // Retry loop for transient failures
         let mut attempt = 0usize;
