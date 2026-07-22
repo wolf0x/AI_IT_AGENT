@@ -27,6 +27,9 @@ pub mod ir_report;
 pub mod malware_analysis;
 pub mod malware_scan;
 pub mod malware_deep;
+pub mod ir_weblog_scan;
+pub mod ir_evtx_parse;
+pub mod ir_log_parse;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -255,6 +258,10 @@ impl ToolRegistry {
         // Malware analysis tools — ported from hacksguard
         registry.register(Arc::new(malware_scan::MalwareScanTool));
         registry.register(Arc::new(malware_deep::MalwareDeepTool));
+        // Log analysis tools — ported from RavenEye
+        registry.register(Arc::new(ir_weblog_scan::IrWeblogScanTool));
+        registry.register(Arc::new(ir_evtx_parse::IrEvtxParseTool));
+        registry.register(Arc::new(ir_log_parse::IrLogParseTool));
         let _ = working_dir;
         registry
     }

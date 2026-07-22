@@ -38,6 +38,9 @@ iced-x86 = "1.21.0"
 base64 = "0.22.1"
 md-5 = "0.10"
 sha1 = "0.10"
+# Log analysis tools (from RavenEye migration)
+regex = "1"
+evtx = "0.8"
 
 [profile.release]
 strip = true
