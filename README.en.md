@@ -2,7 +2,7 @@
 
 # RustAgent
 
-An AI-powered assistant platform for local IT system engineers — focused on system analysis, log investigation, and incident response. Fully local, single-binary deployment with WebSocket gateway, multi-model support, 30+ built-in tools, permission control, persistent memory, and task scheduling. Designed for Windows, ready out of the box.
+An AI-powered assistant platform for local IT system engineers — focused on system analysis, log investigation, and incident response. Fully local, single-binary deployment with WebSocket gateway, multi-model support, 33+ built-in tools, permission control, persistent memory, and task scheduling. Designed for Windows, ready out of the box.
 
 ## Positioning
 
@@ -40,7 +40,7 @@ A single Rust binary (~28MB) contains the complete AI conversation engine, tool 
 │    └── Truncated JSON repair                    │
 ├─────────────────────────────────────────────────┤
 │  Tool Layer                                      │
-│    ├── 30+ Built-in Tools                        │
+│    ├── 33+ Built-in Tools                        │
 │    ├── MCP Client (stdio + SSE)                 │
 │    ├── Skill Manager (weighted scoring)          │
 │    └── External Tools (workspace/tools/)         │
@@ -99,13 +99,13 @@ Built-in lightweight task scheduler supporting periodic inspections and automate
 
 ### Tool System
 
-30+ built-in tools designed around IT engineers' core workflows, forming a complete toolchain from routine system checks to deep security analysis:
+33+ built-in tools designed around IT engineers' core workflows, forming a complete toolchain from routine system checks to deep security analysis:
 
 **File Operations** (5 tools): FileRead / FileWrite / FileDelete / FileModify / FileList — foundational capabilities for log file analysis and configuration file auditing
 
 **System Tools**: ShellExecTool (PowerShell, dangerous command interception) — engineers can drive any system command via natural language, the Agent automatically selects appropriate commands and interprets output. Built-in dangerous command blacklist (Remove-Item, del, rm, rmdir, etc.) prevents accidental data loss
 
-**Incident Response Toolkit** (10 tools, the IT investigation core):
+**Incident Response Toolkit** (13 tools, the IT investigation core):
 
 | Tool | Capability | Typical Investigation Use |
 |------|-----------|--------------------------|
@@ -119,8 +119,11 @@ Built-in lightweight task scheduler supporting periodic inspections and automate
 | Event Logs | System/Security/Application log retrieval | **Log investigation core**: filter by time/level/source, correlate analysis |
 | Port Scanning | Local port reachability detection | Verify service exposure, troubleshoot port conflicts |
 | Autoruns Persistence | Full persistence location scan | One-click complete attack surface, equivalent to Sysinternals Autoruns |
+| Web Log Scan | HTTP log security analysis (SQLi/XSS/RCE/directory traversal/scanners) | Detect web attack traces, anomalous request patterns, attacker IP statistics |
+| EVTX Parser | Offline Windows Event Log parsing, 60+ Event ID risk classification | Remote forensics, security event filtering (auth failures/service installs/Sysmon/log clearing) |
+| Generic Log Parser | Auto-detect log format (Syslog/CSV/Windows), security pattern matching | Multi-source log aggregation, severity classification, security event detection (27 patterns) |
 
-These 10 tools can be automatically orchestrated by the Agent — engineers only need to describe the investigation goal, and the Agent calls multiple tools in logical order, cross-correlates results, and outputs structured reports. For example, when investigating "system is slow after boot", the Agent might execute: Process Analysis (find high-CPU processes) → Network Connections (check for anomalous outbound connections) → Autoruns (trace launch origin) → Event Logs (find related system events in the timeframe).
+These 13 tools can be automatically orchestrated by the Agent — engineers only need to describe the investigation goal, and the Agent calls multiple tools in logical order, cross-correlates results, and outputs structured reports. For example, when investigating "system is slow after boot", the Agent might execute: Process Analysis (find high-CPU processes) → Network Connections (check for anomalous outbound connections) → Autoruns (trace launch origin) → Event Logs (find related system events in the timeframe).
 
 **Malware Analysis**: Boreal YARA rule scanning (custom rule sets, local file loading) + PE deep analysis (goblin parsing of imports/sections/resources + iced-x86 disassembly of key functions) for static analysis of suspicious files
 
@@ -195,6 +198,7 @@ Password-authenticated SPA covering the full Agent lifecycle management:
 | YARA | boreal (rule scanning) |
 | PE Parsing | goblin + iced-x86 (disassembly) |
 | Serialization | serde + serde_json + serde_yaml + toml |
+| Log Analysis | regex (pattern matching) + evtx (EVTX parsing) |
 | Logging | tracing + tracing-subscriber (env-filter) |
 
 ## Configuration
@@ -255,7 +259,7 @@ src/
 │   ├── memory_md.rs     # MEMORY.md read/write
 │   ├── cron_manage.rs   # CRON task management
 │   ├── todo_update.rs   # Task planning & tracking
-│   ├── ir_*.rs          # Incident response tools (10)
+│   ├── ir_*.rs          # Incident response tools (13, incl. log analysis)
 │   └── malware_*.rs     # Malware analysis (YARA + PE)
 ├── permission.rs        # Permission checker (category gates + async auth)
 ├── memory.rs            # MemoryStore (SQLite + FTS5)
