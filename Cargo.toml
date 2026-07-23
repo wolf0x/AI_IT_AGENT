@@ -1,6 +1,6 @@
 [package]
 name = "rust-agent"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Local AI agent with WebSocket gateway, multi-model support, and Windows system tools"
 
@@ -41,6 +41,8 @@ sha1 = "0.10"
 # Log analysis tools (from RavenEye migration)
 regex = "1"
 evtx = "0.8"
+# PCAP analysis
+pcap-parser = { version = "0.17", features = ["data"] }
 
 [profile.release]
 strip = true

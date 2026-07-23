@@ -30,6 +30,7 @@ pub mod malware_deep;
 pub mod ir_weblog_scan;
 pub mod ir_evtx_parse;
 pub mod ir_log_parse;
+pub mod ir_pcap_analyze;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -262,6 +263,8 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_weblog_scan::IrWeblogScanTool));
         registry.register(Arc::new(ir_evtx_parse::IrEvtxParseTool));
         registry.register(Arc::new(ir_log_parse::IrLogParseTool));
+        // PCAP analysis
+        registry.register(Arc::new(ir_pcap_analyze::IrPcapAnalyzeTool));
         let _ = working_dir;
         registry
     }
