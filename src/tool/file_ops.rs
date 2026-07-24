@@ -1,11 +1,17 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 
 use super::Tool;
 use crate::context::ToolContext;
 use crate::error::AgentResult;
+
+/// Files larger than this are considered "oversized" and only partially read.
+const MAX_FULL_READ_SIZE: u64 = 300 * 1024 * 1024; // 300 MB
+/// For oversized files, read only this many bytes from the beginning.
+const TRUNCATED_READ_SIZE: u64 = 1024 * 1024; // 1 MB
 
 fn resolve_path(ctx: &ToolContext, path: &str) -> PathBuf {
     let p = PathBuf::from(path);
@@ -41,8 +47,29 @@ impl Tool for FileReadTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let path = args["path"].as_str().ok_or_else(|| "Missing 'path'".to_string())?;
         let resolved = resolve_path(ctx, path);
-        let content = fs::read_to_string(&resolved)
-            .map_err(|e| format!("Failed to read {}: {}", resolved.display(), e))?;
+
+        let meta = fs::metadata(&resolved)
+            .map_err(|e| format!("Failed to stat {}: {}", resolved.display(), e))?;
+        if !meta.is_file() {
+            return Err(format!("Not a file: {}", resolved.display()).into());
+        }
+
+        let file_size = meta.len();
+        let truncated = file_size > MAX_FULL_READ_SIZE;
+
+        let content = if truncated {
+            // Only read the first TRUNCATED_READ_SIZE bytes to avoid OOM
+            let file = fs::File::open(&resolved)
+                .map_err(|e| format!("Failed to open {}: {}", resolved.display(), e))?;
+            let mut bytes = Vec::new();
+            file.take(TRUNCATED_READ_SIZE)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("Read error: {}", e))?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            fs::read_to_string(&resolved)
+                .map_err(|e| format!("Failed to read {}: {}", resolved.display(), e))?
+        };
 
         let start = args["start_line"].as_u64().unwrap_or(1) as usize;
         let end = args["end_line"].as_u64().unwrap_or(u64::MAX) as usize;
@@ -59,10 +86,28 @@ impl Tool for FileReadTool {
                 .enumerate()
                 .map(|(i, l)| format!("{}: {}", s + i + 1, l))
                 .collect();
-            Ok(json!({ "content": sliced.join("\n"), "lines": e - s }))
+            let mut result = json!({ "content": sliced.join("\n"), "lines": e - s });
+            if truncated {
+                result["truncated"] = json!(true);
+                result["file_size"] = json!(file_size);
+                result["note"] = json!(format!(
+                    "File is {:.1} MB (exceeds 300 MB limit). Only the first 1 MB was read.",
+                    file_size as f64 / (1024.0 * 1024.0)
+                ));
+            }
+            Ok(result)
         } else {
             let line_count = content.lines().count();
-            Ok(json!({ "content": content, "lines": line_count }))
+            let mut result = json!({ "content": content, "lines": line_count });
+            if truncated {
+                result["truncated"] = json!(true);
+                result["file_size"] = json!(file_size);
+                result["note"] = json!(format!(
+                    "File is {:.1} MB (exceeds 300 MB limit). Only the first 1 MB was read.",
+                    file_size as f64 / (1024.0 * 1024.0)
+                ));
+            }
+            Ok(result)
         }
     }
 }
