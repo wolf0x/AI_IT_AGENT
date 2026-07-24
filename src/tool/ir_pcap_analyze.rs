@@ -20,6 +20,12 @@ use pcap_parser::traits::PcapNGPacketBlock;
 /// Maximum packets to analyze (safety limit for huge captures).
 const MAX_PACKETS: u64 = 2_000_000;
 
+/// Maximum entries to collect per category (prevents unbounded memory growth).
+const MAX_SUSPICIOUS: usize = 200;
+const MAX_FLOWS: usize = 50_000;
+const MAX_DNS_ENTRIES: usize = 10_000;
+const MAX_HTTP_ENTRIES: usize = 10_000;
+
 /// Ports commonly associated with backdoors, C2, and suspicious services.
 const SUSPICIOUS_PORTS: &[u16] = &[
     4444, 5555, 6666, 6667, 7777, 8888, 9999, 12345, 27374, 31337, 1234, 4321, 54321, 1212,
@@ -504,13 +510,19 @@ impl PcapAnalysis {
         let flow = self.flows.entry(key).or_insert(FlowStats { packets: 0, bytes: 0 });
         flow.packets += 1;
         flow.bytes += pkt.total_len as u64;
+        // Prevent unbounded flow table growth
+        if self.flows.len() > MAX_FLOWS {
+            self.flows.clear();
+        }
 
         // DNS analysis (UDP port 53)
         if pkt.proto == 17 && (pkt.dst_port == 53 || pkt.src_port == 53) && !pkt.payload.is_empty()
         {
-            if let Some((name, qtype)) = parse_dns_query_name(&pkt.payload) {
-                let key = format!("{}|{}", name, qtype);
-                *self.dns_queries.entry(key).or_insert(0) += 1;
+            if self.dns_queries.len() < MAX_DNS_ENTRIES {
+                if let Some((name, qtype)) = parse_dns_query_name(&pkt.payload) {
+                    let key = format!("{}|{}", name, qtype);
+                    *self.dns_queries.entry(key).or_insert(0) += 1;
+                }
             }
         }
 
@@ -519,28 +531,32 @@ impl PcapAnalysis {
             && (pkt.dst_port == 80 || pkt.dst_port == 8080)
             && !pkt.payload.is_empty()
         {
-            if let Some((method, host, path)) = parse_http_request(&pkt.payload) {
-                let key = format!("{} {} {}", method, host, path);
-                *self.http_requests.entry(key).or_insert(0) += 1;
+            if self.http_requests.len() < MAX_HTTP_ENTRIES {
+                if let Some((method, host, path)) = parse_http_request(&pkt.payload) {
+                    let key = format!("{} {} {}", method, host, path);
+                    *self.http_requests.entry(key).or_insert(0) += 1;
+                }
             }
         }
 
-        // Suspicious port detection
-        if SUSPICIOUS_PORTS.contains(&pkt.dst_port) {
-            self.suspicious.push(json!({
-                "type": "suspicious_port",
-                "detail": format!("Connection to port {} ({})", pkt.dst_port, port_to_service(pkt.dst_port)),
-                "src": format!("{}:{}", pkt.src_ip, pkt.src_port),
-                "dst": format!("{}:{}", pkt.dst_ip, pkt.dst_port),
-            }));
-        }
-        if SUSPICIOUS_PORTS.contains(&pkt.src_port) {
-            self.suspicious.push(json!({
-                "type": "suspicious_port",
-                "detail": format!("Traffic from port {} ({})", pkt.src_port, port_to_service(pkt.src_port)),
-                "src": format!("{}:{}", pkt.src_ip, pkt.src_port),
-                "dst": format!("{}:{}", pkt.dst_ip, pkt.dst_port),
-            }));
+        // Suspicious port detection (capped)
+        if self.suspicious.len() < MAX_SUSPICIOUS {
+            if SUSPICIOUS_PORTS.contains(&pkt.dst_port) {
+                self.suspicious.push(json!({
+                    "type": "suspicious_port",
+                    "detail": format!("Connection to port {} ({})", pkt.dst_port, port_to_service(pkt.dst_port)),
+                    "src": format!("{}:{}", pkt.src_ip, pkt.src_port),
+                    "dst": format!("{}:{}", pkt.dst_ip, pkt.dst_port),
+                }));
+            }
+            if SUSPICIOUS_PORTS.contains(&pkt.src_port) {
+                self.suspicious.push(json!({
+                    "type": "suspicious_port",
+                    "detail": format!("Traffic from port {} ({})", pkt.src_port, port_to_service(pkt.src_port)),
+                    "src": format!("{}:{}", pkt.src_ip, pkt.src_port),
+                    "dst": format!("{}:{}", pkt.dst_ip, pkt.dst_port),
+                }));
+            }
         }
     }
 

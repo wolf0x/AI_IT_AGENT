@@ -55,7 +55,7 @@ fn trim_history_to_budget(history: &mut Vec<ChatMessage>, max_tokens: usize) {
 
     if calc_tokens(history.as_slice()) <= max_tokens { return; }
 
-    let keep_recent = (history.len().saturating_sub(6)).max(3);
+    let keep_recent = (history.len().saturating_sub(6)).max(3).min(history.len());
 
     // Phase 1: Trim old tool results to 100 chars
     for i in 0..keep_recent {
@@ -486,10 +486,10 @@ impl Agent for LlmAgent {
         let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
         let tool_timeout_secs = ctx.tool_timeout_secs;
         let max_tool_retries = ctx.max_tool_retries;
-                let context_window = ctx.context_window;
-                let context_window_threshold = ctx.context_window_threshold;
-                // Calculate max history tokens: context_window * threshold%
-                let max_history_tokens: usize = context_window * context_window_threshold / 100;
+        let context_window = ctx.context_window;
+        let context_window_threshold = ctx.context_window_threshold;
+        // Calculate max history tokens: context_window * threshold%
+        let max_history_tokens: usize = context_window * context_window_threshold / 100;
         let checkpointer = ctx.checkpointer.clone();
         let checkpoint_id = ctx.checkpoint_id.clone();
         let resume_history = ctx.resume_history.clone();
@@ -582,8 +582,9 @@ impl Agent for LlmAgent {
                     info!("[session:{}] History trimmed from {} to {} est. tokens", session_id, total_tokens, new_tokens);
                 }
 
-                let mut messages = vec![ChatMessage::system(&effective_system_prompt)];
-                messages.extend(history.clone());
+                let mut messages = Vec::with_capacity(1 + history.len());
+                messages.push(ChatMessage::system(&effective_system_prompt));
+                messages.extend(history.iter().cloned());
 
                 // Call LLM via legacy chat_stream (uses mpsc for text deltas)
                 let result = provider

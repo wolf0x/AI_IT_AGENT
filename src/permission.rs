@@ -16,18 +16,22 @@ use crate::error::AgentResult;
 /// Maps tool names to their permission category.
 pub fn tool_category(name: &str) -> &'static str {
     match name {
-        // Read
+        // Read — pure information gathering, no side effects
         "file_read" | "file_list" | "sys_info" | "sys_eventlog" | "browser_open" | "web_fetch"
-        | "ir_weblog_scan" | "ir_evtx_parse" | "ir_log_parse" | "ir_pcap_analyze" => "read",
-        // Write
-        "file_write" => "write",
+        | "ir_scan" | "ir_account" | "ir_persistence" | "ir_network" | "ir_eventlog"
+        | "ir_file" | "ir_driver" | "ir_analyzer" | "ir_report"
+        | "ir_weblog_scan" | "ir_evtx_parse" | "ir_log_parse" | "ir_pcap_analyze"
+        | "malware_scan" | "malware_deep" => "read",
+        // Write — creates/overwrites content
+        "file_write" | "memory_md" | "todo_update" => "write",
         // Delete
         "file_delete" => "delete",
-        // Modify
-        "file_modify" | "sys_process" | "sys_service" => "modify",
-        // Execute
+        // Modify — changes state of existing resources
+        "file_modify" | "sys_process" | "sys_service" | "ir_process"
+        | "browser_cdp" | "browser_skill" | "cron_manage" => "modify",
+        // Execute — arbitrary code execution
         "shell_exec" | "app_launch" => "execute",
-        // Default: unknown tools require endorsement
+        // Default: unknown tools (MCP, external) require endorsement
         _ => "execute",
     }
 }

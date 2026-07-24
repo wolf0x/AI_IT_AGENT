@@ -95,7 +95,7 @@ impl Tool for IrProcessTool {
 
                     let name = proc["name"].as_str().unwrap_or("").to_lowercase();
                     let path = proc["path"].as_str().unwrap_or("").to_lowercase();
-                    let cmdline = proc["command_line"].as_str().unwrap_or("").to_lowercase();
+                    let cmdline = proc["commandLine"].as_str().unwrap_or("").to_lowercase();
                     let cpu = proc["cpu"].as_f64().unwrap_or(0.0);
                     let mem = proc["memoryMB"].as_f64().unwrap_or(0.0);
 
@@ -182,7 +182,7 @@ impl Tool for IrProcessTool {
                             "ppid": proc["ppid"],
                             "name": proc["name"],
                             "path": proc["path"],
-                            "command_line": proc["command_line"],
+                            "command_line": proc["commandLine"],
                             "cpu": proc["cpu"],
                             "memoryMB": proc["memoryMB"],
                             "risk_level": risk_level,

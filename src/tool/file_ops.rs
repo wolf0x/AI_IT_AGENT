@@ -120,7 +120,9 @@ impl Tool for FileDeleteTool {
         if resolved.is_file() {
             fs::remove_file(&resolved).map_err(|e| format!("Failed to delete: {}", e))?;
         } else if resolved.is_dir() {
-            fs::remove_dir_all(&resolved).map_err(|e| format!("Failed to delete dir: {}", e))?;
+            fs::remove_dir(&resolved).map_err(|e| {
+                format!("Failed to delete directory (must be empty): {}. Error: {}", resolved.display(), e)
+            })?;
         } else {
             return Err(format!("Path does not exist: {}", resolved.display()).into());
         }

@@ -167,7 +167,7 @@ async fn workspace_file_handler(State(state): State<Arc<AppState>>, Path(path): 
 }
 
 async fn health_handler() -> Json<Value> {
-    Json(json!({ "status": "ok", "version": "0.1.0" }))
+    Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
 }
 
 async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {

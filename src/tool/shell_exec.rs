@@ -36,11 +36,24 @@ impl Tool for ShellExecTool {
         // If the user denied file_delete, the agent must not use shell_exec as a workaround.
         let cmd_lower = command.to_lowercase();
         let destructive_patterns = [
-            "remove-item", "del ", "del`", "rm ", "rm`",
+            // PowerShell cmdlets and aliases
+            "remove-item", "ri ", "ri`",
+            "del ", "del`", "rm ", "rm`",
             "rmdir ", "rmdir`", "rd ", "rd`",
             "erase ", "erase`",
             "format ", "format`",
+            // CMD flags
             "rmdir /s", "rd /s", "del /f", "del /q",
+            // .NET file/directory deletion methods
+            "[system.io.file]::delete",
+            "[system.io.directory]::delete",
+            "[io.file]::delete",
+            "[io.directory]::delete",
+            // Encoded command bypass (base64-encoded destructive ops)
+            "-encodedcommand", "-enc ",
+            // Nested cmd destructive calls
+            "cmd /c del", "cmd /c rd", "cmd /c erase", "cmd /c rmdir",
+            "cmd /c \"del", "cmd /c \"rd", "cmd /c \"erase",
         ];
         for pattern in &destructive_patterns {
             if cmd_lower.contains(pattern) {

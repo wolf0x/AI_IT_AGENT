@@ -4,6 +4,7 @@
 //! Supports simple interval syntax: "every 5m", "every 1h", "every 30s"
 //! and basic 5-field cron expressions: "*/5 * * * *"
 
+use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -158,13 +159,119 @@ impl Scheduler {
             }
         }
 
-        // Basic 5-field cron: just return a default of 60s for anything that looks like cron
-        // A full cron parser would be more complex; for now we support "every N" syntax primarily
+        // Basic 5-field cron: compute the interval to the next matching time
         if s.contains('*') || s.split_whitespace().count() == 5 {
-            return 60; // Default to 1 minute for cron expressions
+            // For cron expressions, return the interval to the next match
+            let fields: Vec<&str> = s.split_whitespace().collect();
+            if fields.len() == 5 {
+                let now = chrono::Utc::now();
+                if let Some(next) = Self::next_cron_time(&fields, now) {
+                    let interval = (next - now).num_seconds().max(60) as u64;
+                    return interval;
+                }
+            }
+            return 3600; // Fallback: 1 hour if cron parse fails
         }
 
         60 // Default fallback
+    }
+
+    /// Check if a single cron field matches a value.
+    /// Supports: * (any), N (exact), N-M (range), */N (step), N,M,... (list).
+    fn cron_field_matches(field: &str, value: u32) -> bool {
+        for part in field.split(',') {
+            let part = part.trim();
+            if part == "*" {
+                return true;
+            }
+            // Step: */N or N-M/S
+            if let Some((range, step_str)) = part.split_once('/') {
+                if let Ok(step) = step_str.parse::<u32>() {
+                    if step == 0 { continue; }
+                    let (start, end) = if range == "*" {
+                        (0, u32::MAX)
+                    } else if let Some((s, e)) = range.split_once('-') {
+                        (s.parse().unwrap_or(0), e.parse().unwrap_or(0))
+                    } else {
+                        (range.parse().unwrap_or(0), u32::MAX)
+                    };
+                    if value >= start && value <= end && (value - start) % step == 0 {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            // Range: N-M
+            if let Some((s, e)) = part.split_once('-') {
+                if let (Ok(start), Ok(end)) = (s.parse::<u32>(), e.parse::<u32>()) {
+                    if value >= start && value <= end {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            // Exact: N
+            if let Ok(n) = part.parse::<u32>() {
+                if value == n {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a DateTime matches a 5-field cron expression.
+    /// Fields: minute hour day-of-month month day-of-week (0=Sunday).
+    fn cron_matches(fields: &[&str], dt: &chrono::DateTime<chrono::Utc>) -> bool {
+        use chrono::Datelike;
+        use chrono::Timelike;
+        if fields.len() != 5 { return false; }
+        let minute = dt.minute();
+        let hour = dt.hour();
+        let dom = dt.day();
+        let month = dt.month();
+        let dow = dt.weekday().num_days_from_sunday(); // 0 = Sunday
+
+        Self::cron_field_matches(fields[0], minute)
+            && Self::cron_field_matches(fields[1], hour)
+            && Self::cron_field_matches(fields[2], dom)
+            && Self::cron_field_matches(fields[3], month)
+            && Self::cron_field_matches(fields[4], dow)
+    }
+
+    /// Find the next time (from `from`) that matches the cron expression.
+    /// Iterates forward minute-by-minute, capped at 366 days.
+    fn next_cron_time(fields: &[&str], from: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+        // Start from the next whole minute
+        let mut candidate = from
+            .with_second(0).unwrap_or(from)
+            .with_nanosecond(0).unwrap_or(from)
+            + chrono::Duration::minutes(1);
+        let limit = from + chrono::Duration::days(366);
+
+        while candidate < limit {
+            if Self::cron_matches(fields, &candidate) {
+                return Some(candidate);
+            }
+            candidate += chrono::Duration::minutes(1);
+        }
+        None
+    }
+
+    /// Compute next run time from a schedule expression.
+    fn compute_next_run_from_schedule(schedule: &str) -> String {
+        let s = schedule.trim().to_lowercase();
+        // Cron expression: find next matching time
+        let fields: Vec<&str> = s.split_whitespace().collect();
+        if fields.len() == 5 && (s.contains('*') || fields.iter().any(|f| f.contains(',') || f.contains('-') || f.contains('/'))) {
+            let now = chrono::Utc::now();
+            if let Some(next) = Self::next_cron_time(&fields, now) {
+                return next.to_rfc3339();
+            }
+        }
+        // "every N" syntax: use interval
+        let interval = Self::parse_interval(schedule);
+        Self::compute_next_run(interval)
     }
 
     /// Compute next run time from now + interval.
@@ -182,7 +289,7 @@ impl Scheduler {
     pub fn create(&mut self, mut task: CronTask) -> &CronTask {
         task.id = uuid::Uuid::new_v4().to_string();
         task.interval_secs = Self::parse_interval(&task.schedule);
-        task.next_run = Some(Self::compute_next_run(task.interval_secs));
+        task.next_run = Some(Self::compute_next_run_from_schedule(&task.schedule));
         self.tasks.push(task);
         self.save();
         self.tasks.last().unwrap()
@@ -196,7 +303,7 @@ impl Scheduler {
             if let Some(s) = schedule {
                 task.schedule = s;
                 task.interval_secs = Self::parse_interval(&task.schedule);
-                task.next_run = Some(Self::compute_next_run(task.interval_secs));
+                task.next_run = Some(Self::compute_next_run_from_schedule(&task.schedule));
             }
             if let Some(m) = message { task.message = m; }
             if let Some(m) = model { task.model = m; }
@@ -224,7 +331,7 @@ impl Scheduler {
         if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
             task.enabled = !task.enabled;
             if task.enabled {
-                task.next_run = Some(Self::compute_next_run(task.interval_secs));
+                task.next_run = Some(Self::compute_next_run_from_schedule(&task.schedule));
             }
             self.save();
             true
@@ -259,7 +366,7 @@ impl Scheduler {
             // Update last_run and next_run
             let task = &mut self.tasks[i];
             task.last_run = Some(now.to_rfc3339());
-            task.next_run = Some(Self::compute_next_run(task.interval_secs));
+            task.next_run = Some(Self::compute_next_run_from_schedule(&task.schedule));
 
             let model = if task.model.is_empty() {
                 let mc = self.model_configs.read().await;

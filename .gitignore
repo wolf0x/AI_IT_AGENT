@@ -8,7 +8,6 @@ dist-electron/
 release/
 
 # Rust
-Cargo.lock
 *.pdb
 
 # Logs
