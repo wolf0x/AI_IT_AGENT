@@ -47,7 +47,8 @@ A single Rust binary (~28MB) contains the complete AI conversation engine, tool 
 ├─────────────────────────────────────────────────┤
 │  Infrastructure                                  │
 │    ├── Memory (SQLite + FTS5)                    │
-│    ├── Permission (category gates + async)       │
+│    ├── Permission (category gates + bypass detect)│
+│    ├── Intent Policy (Block / Audit / Pass)      │
 │    ├── Scheduler (CRON + interval)               │
 │    ├── Checkpoint (crash recovery)               │
 │    ├── Crypto (AES-256-GCM)                      │
@@ -59,12 +60,16 @@ A single Rust binary (~28MB) contains the complete AI conversation engine, tool 
 
 ### Permission System
 
-RustAgent implements a Category-based Gates permission model, rather than a simple allow/deny binary judgment:
+RustAgent implements a dual-layer security model: Category-based Gates + Intent Policy:
 
 - **Five permission categories**: read / write / delete / modify / execute — each tool call declares its required permission category
 - **Async user authorization**: When the Agent requests high-privilege operations, it pushes an authorization request to the Dashboard via WebSocket. The user confirms through the UI, and the result is returned via a oneshot channel — the Agent loop waits without blocking
-- **Shell dangerous command interception**: ShellExecTool has a built-in blacklist (Remove-Item, del, rm, rmdir, format, erase, etc.) that blocks at the tool execution layer, without relying on LLM judgment
-- **Three-layer permission bypass defense**: (1) Hard-reject error messages prevent fallback to alternative tools (2) Permission Denial Rules injected into System Prompt (3) Shell-layer pattern matching as a final safety net
+- **Command Intent Policy Engine**: Replaces traditional blacklists with semantic parsing (verb + targets) of shell_exec commands, three-tier verdicts:
+  - **Block** (absolute prohibition): Disk formatting, security log clearing, encoded commands — irreversible operations hard-blocked regardless of any authorization state
+  - **Audit** (logged pass-through): File deletion, process termination, service stops — high-risk but legitimate operations, logged then executed normally
+  - **Pass** (silent pass-through): Read-only queries and routine operations
+- **Cross-category bypass detection**: When shell_exec is pre-authorized (execute:true) but the command intent maps to a denied permission category (e.g., delete:false), automatically escalates to require user confirmation — prevents LLM from bypassing file_delete permission control via shell_exec
+- **Permission denial strong feedback**: On denial, returns strongly-worded error messages to the LLM prohibiting fallback to alternative tools
 
 ### Memory System
 
@@ -103,7 +108,7 @@ Built-in lightweight task scheduler supporting periodic inspections and automate
 
 **File Operations** (5 tools): FileRead / FileWrite / FileDelete / FileModify / FileList — foundational capabilities for log file analysis and configuration file auditing
 
-**System Tools**: ShellExecTool (PowerShell, dangerous command interception) — engineers can drive any system command via natural language, the Agent automatically selects appropriate commands and interprets output. Built-in dangerous command blacklist (Remove-Item, del, rm, rmdir, etc.) prevents accidental data loss
+**System Tools**: ShellExecTool (PowerShell/CMD) — engineers can drive any system command via natural language, the Agent automatically selects appropriate commands and interprets output. Built-in Intent Policy Engine performs semantic-level command analysis: absolutely prohibits irreversible catastrophic operations (disk formatting, security log clearing), audit-logs high-risk but legitimate operations (file deletion, process termination), silently passes routine read-only commands
 
 **Incident Response Toolkit** (14 tools, the IT investigation core):
 
@@ -160,8 +165,9 @@ Progressive-loading procedural knowledge base, distinct from declarative knowled
 ### Security Features
 
 - **API key encryption**: AES-256-GCM at-rest encryption, key derived from Windows MachineGuid, stored in `models.json`
-- **Three-layer permission bypass defense**: Hard-reject error messages → System Prompt rule injection → Shell pattern matching fallback
-- **Shell command blacklist**: Destructive commands (rm / del / rmdir / format / erase) blocked at the tool layer
+- **Command Intent Policy**: Semantic-parsing-based three-tier command safety evaluation (Block/Audit/Pass), replacing traditional string blacklists
+- **Cross-category bypass defense**: Detects LLM attempts to bypass file_delete permission control via shell_exec, automatically escalates to require user confirmation
+- **Absolute prohibition list**: Disk formatting (Format-Volume/Clear-Disk), security log clearing (Clear-EventLog Security), boot record destruction (bcdedit/bootrec), encoded commands (-EncodedCommand) — hard-blocked regardless of permission state, cannot be overridden
 - **Password-authenticated Dashboard**: `.password` file-protected Web interface access control
 - **CDP browser isolation**: chromiumoxide runs in an independent Chromium instance with no user login state
 
@@ -256,14 +262,18 @@ src/
 ├── tool/
 │   ├── mod.rs           # Tool trait, ToolRegistry, binary resolution
 │   ├── file_ops.rs      # File operations (5 tools)
-│   ├── shell_exec.rs    # Shell execution (dangerous command interception)
+│   ├── shell_exec.rs    # Shell execution (Intent Policy integration)
 │   ├── mcp_client.rs    # MCP client manager
 │   ├── memory_md.rs     # MEMORY.md read/write
 │   ├── cron_manage.rs   # CRON task management
 │   ├── todo_update.rs   # Task planning & tracking
 │   ├── ir_*.rs          # Incident response tools (14, incl. log + traffic analysis)
 │   └── malware_*.rs     # Malware analysis (YARA + PE)
-├── permission.rs        # Permission checker (category gates + async auth)
+├── permission.rs        # Permission checker (category gates + async auth + cross-category bypass detection)
+├── policy/              # Command Intent Policy Engine
+│   ├── mod.rs           # IntentPolicy (Block/Audit/Pass three-tier verdicts)
+│   ├── parse.rs         # Lightweight PS/CMD intent parser (verb + targets)
+│   └── rules.rs         # BlockRule (absolute prohibition) + AuditRule (audit logging)
 ├── memory.rs            # MemoryStore (SQLite + FTS5)
 ├── distill.rs           # Knowledge distillation engine
 ├── scheduler.rs         # CRON scheduler

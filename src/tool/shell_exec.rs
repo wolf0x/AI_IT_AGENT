@@ -5,6 +5,7 @@ use tokio::process::Command;
 use super::Tool;
 use crate::context::ToolContext;
 use crate::error::AgentResult;
+use crate::policy::{IntentPolicy, IntentVerdict};
 
 pub struct ShellExecTool;
 
@@ -31,39 +32,29 @@ impl Tool for ShellExecTool {
         let shell = args["shell"].as_str().unwrap_or("powershell");
         let timeout = args["timeout_secs"].as_u64().unwrap_or(30);
 
-        // ── Dangerous command detection ──
-        // Prevent using shell_exec to bypass permission controls on destructive operations.
-        // If the user denied file_delete, the agent must not use shell_exec as a workaround.
-        let cmd_lower = command.to_lowercase();
-        let destructive_patterns = [
-            // PowerShell cmdlets and aliases
-            "remove-item", "ri ", "ri`",
-            "del ", "del`", "rm ", "rm`",
-            "rmdir ", "rmdir`", "rd ", "rd`",
-            "erase ", "erase`",
-            "format ", "format`",
-            // CMD flags
-            "rmdir /s", "rd /s", "del /f", "del /q",
-            // .NET file/directory deletion methods
-            "[system.io.file]::delete",
-            "[system.io.directory]::delete",
-            "[io.file]::delete",
-            "[io.directory]::delete",
-            // Encoded command bypass (base64-encoded destructive ops)
-            "-encodedcommand", "-enc ",
-            // Nested cmd destructive calls
-            "cmd /c del", "cmd /c rd", "cmd /c erase", "cmd /c rmdir",
-            "cmd /c \"del", "cmd /c \"rd", "cmd /c \"erase",
-        ];
-        for pattern in &destructive_patterns {
-            if cmd_lower.contains(pattern) {
+        // ── Intent Policy evaluation (replaces legacy destructive_patterns) ──
+        // This layer operates independently of the Permission system:
+        // - Block: catastrophic irreversible ops → hard reject regardless of permissions
+        // - Audit: high-risk but legitimate → log and proceed (transparent when pre-authorized)
+        // - Pass: normal → silent
+        let policy = IntentPolicy::new();
+        match policy.evaluate(command, shell) {
+            IntentVerdict::Block { reason } => {
                 return Err(format!(
-                    "BLOCKED: shell_exec cannot perform destructive file operations. \
-                     Detected '{}' in command. Use the `file_delete` tool instead, \
-                     which has proper permission controls.",
-                    pattern.trim()
+                    "BLOCKED (safety interlock): {}. \
+                     This operation is irreversible and cannot be executed through RustAgent. \
+                     If you truly need this, execute it manually outside the agent.",
+                    reason
                 ).into());
             }
+            IntentVerdict::Audit { reason } => {
+                tracing::warn!(
+                    "[AUDIT] shell_exec high-risk: {} | shell={} | command={}",
+                    reason, shell, command
+                );
+                // Proceed — user has authorized via Permission gate or accepts risk
+            }
+            IntentVerdict::Pass => { /* silent */ }
         }
 
         let mut cmd = match shell {

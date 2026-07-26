@@ -47,7 +47,8 @@ RustAgent 专为本地 IT 系统工程师设计，解决日常运维中最耗时
 ├─────────────────────────────────────────────────┤
 │  Infrastructure                                  │
 │    ├── Memory (SQLite + FTS5)                    │
-│    ├── Permission (category gates + async)       │
+│    ├── Permission (category gates + bypass detect)│
+│    ├── Intent Policy (Block / Audit / Pass)      │
 │    ├── Scheduler (CRON + interval)               │
 │    ├── Checkpoint (crash recovery)               │
 │    ├── Crypto (AES-256-GCM)                      │
@@ -59,12 +60,16 @@ RustAgent 专为本地 IT 系统工程师设计，解决日常运维中最耗时
 
 ### 权限系统
 
-RustAgent 实现了分类门控（Category-based Gates）的权限模型，而非简单的 allow/deny 二元判断：
+RustAgent 实现了分类门控（Category-based Gates）+ 意图策略（Intent Policy）的双层安全模型：
 
 - **五级权限分类**：read / write / delete / modify / execute，每种工具调用声明所需权限类别
 - **异步用户授权**：当 Agent 请求高权限操作时，通过 WebSocket 向 Dashboard 推送授权请求，用户确认后通过 oneshot channel 返回结果，Agent 循环无阻塞等待
-- **Shell 危险命令拦截**：ShellExecTool 内置黑名单（Remove-Item、del、rm、rmdir、format、erase 等），在工具执行层直接阻断，不经过 LLM 判断
-- **三层权限绕过防御**：(1) 强拒绝错误消息禁止使用替代工具 (2) System Prompt 中注入 Permission Denial Rules (3) Shell 层模式匹配兜底
+- **命令意图策略引擎**：替代传统黑名单，对 shell_exec 命令进行语义解析（verb + targets），三级判定：
+  - **Block**（绝对禁止）：磁盘格式化、安全日志清除、编码命令等不可逆操作，无视任何授权状态硬拦截
+  - **Audit**（审计放行）：文件删除、进程终止、服务停止等高危但合法操作，记录日志后正常执行
+  - **Pass**（静默放行）：只读查询等常规操作
+- **跨类别绕过检测**：当 shell_exec 已免确认（execute:true）但命令意图映射到被拒绝的权限类别（如 delete:false）时，自动升级为需要用户确认，防止 LLM 通过 shell_exec 绕过 file_delete 权限控制
+- **权限拒绝强反馈**：拒绝时向 LLM 返回强措辞错误消息，禁止使用替代工具绕过
 
 ### 记忆系统
 
@@ -103,7 +108,7 @@ RustAgent 实现了分类门控（Category-based Gates）的权限模型，而�
 
 **文件操作**（5 个）：FileRead / FileWrite / FileDelete / FileModify / FileList——日志文件分析、配置文件审查的基础能力
 
-**系统工具**：ShellExecTool（PowerShell，危险命令拦截）——工程师可通过自然语言驱动任意系统命令，Agent 自动选择合适命令并解释输出结果。内置危险命令黑名单（Remove-Item、del、rm、rmdir 等），防止误操作导致数据丢失
+**系统工具**：ShellExecTool（PowerShell/CMD）——工程师可通过自然语言驱动任意系统命令，Agent 自动选择合适命令并解释输出结果。内置意图策略引擎（Intent Policy），对命令进行语义级分析：绝对禁止不可逆灾难操作（磁盘格式化、安全日志清除），审计记录高危但合法操作（文件删除、进程终止），静默放行常规只读命令
 
 **事件响应工具组**（14 个，IT 调查核心）：
 
@@ -160,8 +165,9 @@ RustAgent 实现了分类门控（Category-based Gates）的权限模型，而�
 ### 安全特性
 
 - **API 密钥加密**：AES-256-GCM 静态加密，密钥从 Windows MachineGuid 派生，存储于 `models.json`
-- **权限绕过三层防御**：错误消息强拒绝 → System Prompt 规则注入 → Shell 模式匹配兜底
-- **Shell 命令黑名单**：rm / del / rmdir / format / erase 等破坏性命令在工具层直接阻断
+- **命令意图策略**（Intent Policy）：基于语义解析的三级命令安全评估（Block/Audit/Pass），替代传统字符串黑名单
+- **跨类别绕过防御**：检测 LLM 通过 shell_exec 绕过 file_delete 等权限控制的行为，自动升级为需要用户确认
+- **绝对禁止清单**：磁盘格式化（Format-Volume/Clear-Disk）、安全日志清除（Clear-EventLog Security）、引导记录破坏（bcdedit/bootrec）、编码命令（-EncodedCommand）——无论权限状态如何，硬拦截不可覆盖
 - **密码认证 Dashboard**：`.password` 文件保护的 Web 界面访问控制
 - **CDP 浏览器隔离**：chromiumoxide 运行在独立 Chromium 实例中，无用户登录态
 
@@ -256,14 +262,18 @@ src/
 ├── tool/
 │   ├── mod.rs           # Tool trait、ToolRegistry、二进制解析
 │   ├── file_ops.rs      # 文件操作 5 工具
-│   ├── shell_exec.rs    # Shell 执行（危险命令拦截）
+│   ├── shell_exec.rs    # Shell 执行（意图策略引擎集成）
 │   ├── mcp_client.rs    # MCP 客户端管理器
 │   ├── memory_md.rs     # MEMORY.md 读写
 │   ├── cron_manage.rs   # CRON 任务管理
 │   ├── todo_update.rs   # 任务规划跟踪
 │   ├── ir_*.rs          # 事件响应工具（14 个，含日志分析+流量分析）
 │   └── malware_*.rs     # 恶意软件分析（YARA + PE）
-├── permission.rs        # 权限检查器（分类门控 + 异步授权）
+├── permission.rs        # 权限检查器（分类门控 + 异步授权 + 跨类别绕过检测）
+├── policy/              # 命令意图策略引擎
+│   ├── mod.rs           # IntentPolicy（Block/Audit/Pass 三级判定）
+│   ├── parse.rs         # 轻量 PS/CMD 意图解析器（verb + targets）
+│   └── rules.rs         # BlockRule（绝对禁止）+ AuditRule（审计日志）
 ├── memory.rs            # MemoryStore（SQLite + FTS5）
 ├── distill.rs           # 知识蒸馏引擎
 ├── scheduler.rs         # CRON 调度器

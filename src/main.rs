@@ -17,6 +17,7 @@ mod memory;
 mod model;
 mod model_store;
 mod permission;
+mod policy;
 #[allow(dead_code)]
 mod runner;
 mod scheduler;

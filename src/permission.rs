@@ -103,6 +103,8 @@ impl PermissionChecker {
     /// Check if a tool call is allowed.
     /// - If the category is allowed: returns `true` immediately.
     /// - If the category requires endorsement: emits permission_request, waits for user response.
+    /// - Cross-category bypass detection: if shell_exec is auto-allowed but the command
+    ///   intent maps to a DENIED category (e.g., delete), still requires confirmation.
     /// Returns `true` if allowed, `false` if denied.
     pub async fn check(&self, tool_name: &str, args: &Value) -> bool {
         let category = tool_category(tool_name);
@@ -111,11 +113,34 @@ impl PermissionChecker {
         {
             let perms = self.permissions.lock().await;
             if perms.get(category).copied().unwrap_or(false) {
+                // Cross-category bypass detection for execute-category tools:
+                // If shell_exec/app_launch is pre-authorized, but the command's intent
+                // matches a DENIED permission category, escalate to confirmation.
+                // This prevents the LLM from using shell_exec to bypass file_delete denial.
+                if category == "execute" {
+                    if let Some(bypassed_category) = detect_intent_category(tool_name, args) {
+                        if !perms.get(bypassed_category).copied().unwrap_or(false) {
+                            // The intent maps to a denied category — fall through to confirmation
+                            info!(
+                                "Cross-category bypass detected: tool '{}' (execute:allowed) \
+                                 intent maps to '{}' (denied). Requiring confirmation.",
+                                tool_name, bypassed_category
+                            );
+                            drop(perms);
+                            return self.request_confirmation(tool_name, bypassed_category, args).await;
+                        }
+                    }
+                }
                 return true;
             }
         }
 
         // Category requires endorsement — pause and ask user
+        self.request_confirmation(tool_name, category, args).await
+    }
+
+    /// Internal: emit permission_request and wait for user response.
+    async fn request_confirmation(&self, tool_name: &str, category: &str, args: &Value) -> bool {
         let request_id = uuid::Uuid::new_v4().to_string();
         info!(
             "Permission required for tool '{}' (category: {}), request_id: {}",
@@ -158,5 +183,31 @@ impl PermissionChecker {
                 false
             }
         }
+    }
+}
+
+/// Detect if a shell_exec/app_launch command's intent maps to a different permission category.
+/// Returns Some(category) if the command performs an action that belongs to another category,
+/// None if the intent is normal execution or cannot be determined.
+fn detect_intent_category(tool_name: &str, args: &Value) -> Option<&'static str> {
+    if tool_name != "shell_exec" && tool_name != "app_launch" {
+        return None;
+    }
+
+    let command = args["command"].as_str().unwrap_or("");
+    if command.is_empty() {
+        return None;
+    }
+
+    let shell = args["shell"].as_str().unwrap_or("powershell");
+    let intent = crate::policy::parse::parse_intent(command, shell);
+
+    use crate::policy::parse::Verb;
+    match intent.verb {
+        // Deletion via shell_exec bypasses file_delete permission
+        Verb::Delete => Some("delete"),
+        // Format/disk operations bypass modify permission
+        Verb::Format => Some("modify"),
+        _ => None,
     }
 }
