@@ -217,11 +217,16 @@ impl ExternalToolsManager {
         }
     }
 
-    /// Get enabled tools as Tool trait objects for registration.
-    pub fn get_tool_handles(&self) -> Vec<(String, PathBuf)> {
+    /// Get enabled tools as registration handles: (name, path, description, extension).
+    pub fn get_tool_handles(&self) -> Vec<(String, PathBuf, String, String)> {
         self.tools.iter()
             .filter(|t| t.enabled)
-            .map(|t| (format!("ext_{}", t.name), t.path.clone()))
+            .map(|t| (
+                format!("ext_{}", t.name),
+                t.path.clone(),
+                t.description.clone(),
+                t.extension.clone(),
+            ))
             .collect()
     }
 }

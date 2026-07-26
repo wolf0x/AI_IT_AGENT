@@ -31,6 +31,7 @@ pub mod ir_weblog_scan;
 pub mod ir_evtx_parse;
 pub mod ir_log_parse;
 pub mod ir_pcap_analyze;
+pub mod external_exec;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -224,6 +225,26 @@ impl ToolRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// Remove all external tools (names starting with "ext_").
+    pub fn unregister_external(&mut self) {
+        self.tools.retain(|name, _| !name.starts_with("ext_"));
+    }
+
+    /// Register external tools from workspace/tools/ directory.
+    /// Removes existing ext_* tools first, then registers current enabled tools.
+    pub fn sync_external_tools(&mut self, handles: &[(String, std::path::PathBuf, String, String)]) {
+        self.unregister_external();
+        for (name, path, description, extension) in handles {
+            let tool = Arc::new(external_exec::ExternalToolExecutor::new(
+                name,
+                path.clone(),
+                description,
+                extension,
+            ));
+            self.register(tool);
+        }
     }
 
     /// Build the default registry with all built-in Windows tools.

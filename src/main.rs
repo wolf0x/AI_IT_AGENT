@@ -277,6 +277,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let external_tools = Arc::new(Mutex::new(ExternalToolsManager::new(tools_dir.clone())));
     info!("External tools dir: {}", tools_dir.display());
 
+    // Register external tools into registry (LLM-visible at startup)
+    {
+        let mgr = external_tools.lock().await;
+        let handles = mgr.get_tool_handles();
+        if !handles.is_empty() {
+            registry.sync_external_tools(&handles);
+            info!("Registered {} external tool(s): {:?}",
+                handles.len(),
+                handles.iter().map(|(n, _, _, _)| n.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
+
     // Wrap registry in Arc<RwLock> for dynamic MCP tool registration
     let shared_tools = Arc::new(tokio::sync::RwLock::new(registry));
 

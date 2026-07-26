@@ -1242,9 +1242,19 @@ async fn history_handler(
 async fn tools_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let mut mgr = state.external_tools.lock().await;
     mgr.scan();
+    let handles = mgr.get_tool_handles();
     let tools = mgr.list_tools();
     let tools_dir = mgr.tools_dir().to_string_lossy().to_string();
-    Json(json!({ "tools": tools, "tools_dir": tools_dir, "count": tools.len() }))
+    drop(mgr);
+
+    // Sync external tools into ToolRegistry (LLM-visible)
+    let mut registry = state.tools.write().await;
+    registry.sync_external_tools(&handles);
+    let registered_count = handles.len();
+    drop(registry);
+
+    info!("External tools synced to registry: {} tool(s)", registered_count);
+    Json(json!({ "tools": tools, "tools_dir": tools_dir, "count": tools.len(), "registered": registered_count }))
 }
 
 async fn tools_toggle_handler(
@@ -1255,6 +1265,13 @@ async fn tools_toggle_handler(
     match mgr.toggle_tool(&name) {
         Some(enabled) => {
             mgr.save_state();
+            let handles = mgr.get_tool_handles();
+            drop(mgr);
+
+            // Re-sync registry after toggle
+            let mut registry = state.tools.write().await;
+            registry.sync_external_tools(&handles);
+
             Json(json!({ "success": true, "enabled": enabled }))
         }
         None => Json(json!({ "success": false, "error": "Not found" })),
