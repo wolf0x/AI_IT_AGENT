@@ -31,6 +31,7 @@ pub mod ir_weblog_scan;
 pub mod ir_evtx_parse;
 pub mod ir_log_parse;
 pub mod ir_pcap_analyze;
+pub mod ir_timeline;
 pub mod external_exec;
 
 use async_trait::async_trait;
@@ -286,6 +287,8 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_log_parse::IrLogParseTool));
         // PCAP analysis
         registry.register(Arc::new(ir_pcap_analyze::IrPcapAnalyzeTool));
+        // Timeline reconstruction
+        registry.register(Arc::new(ir_timeline::IrTimelineTool));
         let _ = working_dir;
         registry
     }

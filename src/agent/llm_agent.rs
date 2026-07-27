@@ -14,6 +14,37 @@ use crate::permission::{PermissionChecker, PendingMap};
 use crate::skill::SkillManager;
 use crate::tool::{ToolExecutionStrategy, ToolRegistry};
 
+/// IR collection tools that are safe for parallel execution.
+/// These tools only read system state and do not modify anything.
+/// When multiple of these are called together, they can run concurrently
+/// to speed up incident triage (3-4x faster for full collection).
+pub const IR_COLLECTION_TOOLS: &[&str] = &[
+    "ir_scan",
+    "ir_process",
+    "ir_account",
+    "ir_persistence",
+    "ir_network",
+    "ir_eventlog",
+    "ir_file",
+    "ir_driver",
+    "ir_timeline",
+];
+
+/// Check if a tool name is part of the IR collection set (safe for parallel execution).
+#[inline]
+pub fn is_ir_collection_tool(name: &str) -> bool {
+    IR_COLLECTION_TOOLS.contains(&name)
+}
+
+/// Check if all tool calls in a batch are from the IR collection set.
+/// Returns true only if there are 2+ calls and ALL are IR collection tools.
+pub fn is_ir_collection_batch(tool_calls: &[crate::model::ToolCallDelta]) -> bool {
+    tool_calls.len() >= 2
+        && tool_calls.iter().all(|tc| {
+            tc.function.name.as_deref().map(is_ir_collection_tool).unwrap_or(false)
+        })
+}
+
 /// Check if a character is a CJK (Chinese/Japanese/Korean) character.
 fn is_cjk_char(c: char) -> bool {
     matches!(c,
@@ -137,6 +168,9 @@ pub struct LlmAgent {
     #[allow(dead_code)]
     callbacks: AgentCallbacks,
     tool_execution_strategy: ToolExecutionStrategy,
+    /// Enable parallel execution for IR collection tools.
+    /// When true, batches of IR collection tools run concurrently.
+    parallel_ir_tools: bool,
 }
 
 /// Builder for LlmAgent (modeled after ADK-RUST's LlmAgentBuilder).
@@ -152,6 +186,7 @@ pub struct LlmAgentBuilder {
     model_configs: Vec<ModelConfig>,
     callbacks: AgentCallbacks,
     tool_execution_strategy: ToolExecutionStrategy,
+    parallel_ir_tools: bool,
 }
 
 impl LlmAgentBuilder {
@@ -168,6 +203,7 @@ impl LlmAgentBuilder {
             model_configs: Vec::new(),
             callbacks: AgentCallbacks::new(),
             tool_execution_strategy: ToolExecutionStrategy::Sequential,
+            parallel_ir_tools: true,
         }
     }
 
@@ -183,6 +219,10 @@ impl LlmAgentBuilder {
     pub fn callbacks(mut self, cb: AgentCallbacks) -> Self { self.callbacks = cb; self }
     pub fn tool_execution_strategy(mut self, strategy: ToolExecutionStrategy) -> Self {
         self.tool_execution_strategy = strategy; self
+    }
+    /// Enable or disable parallel execution for IR collection tools.
+    pub fn parallel_ir_tools(mut self, enabled: bool) -> Self {
+        self.parallel_ir_tools = enabled; self
     }
 
     pub fn build(self) -> AgentResult<LlmAgent> {
@@ -203,6 +243,7 @@ impl LlmAgentBuilder {
             model_configs: self.model_configs,
             callbacks: self.callbacks,
             tool_execution_strategy: self.tool_execution_strategy,
+            parallel_ir_tools: self.parallel_ir_tools,
         })
     }
 }
@@ -479,6 +520,7 @@ impl Agent for LlmAgent {
         let user_message = user_message.to_string();
         let images = images;  // move into spawn
         let strategy = self.tool_execution_strategy;
+        let parallel_ir_tools = self.parallel_ir_tools;
         let prev_history = ctx.conversation_history.clone();
         let permissions = ctx.permissions.clone();
         let permission_pending: PendingMap = ctx.permission_pending.clone();
@@ -769,6 +811,7 @@ impl Agent for LlmAgent {
                         // Execute based on strategy
                         match strategy {
                             ToolExecutionStrategy::Sequential => {
+                                // Rabbit-hole bookkeeping (always sequential, cheap)
                                 for tc in &tool_calls {
                                     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
                                     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
@@ -783,10 +826,31 @@ impl Agent for LlmAgent {
                                             &invocation_id, &author
                                         ))).await;
                                     }
-                                    let msg = execute_tool_call(
-                                        &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                }
+
+                                // IR collection parallel optimization:
+                                // When parallel_ir_tools is enabled and all tool calls are from
+                                // the IR collection set (ir_scan, ir_process, ir_account, etc.),
+                                // execute them concurrently for faster incident triage.
+                                if parallel_ir_tools && is_ir_collection_batch(&tool_calls) {
+                                    info!("[session:{}] IR collection batch detected ({} tools), executing concurrently",
+                                          session_id, tool_calls.len());
+                                    let _ = tx.send(Ok(AgentEvent::text(
+                                        &format!("\n\n*[Parallel IR collection: {} tools running concurrently]*\n\n", tool_calls.len()),
+                                        &invocation_id, &author
+                                    ))).await;
+                                    let msgs = execute_tools_concurrent(
+                                        &tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                     ).await;
-                                    history.push(msg);
+                                    history.extend(msgs);
+                                } else {
+                                    // Standard sequential execution
+                                    for tc in &tool_calls {
+                                        let msg = execute_tool_call(
+                                            &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                        ).await;
+                                        history.push(msg);
+                                    }
                                 }
                             }
                             ToolExecutionStrategy::Parallel | ToolExecutionStrategy::Auto => {

@@ -303,6 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_iterations(config.agent.max_iterations)
         .working_dir(&working_dir)
         .workspace_dir(&workspace_dir)
+        .parallel_ir_tools(config.agent.parallel_ir_tools)
         .build()
         .map_err(|e| format!("Failed to build agent: {}", e))?;
     let agent: Arc<dyn agent::Agent> = Arc::new(agent);

@@ -20,6 +20,85 @@ struct Finding {
     source: String,
 }
 
+/// A MITRE ATT&CK technique reference.
+#[derive(Clone)]
+struct MitreTechnique {
+    id: String,        // e.g., "T1055"
+    name: String,      // e.g., "Process Injection"
+    tactic: String,    // e.g., "Defense Evasion"
+}
+
+/// Map a rule_id to its associated MITRE ATT&CK techniques.
+fn mitre_mapping(rule_id: &str) -> Vec<MitreTechnique> {
+    match rule_id {
+        "win.suspicious_path" => vec![
+            MitreTechnique { id: "T1204.002".into(), name: "User Execution: Malicious File".into(), tactic: "Execution".into() },
+            MitreTechnique { id: "T1036.005".into(), name: "Masquerading: Match Legitimate Name".into(), tactic: "Defense Evasion".into() },
+        ],
+        "win.lolbin_exec" => vec![
+            MitreTechnique { id: "T1218".into(), name: "System Binary Proxy Execution".into(), tactic: "Defense Evasion".into() },
+            MitreTechnique { id: "T1059".into(), name: "Command and Scripting Interpreter".into(), tactic: "Execution".into() },
+        ],
+        "win.encoded_powershell" => vec![
+            MitreTechnique { id: "T1059.001".into(), name: "PowerShell".into(), tactic: "Execution".into() },
+            MitreTechnique { id: "T1027".into(), name: "Obfuscated Files or Information".into(), tactic: "Defense Evasion".into() },
+        ],
+        "win.eventlog_cleared" => vec![
+            MitreTechnique { id: "T1070.001".into(), name: "Clear Windows Event Logs".into(), tactic: "Defense Evasion".into() },
+        ],
+        "win.service_install" => vec![
+            MitreTechnique { id: "T1543.003".into(), name: "Windows Service".into(), tactic: "Persistence".into() },
+            MitreTechnique { id: "T1569.002".into(), name: "Service Execution".into(), tactic: "Execution".into() },
+        ],
+        "win.account_change" => vec![
+            MitreTechnique { id: "T1136.001".into(), name: "Local Account".into(), tactic: "Persistence".into() },
+            MitreTechnique { id: "T1098".into(), name: "Account Manipulation".into(), tactic: "Persistence".into() },
+        ],
+        "win.bruteforce_many" | "win.bruteforce_some" => vec![
+            MitreTechnique { id: "T1110.001".into(), name: "Password Guessing".into(), tactic: "Credential Access".into() },
+            MitreTechnique { id: "T1110.003".into(), name: "Password Spraying".into(), tactic: "Credential Access".into() },
+        ],
+        "win.wmi_persistence" => vec![
+            MitreTechnique { id: "T1546.003".into(), name: "WMI Event Subscription".into(), tactic: "Persistence".into() },
+        ],
+        "win.external_established" => vec![
+            MitreTechnique { id: "T1071".into(), name: "Application Layer Protocol".into(), tactic: "Command and Control".into() },
+            MitreTechnique { id: "T1571".into(), name: "Non-Standard Port".into(), tactic: "Command and Control".into() },
+        ],
+        "win.defender_disabled" => vec![
+            MitreTechnique { id: "T1562.001".into(), name: "Disable or Modify Tools".into(), tactic: "Defense Evasion".into() },
+        ],
+        "win.defender_exclusion" => vec![
+            MitreTechnique { id: "T1562.001".into(), name: "Disable or Modify Tools".into(), tactic: "Defense Evasion".into() },
+            MitreTechnique { id: "T1055".into(), name: "Process Injection".into(), tactic: "Defense Evasion".into() },
+        ],
+        "win.unsigned_driver" => vec![
+            MitreTechnique { id: "T1014".into(), name: "Rootkit".into(), tactic: "Defense Evasion".into() },
+            MitreTechnique { id: "T1547.006".into(), name: "Kernel Modules and Extensions".into(), tactic: "Persistence".into() },
+        ],
+        "win.psexec_service" => vec![
+            MitreTechnique { id: "T1570".into(), name: "Lateral Tool Transfer".into(), tactic: "Lateral Movement".into() },
+            MitreTechnique { id: "T1021.002".into(), name: "SMB/Windows Admin Shares".into(), tactic: "Lateral Movement".into() },
+        ],
+        "web.suspicious_request" => vec![
+            MitreTechnique { id: "T1505.003".into(), name: "Web Shell".into(), tactic: "Persistence".into() },
+            MitreTechnique { id: "T1190".into(), name: "Exploit Public-Facing Application".into(), tactic: "Initial Access".into() },
+        ],
+        "win.dns_suspicious_cache" => vec![
+            MitreTechnique { id: "T1071.004".into(), name: "DNS".into(), tactic: "Command and Control".into() },
+            MitreTechnique { id: "T1568".into(), name: "Dynamic Resolution".into(), tactic: "Command and Control".into() },
+        ],
+        "win.hidden_account" => vec![
+            MitreTechnique { id: "T1136.001".into(), name: "Local Account".into(), tactic: "Persistence".into() },
+            MitreTechnique { id: "T1564.002".into(), name: "Hidden Users".into(), tactic: "Defense Evasion".into() },
+        ],
+        "win.unquoted_service_path" => vec![
+            MitreTechnique { id: "T1574.009".into(), name: "Unquoted Path Interception".into(), tactic: "Privilege Escalation".into() },
+        ],
+        _ => vec![],
+    }
+}
+
 #[async_trait]
 impl Tool for IrAnalyzerTool {
     fn name(&self) -> &str { "ir_analyzer" }
@@ -471,6 +550,13 @@ impl Tool for IrAnalyzerTool {
         }
 
         let findings_json: Vec<Value> = findings.iter().map(|f| {
+            let techniques: Vec<Value> = mitre_mapping(&f.rule_id).iter().map(|t| {
+                json!({
+                    "id": t.id,
+                    "name": t.name,
+                    "tactic": t.tactic,
+                })
+            }).collect();
             json!({
                 "id": f.id,
                 "rule_id": f.rule_id,
@@ -480,6 +566,7 @@ impl Tool for IrAnalyzerTool {
                 "evidence": f.evidence,
                 "recommendation": f.recommendation,
                 "source": f.source,
+                "mitre_techniques": techniques,
             })
         }).collect();
 
