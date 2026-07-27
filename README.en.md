@@ -237,10 +237,10 @@ workspace/
 cargo build --release
 
 # Binary output
-target/release/rust-agent.exe
+target/release/RustAgent.exe
 
 # First run automatically creates workspace directory structure
-.\target\release\rust-agent.exe
+.\target\release\RustAgent.exe
 ```
 
 Release profile: `opt-level = 3`, `lto = true`, `strip = true` — ensuring minimal binary size and optimal runtime performance.

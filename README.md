@@ -237,10 +237,10 @@ workspace/
 cargo build --release
 
 # 二进制产物
-target/release/rust-agent.exe
+target/release/RustAgent.exe
 
 # 首次运行自动创建 workspace 目录结构
-.\target\release\rust-agent.exe
+.\target\release\RustAgent.exe
 ```
 
 Release profile 配置：`opt-level = 3`、`lto = true`、`strip = true`，确保最小二进制体积与最优运行性能。

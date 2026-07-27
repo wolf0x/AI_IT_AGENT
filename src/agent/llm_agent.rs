@@ -192,7 +192,7 @@ pub struct LlmAgentBuilder {
 impl LlmAgentBuilder {
     pub fn new() -> Self {
         Self {
-            name: "rust-agent".to_string(),
+            name: "RustAgent".to_string(),
             description: "Local AI agent with Windows system tools".to_string(),
             provider: None,
             tools: None,

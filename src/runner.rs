@@ -48,7 +48,7 @@ impl RunnerBuilder {
             agent: None,
             session_service: None,
             logger: None,
-            app_name: "rust-agent".to_string(),
+            app_name: "RustAgent".to_string(),
             checkpointer: None,
         }
     }

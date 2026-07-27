@@ -307,7 +307,7 @@ impl ToolRegistry {
 
 /// Resolve an external binary path using a 3-tier search order:
 ///
-/// 1. Application directory (where rust-agent.exe lives) — for bundled tools
+/// 1. Application directory (where RustAgent.exe lives) — for bundled tools
 /// 2. `{workspace}/tools/` — for user-installed tools
 /// 3. System PATH — fallback to OS resolution
 ///
@@ -316,7 +316,7 @@ impl ToolRegistry {
 ///
 /// Returns the full path if found in tiers 1-2, or the bare name for PATH fallback.
 pub fn resolve_binary(name: &str, workspace_dir: &str) -> String {
-    // Tier 1: Application directory (where the rust-agent executable lives)
+    // Tier 1: Application directory (where the RustAgent executable lives)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let candidate = exe_dir.join(name);

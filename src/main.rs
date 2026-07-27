@@ -295,7 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build agent using builder pattern (ADK-RUST style)
     let agent = LlmAgent::builder()
-        .name("rust-agent")
+        .name("RustAgent")
         .description("Local AI agent with Windows system tools")
         .provider(provider)
         .tools(shared_tools.clone())
@@ -313,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .agent(agent)
         .logger(logger.clone())
         .checkpointer(checkpointer)
-        .app_name("rust-agent")
+        .app_name("RustAgent")
         .build()
         .map_err(|e| format!("Failed to build runner: {}", e))?;
     let runner = Arc::new(runner);

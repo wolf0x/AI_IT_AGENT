@@ -4,6 +4,10 @@ version = "0.6.0"
 edition = "2021"
 description = "Local AI agent with WebSocket gateway, multi-model support, and Windows system tools"
 
+[[bin]]
+name = "RustAgent"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }

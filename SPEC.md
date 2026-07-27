@@ -115,7 +115,7 @@ pub struct LlmAgent {
 **Builder Pattern** (ADK-RUST style):
 ```rust
 let agent = LlmAgent::builder()
-    .name("rust-agent")
+    .name("RustAgent")
     .description("Local AI agent with Windows system tools")
     .provider(provider)
     .tools(shared_tools)
