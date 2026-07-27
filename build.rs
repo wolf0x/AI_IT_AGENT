@@ -71,4 +71,17 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     embed_rules(&out_dir);
     embed_workspace_files(&out_dir);
+
+    // Embed Windows application icon
+    if cfg!(target_os = "windows") {
+        let icon_path = "RustAgent.ico";
+        if Path::new(icon_path).exists() {
+            let mut res = winresource::WindowsResource::new();
+            res.set_icon(icon_path);
+            if let Err(e) = res.compile() {
+                eprintln!("Failed to compile Windows resource: {}", e);
+            }
+            println!("cargo:rerun-if-changed={}", icon_path);
+        }
+    }
 }

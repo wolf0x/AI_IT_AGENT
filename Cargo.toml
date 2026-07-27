@@ -44,6 +44,9 @@ evtx = "0.8"
 # PCAP analysis
 pcap-parser = { version = "0.17", features = ["data"] }
 
+[build-dependencies]
+winresource = "0.1"
+
 [profile.release]
 strip = true
 opt-level = 3
