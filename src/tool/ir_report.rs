@@ -40,8 +40,8 @@ async fn html_to_pdf(html_content: &str) -> AgentResult<Vec<u8>> {
         display_header_footer: Some(true),
         print_background: Some(true),
         scale: Some(1.0),
-        paper_width: Some(8.5),
-        paper_height: Some(11.0),
+        paper_width: Some(8.27),   // A4: 210mm
+        paper_height: Some(11.69), // A4: 297mm
         margin_top: Some(0.4),
         margin_bottom: Some(0.4),
         margin_left: Some(0.4),
