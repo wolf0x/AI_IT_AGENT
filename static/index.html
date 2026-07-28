@@ -377,6 +377,19 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .modern-page table{width:100%;border-collapse:collapse}
 .modern-page table tr{transition:background .15s}
 .modern-page table tr:hover{background:rgba(248,250,252,.85)}
+
+/* MCP card layout */
+.mcp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.mcp-card{background:linear-gradient(135deg,#f8fafc,#f1f5f9);border:1px solid #e2e8f0;border-radius:12px;padding:16px;transition:transform .2s,box-shadow .2s}
+.mcp-card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.08)}
+.mcp-card-header{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.mcp-card-name{font-weight:700;font-size:14px;color:#1e293b}
+.mcp-transport{background:#e0f2fe;color:#0369a1;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600}
+.mcp-status{font-size:12px;margin-left:auto;font-weight:500}
+.mcp-tools{font-size:11px;color:#64748b;line-height:1.5;margin-bottom:12px;word-break:break-word}
+.mcp-actions{display:flex;gap:6px;flex-wrap:wrap}
+.skill-triggers{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px}
+.skill-tag{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:500;line-height:1.4;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -405,7 +418,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
   <div class="main">
     <!-- Settings Page -->
     <div id="settings" class="page">
-      <div class="settings-scroll">
+      <div class="settings-scroll modern-page">
         <div class="settings-section">
           <h3>&#128279; Connection</h3>
           <div class="form-group">
@@ -434,7 +447,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
         </div>
         <div class="settings-section">
           <h3>&#128268; Provider</h3>
-          <div style="margin-bottom:16px;padding:12px;background:var(--bg2,#f8f9fa);border-radius:var(--rs)">
+          <div class="form-card">
             <div class="form-group"><label>Name</label><input type="text" id="provName" placeholder="e.g. gpt-4o"></div>
             <div class="form-group"><label>API Base URL</label><input type="text" id="provApiBase" placeholder="e.g. https://api.openai.com/v1"></div>
             <div class="form-group"><label>API Key</label><input type="password" id="provApiKey" placeholder="optional"></div>
@@ -521,13 +534,6 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
       <div class="settings-scroll modern-page">
         <div class="settings-section">
           <h3>&#129504; Skills Management</h3>
-          <div class="form-card">
-            <div class="form-group"><label>Skill Name</label><input type="text" id="skillName" placeholder="e.g. code-review"></div>
-            <div class="form-group"><label>Description</label><input type="text" id="skillDesc" placeholder="What this skill does"></div>
-            <div class="form-group"><label>Triggers (comma-separated)</label><input type="text" id="skillTriggers" placeholder="review, code review, audit"></div>
-            <div class="form-group"><label>Content (instructions)</label><textarea id="skillContent" rows="4" style="width:100%;padding:10px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);font-family:inherit;resize:vertical" placeholder="Skill instructions..."></textarea></div>
-            <button class="btn btn-p" onclick="createSkill()">+ Add Skill</button>
-          </div>
           <div id="skillList" style="font-size:13px;color:var(--t2)">Loading...</div>
         </div>
       </div>
@@ -1303,32 +1309,25 @@ async function loadSkills(){
   try{const r=await fetch('/api/skills');const d=await r.json();
     const el=document.getElementById('skillList');
     if(d.skills&&d.skills.length){
-      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Description</th><th>Triggers</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+d.skills.map(s=>{
-        const status=s.enabled?'<span style="color:var(--green)">&#9679; Enabled</span>':'<span style="color:var(--t3)">&#9679; Disabled</span>';
-        const triggers=(s.triggers||[]).map(t=>'<span style="background:#e8ecee;padding:2px 6px;border-radius:10px;font-size:11px;margin-right:4px">'+esc(t)+'</span>').join('');
-        return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(s.name)+'</strong></td><td style="color:var(--t3)">'+esc(s.description||'')+'</td><td>'+triggers+'</td><td>'+status+'</td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleSkill(\''+esc(s.name)+'\')">'+(s.enabled?'Disable':'Enable')+'</button> <button class="btn btn-d" style="padding:4px 8px;font-size:11px" onclick="deleteSkill(\''+esc(s.name)+'\')">Delete</button></td></tr>';
-      }).join('')+'</tbody></table>';
+      el.innerHTML='<div class="mcp-grid">'+d.skills.map(s=>{
+        const statusColor=s.enabled?'var(--green)':'var(--t3)';
+        const statusText=s.enabled?'Enabled':'Disabled';
+        const triggers=(s.triggers||[]).map(t=>'<span class="skill-tag">'+esc(t)+'</span>').join('');
+        return '<div class="mcp-card">'+
+          '<div class="mcp-card-header">'+
+            '<span class="mcp-card-name">'+esc(s.name)+'</span>'+
+            '<span class="mcp-status" style="color:'+statusColor+'">&#9679; '+statusText+'</span>'+
+          '</div>'+
+          (s.description?'<div class="mcp-tools">'+esc(s.description)+'</div>':'')+
+          (triggers?'<div class="skill-triggers">'+triggers+'</div>':'')+
+          '<div class="mcp-actions">'+
+            '<button class="btn btn-s" style="padding:4px 10px;font-size:11px" onclick="toggleSkill(\''+esc(s.name)+'\')">'+(s.enabled?'Disable':'Enable')+'</button>'+
+            '<button class="btn btn-d" style="padding:4px 10px;font-size:11px" onclick="deleteSkill(\''+esc(s.name)+'\')">Delete</button>'+
+          '</div>'+
+        '</div>';
+      }).join('')+'</div>';
     } else el.innerHTML='<span style="color:var(--t3)">No skills installed</span>';
   }catch(e){document.getElementById('skillList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
-}
-async function createSkill(){
-  const name=document.getElementById('skillName').value.trim();
-  const description=document.getElementById('skillDesc').value.trim();
-  const triggersStr=document.getElementById('skillTriggers').value.trim();
-  const content=document.getElementById('skillContent').value.trim();
-  if(!name||!content){alert('Name and content are required');return}
-  const triggers=triggersStr?triggersStr.split(',').map(t=>t.trim()).filter(t=>t):[];
-  try{
-    const r=await fetch('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,description,triggers,content})});
-    const d=await r.json();
-    if(d.success){
-      document.getElementById('skillName').value='';
-      document.getElementById('skillDesc').value='';
-      document.getElementById('skillTriggers').value='';
-      document.getElementById('skillContent').value='';
-      loadSkills();
-    }else{alert('Error: '+(d.error||'Unknown'))}
-  }catch(e){alert('Failed to create skill')}
 }
 async function toggleSkill(name){
   try{await fetch('/api/skills/'+encodeURIComponent(name)+'/toggle',{method:'POST'});loadSkills()}catch(e){alert('Failed')}
@@ -1341,12 +1340,23 @@ async function loadMcp(){
   try{const r=await fetch('/api/mcp');const d=await r.json();
     const el=document.getElementById('mcpList');const servers=d.servers||[];
     if(servers.length){
-      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Transport</th><th>Tools</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+servers.map(s=>{
+      el.innerHTML='<div class="mcp-grid">'+servers.map(s=>{
         const statusColor=s.status==='connected'?'var(--green)':s.status==='disconnected'?'var(--t3)':'var(--red)';
-        const statusIcon=s.status==='connected'?'&#9679;':'&#9679;';
         const toolsList=(s.tools||[]).map(t=>t.name).join(', ')||'<span style="color:var(--t3)">none</span>';
-        return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(s.name)+'</strong></td><td><span style="background:#e8ecee;padding:2px 8px;border-radius:10px;font-size:11px">'+esc(s.transport||'stdio')+'</span></td><td style="font-size:11px;color:var(--t3)">'+toolsList+'</td><td><span style="color:'+statusColor+'">'+statusIcon+' '+esc(s.status)+'</span></td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleMcp(\''+esc(s.name)+'\')">'+(s.enabled?'Disable':'Enable')+'</button> <button class="btn btn-s" style="padding:4px 8px;font-size:11px;background:var(--orange)" onclick="restartMcp(\''+esc(s.name)+'\')">Restart</button> <button class="btn btn-d" style="padding:4px 8px;font-size:11px" onclick="deleteMcp(\''+esc(s.name)+'\')">Delete</button></td></tr>';
-      }).join('')+'</tbody></table>';
+        return '<div class="mcp-card">'+
+          '<div class="mcp-card-header">'+
+            '<span class="mcp-card-name">'+esc(s.name)+'</span>'+
+            '<span class="mcp-transport">'+esc(s.transport||'stdio')+'</span>'+
+            '<span class="mcp-status" style="color:'+statusColor+'">&#9679; '+esc(s.status)+'</span>'+
+          '</div>'+
+          '<div class="mcp-tools">'+toolsList+'</div>'+
+          '<div class="mcp-actions">'+
+            '<button class="btn btn-s" style="padding:4px 10px;font-size:11px" onclick="toggleMcp(\''+esc(s.name)+'\')">'+(s.enabled?'Disable':'Enable')+'</button>'+
+            '<button class="btn btn-s" style="padding:4px 10px;font-size:11px;background:var(--orange)" onclick="restartMcp(\''+esc(s.name)+'\')">Restart</button>'+
+            '<button class="btn btn-d" style="padding:4px 10px;font-size:11px" onclick="deleteMcp(\''+esc(s.name)+'\')">Delete</button>'+
+          '</div>'+
+        '</div>';
+      }).join('')+'</div>';
     } else el.innerHTML='<span style="color:var(--t3)">No MCP servers configured</span>';
   }catch(e){document.getElementById('mcpList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
 }
