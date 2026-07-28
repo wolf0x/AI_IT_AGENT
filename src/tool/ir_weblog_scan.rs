@@ -430,7 +430,7 @@ mod tests {
         let tool = IrWeblogScanTool;
         let base = crate::context::ReadonlyContext::new("test".into(), "test".into(), "test".into());
         let cb = crate::context::CallbackContext::new(base);
-        let ctx = crate::context::ToolContext::new(cb, "test".into(), ".".into());
+        let ctx = crate::context::ToolContext::new(cb, "test".into(), ".".into(), ".".into());
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(json!({

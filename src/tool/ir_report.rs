@@ -113,9 +113,10 @@ impl Tool for IrReportTool {
         let file_ts = now.format("%Y%m%d_%H%M%S").to_string();
 
         // Determine output paths based on format
+        // Default to workspace output directory: %USERPROFILE%\.RustAgent\workspace\output\
         let base_path = args["output_path"].as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{}/output/ir_report_{}", ctx.working_dir, file_ts));
+            .unwrap_or_else(|| format!("{}/output/ir_report_{}", ctx.workspace_dir, file_ts));
 
         // Strip extension if provided
         let base_path = base_path.trim_end_matches(".html").trim_end_matches(".pdf").to_string();
@@ -304,6 +305,11 @@ function filterFindings() {{
         // Write HTML file (always needed for PDF generation too)
         let write_html = format == "html" || format == "both" || format == "pdf";
         if write_html {
+            // Ensure the output directory (e.g. workspace/output) exists before writing.
+            if let Some(parent) = std::path::Path::new(&html_path).parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create output directory {:?}: {}", parent, e))?;
+            }
             fs::write(&html_path, &html)
                 .map_err(|e| format!("Failed to write HTML report: {}", e))?;
         }

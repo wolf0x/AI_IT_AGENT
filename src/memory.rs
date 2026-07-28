@@ -940,24 +940,14 @@ impl MemoryStore {
 
     /// Get aggregated usage stats grouped by model and day.
     /// Returns JSON array of {date, model, total_calls, total_prompt, total_completion, total_tokens}.
-    pub fn get_usage_stats(&self, days: usize) -> Result<serde_json::Value, String> {
+    pub fn get_usage_stats(&self, days: usize, tz_hours: f64) -> Result<serde_json::Value, String> {
         let conn = self.conn.lock().unwrap();
-        let since = chrono::Utc::now() - chrono::Duration::days(days as i64);
-        let since_str = since.to_rfc3339();
 
-        let mut stmt = conn.prepare(
-            "SELECT DATE(timestamp) as date, model_name,
-                    COUNT(*) as calls,
-                    SUM(prompt_tokens) as prompt_sum,
-                    SUM(completion_tokens) as completion_sum,
-                    SUM(total_tokens) as total_sum
-             FROM usage_stats
-             WHERE timestamp >= ?1
-             GROUP BY date, model_name
-             ORDER BY date DESC, model_name"
-        ).map_err(|e| format!("Failed to prepare usage query: {}", e))?;
+        // Timestamps are stored in UTC. Apply the caller's timezone offset so that
+        // dates are grouped/filtered by LOCAL calendar day (e.g. "+8 hours").
+        let tz_mod = format!("{:+} hours", tz_hours);
 
-        let rows = stmt.query_map(params![since_str], |row| {
+        fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
             Ok(serde_json::json!({
                 "date": row.get::<_, String>(0)?,
                 "model": row.get::<_, String>(1)?,
@@ -966,12 +956,46 @@ impl MemoryStore {
                 "completion_tokens": row.get::<_, i64>(4)?,
                 "total_tokens": row.get::<_, i64>(5)?,
             }))
-        }).map_err(|e| format!("Failed to query usage: {}", e))?;
+        }
+
+        let base_sql = format!(
+            "SELECT DATE(timestamp, '{tz}') as date, model_name,
+                    COUNT(*) as calls,
+                    SUM(prompt_tokens) as prompt_sum,
+                    SUM(completion_tokens) as completion_sum,
+                    SUM(total_tokens) as total_sum
+             FROM usage_stats", tz = tz_mod);
+        let tail = " GROUP BY date, model_name ORDER BY date DESC, model_name";
 
         let mut result: Vec<serde_json::Value> = Vec::new();
-        for row in rows {
-            result.push(row.map_err(|e| format!("Row error: {}", e))?);
+
+        if days == 0 {
+            // days == 0 -> all-time cumulative usage
+            let mut stmt = conn.prepare(&format!("{}{}", base_sql, tail))
+                .map_err(|e| format!("Failed to prepare usage query: {}", e))?;
+            let rows = stmt.query_map([], map_row)
+                .map_err(|e| format!("Failed to query usage: {}", e))?;
+            for row in rows {
+                result.push(row.map_err(|e| format!("Row error: {}", e))?);
+            }
+        } else {
+            // Last N LOCAL calendar days including today (days == 1 -> today only).
+            let back = days - 1;
+            let sql = format!(
+                "{where_clause}{tail}",
+                where_clause = format!(
+                    "{} WHERE DATE(timestamp, '{tz}') >= DATE('now', '{tz}', '-{back} days')",
+                    base_sql, tz = tz_mod, back = back),
+                tail = tail);
+            let mut stmt = conn.prepare(&sql)
+                .map_err(|e| format!("Failed to prepare usage query: {}", e))?;
+            let rows = stmt.query_map([], map_row)
+                .map_err(|e| format!("Failed to query usage: {}", e))?;
+            for row in rows {
+                result.push(row.map_err(|e| format!("Row error: {}", e))?);
+            }
         }
+
         Ok(serde_json::Value::Array(result))
     }
 

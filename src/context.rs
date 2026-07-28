@@ -69,19 +69,21 @@ pub struct ToolContext {
     pub base: CallbackContext,
     pub function_call_id: String,
     pub working_dir: String,
+    pub workspace_dir: String,
 }
 
 impl ToolContext {
-    pub fn new(base: CallbackContext, function_call_id: String, working_dir: String) -> Self {
+    pub fn new(base: CallbackContext, function_call_id: String, working_dir: String, workspace_dir: String) -> Self {
         Self {
             base,
             function_call_id,
             working_dir,
+            workspace_dir,
         }
     }
 
     /// Create a minimal ToolContext for simple use cases.
-    pub fn simple(working_dir: String) -> Self {
+    pub fn simple(working_dir: String, workspace_dir: String) -> Self {
         let ctx = ReadonlyContext::new(
             String::new(),
             String::new(),
@@ -92,6 +94,7 @@ impl ToolContext {
             base: cb_ctx,
             function_call_id: String::new(),
             working_dir,
+            workspace_dir,
         }
     }
 }

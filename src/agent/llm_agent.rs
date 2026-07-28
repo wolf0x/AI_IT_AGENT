@@ -514,6 +514,7 @@ impl Agent for LlmAgent {
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let working_dir = self.working_dir.clone();
+        let workspace_dir = self.workspace_dir.clone();
         let model = model.to_string();
         let invocation_id = invocation_id.to_string();
         let author = author.to_string();
@@ -840,14 +841,14 @@ impl Agent for LlmAgent {
                                         &invocation_id, &author
                                     ))).await;
                                     let msgs = execute_tools_concurrent(
-                                        &tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                        &tools, &tool_calls, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     // Standard sequential execution
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                            &tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                         ).await;
                                         history.push(msg);
                                     }
@@ -887,13 +888,13 @@ impl Agent for LlmAgent {
                                 if all_read_only && tool_calls.len() > 1 {
                                     info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
                                     let msgs = execute_tools_concurrent(
-                                        &*tools, &tool_calls, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                        &*tools, &tool_calls, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &*tools, tc, &working_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                            &*tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1226,6 +1227,7 @@ async fn execute_tool_call(
     tools: &tokio::sync::RwLock<ToolRegistry>,
     tc: &crate::model::ToolCallDelta,
     working_dir: &str,
+    workspace_dir: &str,
     invocation_id: &str,
     author: &str,
     tx: &tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
@@ -1281,7 +1283,7 @@ async fn execute_tool_call(
             let tool = tools.read().await.get(tool_name);
             let tool_result = match tool {
                 Some(tool) => {
-                    let ctx = ToolContext::simple(working_dir.to_string());
+                    let ctx = ToolContext::simple(working_dir.to_string(), workspace_dir.to_string());
                     let args_clone = args.clone();
 
                     // Spawn the actual tool execution as a separate task
@@ -1431,6 +1433,7 @@ async fn execute_tools_concurrent<'a>(
     tools: &'a tokio::sync::RwLock<ToolRegistry>,
     tool_calls: &'a [crate::model::ToolCallDelta],
     working_dir: &'a str,
+    workspace_dir: &'a str,
     invocation_id: &'a str,
     author: &'a str,
     tx: &'a tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
@@ -1440,7 +1443,7 @@ async fn execute_tools_concurrent<'a>(
 ) -> Vec<ChatMessage> {
     use futures::future::join_all;
     let futs = tool_calls.iter().map(|tc| {
-        execute_tool_call(tools, tc, working_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries)
+        execute_tool_call(tools, tc, working_dir, workspace_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries)
     });
     join_all(futs).await
 }

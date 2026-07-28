@@ -1402,6 +1402,8 @@ fn is_recall_query(text: &str) -> bool {
 struct UsageQuery {
     #[serde(default = "default_usage_days")]
     days: usize,
+    #[serde(default)]
+    tz: f64,
 }
 
 fn default_usage_days() -> usize { 7 }
@@ -1410,8 +1412,11 @@ async fn usage_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<UsageQuery>,
 ) -> Json<Value> {
-    let days = query.days.max(1).min(90);
-    match state.memory_store.get_usage_stats(days) {
+    // days == 0 -> all-time cumulative; otherwise clamp to [1, 90]
+    let days = if query.days == 0 { 0 } else { query.days.max(1).min(90) };
+    // Clamp timezone offset to a sane range (UTC-12 .. UTC+14)
+    let tz = query.tz.max(-12.0).min(14.0);
+    match state.memory_store.get_usage_stats(days, tz) {
         Ok(data) => {
             // Compute summary totals from the data array
             let mut total_calls: i64 = 0;

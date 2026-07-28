@@ -7,6 +7,9 @@ dist/
 dist-electron/
 release/
 
+# Generated artifacts (reports, PDFs, screenshots)
+output/
+
 # Rust
 *.pdb
 

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -310,6 +310,73 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .cp-item .cp-resume:hover{background:#219a52}
 .cp-item .cp-discard{color:#c0392b;border-color:#c0392b}
 .cp-item .cp-discard:hover{background:#c0392b;color:#fff}
+
+/* Dashboard */
+.dash-container{padding:28px;overflow-y:auto;flex:1;background:linear-gradient(135deg,#f5f7fa 0%,#e8ecf4 50%,#f0f4f8 100%)}
+.dash-status-bar{display:flex;align-items:center;gap:24px;padding:18px 24px;background:rgba(255,255,255,.92);backdrop-filter:blur(12px);border-radius:14px;box-shadow:0 4px 16px rgba(0,0,0,.06),0 1px 3px rgba(0,0,0,.04);margin-bottom:24px;flex-wrap:wrap;border:1px solid rgba(255,255,255,.8)}
+.status-item{display:flex;align-items:center;gap:8px}
+.status-indicator{width:10px;height:10px;border-radius:50%;background:#e74c3c;animation:pulse 2s infinite;box-shadow:0 0 8px rgba(231,76,60,.4)}
+.status-indicator.online{background:#2ecc71;animation:none;box-shadow:0 0 8px rgba(46,204,113,.4)}
+.status-label{font-size:11px;color:#95a5a6;text-transform:uppercase;letter-spacing:.5px}
+.status-value{font-size:13px;font-weight:600;color:#2c3e50}
+.dash-section{background:rgba(255,255,255,.92);backdrop-filter:blur(12px);border-radius:14px;padding:22px;box-shadow:0 4px 16px rgba(0,0,0,.06),0 1px 3px rgba(0,0,0,.04);margin-bottom:24px;border:1px solid rgba(255,255,255,.8);transition:transform .2s,box-shadow .2s}
+.dash-section:hover{box-shadow:0 8px 24px rgba(0,0,0,.08),0 2px 6px rgba(0,0,0,.04)}
+.dash-section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.dash-section-header h3{font-size:15px;font-weight:600;color:#1e293b;margin:0;display:flex;align-items:center;gap:8px}
+.dash-last-scan{font-size:12px;color:#94a3b8;background:#f1f5f9;padding:4px 10px;border-radius:20px}
+.posture-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:14px}
+.posture-card{padding:22px 16px;border-radius:12px;text-align:center;transition:transform .25s cubic-bezier(.4,0,.2,1),box-shadow .25s}
+.posture-card:hover{transform:translateY(-4px) scale(1.02);box-shadow:0 8px 20px rgba(0,0,0,.12)}
+.posture-card.total{background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #bfdbfe}
+.posture-card.input{background:linear-gradient(135deg,#f0fdf4,#dcfce7);border:1px solid #bbf7d0}
+.posture-card.output{background:linear-gradient(135deg,#fff7ed,#ffedd5);border:1px solid #fed7aa}
+.posture-card.calls{background:linear-gradient(135deg,#faf5ff,#f3e8ff);border:1px solid #e9d5ff}
+.posture-number{font-size:36px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.posture-card.total .posture-number{color:#2563eb}
+.posture-card.input .posture-number{color:#16a34a}
+.posture-card.output .posture-number{color:#ea580c}
+.posture-card.calls .posture-number{color:#9333ea}
+.posture-label{font-size:11px;color:#64748b;margin-top:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:500}
+.quick-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+.action-btn{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px 16px;border:2px solid #e2e8f0;border-radius:12px;background:linear-gradient(180deg,#fff 0%,#f8fafc 100%);cursor:pointer;transition:all .25s cubic-bezier(.4,0,.2,1);font-family:inherit}
+.action-btn:hover{border-color:#3b82f6;background:linear-gradient(180deg,#f0f9ff 0%,#e0f2fe 100%);transform:translateY(-3px);box-shadow:0 8px 20px rgba(59,130,246,.15)}
+.action-btn:active{transform:translateY(-1px);box-shadow:0 4px 12px rgba(59,130,246,.1)}
+.action-icon{font-size:30px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.1))}
+.action-text{font-size:13px;font-weight:600;color:#475569}
+.action-btn.triage:hover{border-color:#3b82f6;box-shadow:0 8px 20px rgba(59,130,246,.15)}
+.action-btn.report:hover{border-color:#8b5cf6;box-shadow:0 8px 20px rgba(139,92,246,.15)}
+.action-btn.timeline:hover{border-color:#06b6d4;box-shadow:0 8px 20px rgba(6,182,212,.15)}
+.action-btn.hunt:hover{border-color:#f59e0b;box-shadow:0 8px 20px rgba(245,158,11,.15)}
+.activity-empty{color:#94a3b8;font-size:13px;text-align:center;padding:40px 20px}
+.token-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:16px}
+.token-card{padding:18px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:10px;border-left:4px solid #3498db;transition:transform .2s}
+.token-card:hover{transform:translateY(-2px)}
+.token-card-label{font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;font-weight:500}
+.token-card-value{font-size:26px;font-weight:800;color:#1e293b;margin-top:6px;font-variant-numeric:tabular-nums}
+.token-table{font-size:13px;overflow-x:auto}
+.token-table table{width:100%;border-collapse:collapse}
+.token-table th{text-align:left;padding:10px 12px;color:#64748b;font-weight:600;border-bottom:2px solid #e2e8f0;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+.token-table td{padding:10px 12px;border-bottom:1px solid #f1f5f9}
+.token-table tr:hover td{background:#f8fafc}
+.dash-subsection{margin-top:16px}
+.dash-subsection h4{font-size:13px;font-weight:600;color:#475569;margin-bottom:12px}
+.dash-select{padding:6px 12px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;background:white;cursor:pointer;transition:border-color .2s}
+.dash-select:hover{border-color:#94a3b8}
+.collapsible .token-usage-content{max-height:0;overflow:hidden;transition:max-height .4s cubic-bezier(.4,0,.2,1)}
+.collapsible.expanded .token-usage-content{max-height:1200px}
+.collapse-icon{font-size:10px;transition:transform .3s;display:inline-block}
+.collapsible.expanded .collapse-icon{transform:rotate(180deg)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+
+/* Modern page style (Dashboard-consistent) for Skills/MCP/Tools/CRON */
+.modern-page{background:linear-gradient(135deg,#f5f7fa 0%,#e8ecf4 50%,#f0f4f8 100%)}
+.modern-page .settings-section{background:rgba(255,255,255,.92);backdrop-filter:blur(12px);border-radius:14px;padding:22px;box-shadow:0 4px 16px rgba(0,0,0,.06),0 1px 3px rgba(0,0,0,.04);margin-bottom:24px;border:1px solid rgba(255,255,255,.8);transition:box-shadow .2s}
+.modern-page .settings-section:hover{box-shadow:0 8px 24px rgba(0,0,0,.08),0 2px 6px rgba(0,0,0,.04)}
+.modern-page .settings-section h3{font-size:15px;font-weight:600;color:#1e293b;margin:0 0 18px 0;display:flex;align-items:center;gap:8px;border-bottom:none;padding-bottom:0}
+.form-card{margin-bottom:16px;padding:18px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);border:1px solid #e2e8f0;border-radius:12px}
+.modern-page table{width:100%;border-collapse:collapse}
+.modern-page table tr{transition:background .15s}
+.modern-page table tr:hover{background:rgba(248,250,252,.85)}
 </style>
 </head>
 <body>
@@ -451,10 +518,10 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 
     <!-- Skills Page -->
     <div id="skills" class="page">
-      <div class="settings-scroll">
+      <div class="settings-scroll modern-page">
         <div class="settings-section">
           <h3>&#129504; Skills Management</h3>
-          <div style="margin-bottom:16px;padding:12px;background:#f8f9fa;border-radius:var(--rs)">
+          <div class="form-card">
             <div class="form-group"><label>Skill Name</label><input type="text" id="skillName" placeholder="e.g. code-review"></div>
             <div class="form-group"><label>Description</label><input type="text" id="skillDesc" placeholder="What this skill does"></div>
             <div class="form-group"><label>Triggers (comma-separated)</label><input type="text" id="skillTriggers" placeholder="review, code review, audit"></div>
@@ -468,10 +535,10 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 
     <!-- MCP Page -->
     <div id="mcp" class="page">
-      <div class="settings-scroll">
+      <div class="settings-scroll modern-page">
         <div class="settings-section">
           <h3>&#128268; MCP Server Management</h3>
-          <div style="margin-bottom:16px;padding:12px;background:#f8f9fa;border-radius:var(--rs)">
+          <div class="form-card">
             <div class="form-group"><label>Transport</label>
               <select id="mcpTransport" onchange="toggleMcpFields()">
                 <option value="stdio">stdio (local process)</option>
@@ -496,7 +563,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 
     <!-- Tools Page -->
     <div id="tools" class="page">
-      <div class="settings-scroll">
+      <div class="settings-scroll modern-page">
         <div class="settings-section">
           <h3>&#128295; External Tools</h3>
           <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
@@ -510,7 +577,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 
     <!-- CRON Page -->
     <div id="cron" class="page">
-      <div class="settings-scroll">
+      <div class="settings-scroll modern-page">
         <div class="settings-section">
           <h3>&#9200; CRON Tasks</h3>
           <div style="padding:10px 12px;background:#fffaf3;border-left:3px solid #f39c12;border-radius:var(--rs);margin-bottom:14px;font-size:12px;color:#7d6608;line-height:1.5">
@@ -544,32 +611,104 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 
     <!-- Dashboard Page -->
     <div id="dashboard" class="page">
-      <div class="settings-scroll">
-        <div class="settings-section">
-          <h3>&#128202; Token Usage Dashboard</h3>
-          <div class="form-group" style="margin-bottom:14px">
-            <label>Time Range</label>
-            <select id="dashDays" onchange="loadDashboard()">
-              <option value="1">Today</option>
-              <option value="3">Last 3 days</option>
-              <option value="7" selected>Last 7 days</option>
-              <option value="14">Last 14 days</option>
-              <option value="30">Last 30 days</option>
-            </select>
+      <div class="dash-container">
+        <!-- System Status Bar -->
+        <div class="dash-status-bar">
+          <div class="status-item">
+            <span class="status-indicator" id="dashAgentStatus"></span>
+            <span id="dashAgentStatusText">Connecting...</span>
           </div>
-          <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap">
-            <div id="dashTodayCards" style="display:flex;gap:12px;flex-wrap:wrap;width:100%"></div>
+          <div class="status-item">
+            <span class="status-label">Version</span>
+            <span class="status-value" id="dashVersion">-</span>
           </div>
-          <div id="dashTodayByModel" style="margin-bottom:18px"></div>
+          <div class="status-item">
+            <span class="status-label">Uptime</span>
+            <span class="status-value" id="dashUptime">-</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Model</span>
+            <span class="status-value" id="dashModel">-</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Session</span>
+            <span class="status-value" id="dashSession">-</span>
+          </div>
         </div>
-        <div class="settings-section">
-          <h3>Daily Breakdown</h3>
-          <div id="dashHistoryTable" style="font-size:13px;color:var(--t2)">Loading...</div>
+
+        <!-- Token Usage (Today) -->
+        <div class="dash-section">
+          <div class="dash-section-header">
+            <h3>&#128176; Token Usage</h3>
+            <span class="dash-last-scan" id="dashTodayDate">Today</span>
+          </div>
+          <div class="posture-cards">
+            <div class="posture-card total">
+              <div class="posture-number" id="todayTotalTokens">-</div>
+              <div class="posture-label">Total Tokens</div>
+            </div>
+            <div class="posture-card input">
+              <div class="posture-number" id="todayInputTokens">-</div>
+              <div class="posture-label">Input Tokens</div>
+            </div>
+            <div class="posture-card output">
+              <div class="posture-number" id="todayOutputTokens">-</div>
+              <div class="posture-label">Output Tokens</div>
+            </div>
+            <div class="posture-card calls">
+              <div class="posture-number" id="todayApiCalls">-</div>
+              <div class="posture-label">API Calls</div>
+            </div>
+          </div>
         </div>
-        <div class="settings-section">
-          <h3>Real-time Stream</h3>
-          <div id="dashLiveFeed" style="font-size:12px;color:var(--t2);max-height:300px;overflow-y:auto;font-family:monospace">
-            <div style="color:#95a5a6">Usage events will appear here during active chat sessions...</div>
+
+        <!-- Quick Actions -->
+        <div class="dash-section">
+          <div class="dash-section-header">
+            <h3>&#9889; Quick Actions</h3>
+          </div>
+          <div class="quick-actions">
+            <button class="action-btn triage" onclick="dashAction('triage')">
+              <span class="action-icon">&#128269;</span>
+              <span class="action-text">Quick Triage</span>
+            </button>
+            <button class="action-btn report" onclick="dashAction('report')">
+              <span class="action-icon">&#128203;</span>
+              <span class="action-text">Generate Report</span>
+            </button>
+            <button class="action-btn timeline" onclick="dashAction('timeline')">
+              <span class="action-icon">&#128336;</span>
+              <span class="action-text">View Timeline</span>
+            </button>
+            <button class="action-btn hunt" onclick="dashAction('hunt')">
+              <span class="action-icon">&#127919;</span>
+              <span class="action-text">Full Hunt</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Usage History (Collapsible) -->
+        <div class="dash-section collapsible">
+          <div class="dash-section-header" onclick="toggleTokenUsage()">
+            <h3>&#128202; Usage History <span class="collapse-icon" id="tokenCollapseIcon">&#9660;</span></h3>
+            <div class="form-group" style="margin:0" onclick="event.stopPropagation()">
+              <select id="dashDays" onchange="loadDashboard()" class="dash-select">
+                <option value="0" selected>All-time</option>
+                <option value="1">Today</option>
+                <option value="3">Last 3 days</option>
+                <option value="7">Last 7 days</option>
+                <option value="14">Last 14 days</option>
+                <option value="30">Last 30 days</option>
+              </select>
+            </div>
+          </div>
+          <div class="token-usage-content" id="tokenUsageContent">
+            <div id="dashTodayCards" class="token-cards"></div>
+            <div id="dashTodayByModel" class="token-table"></div>
+            <div class="dash-subsection">
+              <h4>Daily Breakdown</h4>
+              <div id="dashHistoryTable" class="token-table">Loading...</div>
+            </div>
           </div>
         </div>
       </div>
@@ -753,8 +892,7 @@ function handleMsg(msg){
       }
       break;
     case 'usage':
-      // Update real-time live feed on Dashboard
-      dashAddLiveEvent(msg);
+      // Usage events handled by token usage dashboard on load
       break;
     case 'error':
       hideTyping();finalizeThink();finalizeTextBlock();
@@ -1261,7 +1399,7 @@ async function loadTools(){
   try{const r=await fetch('/api/tools');const d=await r.json();
     const el=document.getElementById('toolsList');
     const pathEl=document.getElementById('toolsPath');
-    if(d.tools_dir)pathEl.textContent='📁 '+d.tools_dir;
+    if(d.tools_dir)pathEl.textContent='?? '+d.tools_dir;
     const tools=d.tools||[];
     if(tools.length){
       el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Type</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+tools.map(t=>{
@@ -1662,7 +1800,7 @@ function respondPerm(requestId,allowed){
     if(actions)actions.remove();
     const msg=document.createElement('div');
     msg.className='perm-resolved-msg '+(allowed?'allowed':'denied');
-    msg.textContent=allowed?'✓ Allowed by user':'✗ Denied by user';
+    msg.textContent=allowed?'? Allowed by user':'? Denied by user';
     card.appendChild(msg);
   }
   addLog('Permission '+(allowed?'granted':'denied')+' for request '+requestId.substring(0,8),allowed?'info':'warn');
@@ -1755,16 +1893,92 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 // ─── Dashboard ───
+let dashStartTime=Date.now();
+let dashRefreshTimer=null;
+
 async function loadDashboard(){
+  loadSystemStatus();
+  loadTodayUsage();
+  loadTokenUsage();
+  // Start periodic refresh for uptime
+  if(dashRefreshTimer)clearInterval(dashRefreshTimer);
+  dashRefreshTimer=setInterval(()=>{
+    const uptimeSecs=Math.floor((Date.now()-dashStartTime)/1000);
+    const h=Math.floor(uptimeSecs/3600);
+    const m=Math.floor((uptimeSecs%3600)/60);
+    const s=uptimeSecs%60;
+    const el=document.getElementById('dashUptime');
+    if(el)el.textContent=h>0?h+'h '+m+'m '+s+'s':m>0?m+'m '+s+'s':s+'s';
+    const sessEl=document.getElementById('dashSession');
+    if(sessEl)sessEl.textContent=connected?'Active':'Inactive';
+  },1000);
+}
+
+async function loadSystemStatus(){
+  try{
+    const r=await fetch('/api/health');
+    const d=await r.json();
+    document.getElementById('dashVersion').textContent='v'+(d.version||'?');
+    document.getElementById('dashAgentStatus').classList.add('online');
+    document.getElementById('dashAgentStatusText').textContent='Online';
+  }catch(e){
+    document.getElementById('dashAgentStatus').classList.remove('online');
+    document.getElementById('dashAgentStatusText').textContent='Offline';
+  }
+  // Uptime
+  const uptimeSecs=Math.floor((Date.now()-dashStartTime)/1000);
+  const h=Math.floor(uptimeSecs/3600);
+  const m=Math.floor((uptimeSecs%3600)/60);
+  document.getElementById('dashUptime').textContent=h>0?h+'h '+m+'m':m+'m';
+  // Model from localStorage
+  const model=localStorage.getItem(MODEL_KEY)||'Not set';
+  document.getElementById('dashModel').textContent=model;
+  // Session
+  document.getElementById('dashSession').textContent=connected?'Active':'Inactive';
+}
+
+async function loadTodayUsage(){
+  try{
+    const r=await fetch('/api/usage?days=1&tz='+getTzOffset());
+    const d=await r.json();
+    const s=d.summary||{};
+    document.getElementById('todayTotalTokens').textContent=fmtNum(s.total_tokens||0);
+    document.getElementById('todayInputTokens').textContent=fmtNum(s.total_prompt_tokens||0);
+    document.getElementById('todayOutputTokens').textContent=fmtNum(s.total_completion_tokens||0);
+    document.getElementById('todayApiCalls').textContent=fmtNum(s.total_calls||0);
+    document.getElementById('dashTodayDate').textContent='Today';
+  }catch(e){}
+}
+
+function dashAction(action){
+  const prompts={
+    'triage':'Run a quick incident triage: execute ir_scan, ir_process, ir_account, ir_persistence, ir_network in parallel, then analyze with ir_analyzer and generate a summary.',
+    'report':'Generate an IR report from the latest findings in PDF format.',
+    'timeline':'Show me a timeline of security events from the last 24 hours using ir_timeline.',
+    'hunt':'Perform a full threat hunt: run all IR collection tools, malware scan on suspicious files, deep analysis, and generate a comprehensive report.'
+  };
+  const prompt=prompts[action];
+  if(!prompt)return;
+  // Switch to chat and send
+  switchPage('chat',document.querySelector('.nav-tab'));
+  document.getElementById('msgInput').value=prompt;
+  sendMsg();
+}
+
+function toggleTokenUsage(){
+  const section=document.querySelector('.collapsible');
+  section.classList.toggle('expanded');
+}
+
+async function loadTokenUsage(){
   const days=document.getElementById('dashDays').value||7;
   try{
-    const r=await fetch('/api/usage?days='+days);
+    const r=await fetch('/api/usage?days='+days+'&tz='+getTzOffset());
     const d=await r.json();
     if(d.error){document.getElementById('dashTodayCards').innerHTML='<div style="color:#e74c3c">'+d.error+'</div>';return;}
     const s=d.summary||{};
     const rows=d.data||[];
-    const rangeLabel=days==='1'?'Today':days==='3'?'Last 3 days':'Last '+days+' days';
-    // Stat cards: Total Tokens, Input Tokens, Output Tokens, API Calls
+    const rangeLabel=days==='0'?'All-time':days==='1'?'Today':days==='3'?'Last 3 days':'Last '+days+' days';
     const cards=[
       {label:'Total Tokens',value:fmtNum(s.total_tokens||0),color:'#3498db'},
       {label:'Input Tokens',value:fmtNum(s.total_prompt_tokens||0),color:'#2ecc71'},
@@ -1772,12 +1986,12 @@ async function loadDashboard(){
       {label:'API Calls',value:fmtNum(s.total_calls||0),color:'#9b59b6'},
     ];
     document.getElementById('dashTodayCards').innerHTML=cards.map(c=>
-      '<div style="flex:1;min-width:140px;padding:16px;background:white;border-radius:8px;border-left:4px solid '+c.color+';box-shadow:0 1px 3px rgba(0,0,0,.08)">'+
-      '<div style="font-size:11px;color:#95a5a6;text-transform:uppercase;letter-spacing:.5px">'+c.label+'</div>'+
-      '<div style="font-size:24px;font-weight:700;color:'+c.color+';margin-top:4px">'+c.value+'</div>'+
-      '<div style="font-size:11px;color:#bdc3c7;margin-top:2px">'+rangeLabel+'</div></div>'
+      '<div class="token-card" style="border-left-color:'+c.color+'">'+
+      '<div class="token-card-label">'+c.label+'</div>'+
+      '<div class="token-card-value" style="color:'+c.color+'">'+c.value+'</div>'+
+      '<div style="font-size:11px;color:#94a3b8;margin-top:4px">'+rangeLabel+'</div></div>'
     ).join('');
-    // By-model breakdown (aggregate across the selected period)
+    // By-model breakdown
     const modelMap={};
     rows.forEach(r=>{
       const k=r.model;
@@ -1789,63 +2003,30 @@ async function loadDashboard(){
     });
     const byModel=Object.values(modelMap).sort((a,b)=>b.total_tokens-a.total_tokens);
     if(byModel.length>0){
-      let h='<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="border-bottom:2px solid #ecf0f1">'+
-        '<th style="text-align:left;padding:8px;color:#7f8c8d">Model</th><th style="text-align:right;padding:8px;color:#7f8c8d">Calls</th>'+
-        '<th style="text-align:right;padding:8px;color:#7f8c8d">Input</th><th style="text-align:right;padding:8px;color:#7f8c8d">Output</th>'+
-        '<th style="text-align:right;padding:8px;color:#7f8c8d">Total</th></tr>';
+      let h='<table><tr><th>Model</th><th style="text-align:right">Calls</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Total</th></tr>';
       byModel.forEach(m=>{
-        h+='<tr style="border-bottom:1px solid #f0f3f5"><td style="padding:8px;font-weight:500">'+m.model+'</td>'+
-          '<td style="text-align:right;padding:8px">'+fmtNum(m.calls)+'</td>'+
-          '<td style="text-align:right;padding:8px">'+fmtNum(m.prompt_tokens)+'</td>'+
-          '<td style="text-align:right;padding:8px">'+fmtNum(m.completion_tokens)+'</td>'+
-          '<td style="text-align:right;padding:8px;font-weight:600">'+fmtNum(m.total_tokens)+'</td></tr>';
+        h+='<tr><td style="font-weight:500">'+m.model+'</td><td style="text-align:right">'+fmtNum(m.calls)+'</td><td style="text-align:right">'+fmtNum(m.prompt_tokens)+'</td><td style="text-align:right">'+fmtNum(m.completion_tokens)+'</td><td style="text-align:right;font-weight:600">'+fmtNum(m.total_tokens)+'</td></tr>';
       });
       h+='</table>';
       document.getElementById('dashTodayByModel').innerHTML=h;
     }else{
-      document.getElementById('dashTodayByModel').innerHTML='<div style="color:#95a5a6;font-size:13px">No usage data in this period.</div>';
+      document.getElementById('dashTodayByModel').innerHTML='<div style="color:#94a3b8;font-size:13px">No usage data.</div>';
     }
-    // Daily breakdown table
+    // Daily breakdown
     if(rows.length===0){
-      document.getElementById('dashHistoryTable').innerHTML='<div style="color:#95a5a6">No usage data in this period.</div>';
+      document.getElementById('dashHistoryTable').innerHTML='<div style="color:#94a3b8">No data.</div>';
     }else{
-      let h='<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="border-bottom:2px solid #ecf0f1">'+
-        '<th style="text-align:left;padding:8px;color:#7f8c8d">Date</th><th style="text-align:left;padding:8px;color:#7f8c8d">Model</th>'+
-        '<th style="text-align:right;padding:8px;color:#7f8c8d">Calls</th><th style="text-align:right;padding:8px;color:#7f8c8d">Input</th>'+
-        '<th style="text-align:right;padding:8px;color:#7f8c8d">Output</th><th style="text-align:right;padding:8px;color:#7f8c8d">Total</th></tr>';
+      let h='<table><tr><th>Date</th><th>Model</th><th style="text-align:right">Calls</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Total</th></tr>';
       rows.forEach(r=>{
-        h+='<tr style="border-bottom:1px solid #f0f3f5"><td style="padding:8px">'+r.date+'</td>'+
-          '<td style="padding:8px;font-weight:500">'+r.model+'</td>'+
-          '<td style="text-align:right;padding:8px">'+fmtNum(r.calls)+'</td>'+
-          '<td style="text-align:right;padding:8px">'+fmtNum(r.prompt_tokens)+'</td>'+
-          '<td style="text-align:right;padding:8px">'+fmtNum(r.completion_tokens)+'</td>'+
-          '<td style="text-align:right;padding:8px;font-weight:600">'+fmtNum(r.total_tokens)+'</td></tr>';
+        h+='<tr><td>'+r.date+'</td><td style="font-weight:500">'+r.model+'</td><td style="text-align:right">'+fmtNum(r.calls)+'</td><td style="text-align:right">'+fmtNum(r.prompt_tokens)+'</td><td style="text-align:right">'+fmtNum(r.completion_tokens)+'</td><td style="text-align:right;font-weight:600">'+fmtNum(r.total_tokens)+'</td></tr>';
       });
+      h+='<tr style="font-weight:700;background:#f1f5f9"><td colspan="2">Total &middot; '+rangeLabel+'</td><td style="text-align:right">'+fmtNum(s.total_calls||0)+'</td><td style="text-align:right">'+fmtNum(s.total_prompt_tokens||0)+'</td><td style="text-align:right">'+fmtNum(s.total_completion_tokens||0)+'</td><td style="text-align:right;color:#2563eb">'+fmtNum(s.total_tokens||0)+'</td></tr>';
       h+='</table>';
       document.getElementById('dashHistoryTable').innerHTML=h;
     }
   }catch(e){
-    document.getElementById('dashTodayCards').innerHTML='<div style="color:#e74c3c">Failed to load: '+e+'</div>';
+    document.getElementById('dashTodayCards').innerHTML='<div style="color:#e74c3c">Failed: '+e+'</div>';
   }
-}
-
-function dashAddLiveEvent(msg){
-  const feed=document.getElementById('dashLiveFeed');
-  if(!feed)return;
-  // Remove placeholder
-  const ph=feed.querySelector('div[style]');
-  if(ph&&ph.textContent.includes('Usage events will appear'))ph.remove();
-  const ts=msg.timestamp?new Date(msg.timestamp).toLocaleTimeString():nowTimeStr();
-  const el=document.createElement('div');
-  el.style.cssText='padding:4px 0;border-bottom:1px solid #f0f3f5';
-  el.innerHTML='<span style="color:#bdc3c7">'+ts+'</span> '+
-    '<span style="color:#3498db;font-weight:600">'+(msg.model||'?')+'</span> '+
-    '<span style="color:#2ecc71">In:'+fmtNum(msg.prompt_tokens||0)+'</span> '+
-    '<span style="color:#e67e22">Out:'+fmtNum(msg.completion_tokens||0)+'</span> '+
-    '<span style="color:#3498db;font-weight:600">T:'+fmtNum(msg.total_tokens||0)+'</span>';
-  feed.insertBefore(el,feed.firstChild);
-  // Keep max 50 entries
-  while(feed.children.length>50)feed.removeChild(feed.lastChild);
 }
 
 function fmtNum(n){
