@@ -150,7 +150,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .msg.assistant .msg-content{background:#ecf0f1;color:#2c3e50;border-bottom-left-radius:4px}
 .msg-time{font-size:10px;color:var(--t3);margin-top:2px;padding:0 6px}
 
-/* 鈹€鈹€ Markdown Content Styling (full GFM, ref: NclawX) 鈹€鈹€ */
+/* 閳光偓閳光偓 Markdown Content Styling (full GFM, ref: NclawX) 閳光偓閳光偓 */
 .md-content{color:var(--t1);line-height:1.7;word-wrap:break-word;overflow-wrap:break-word}
 .md-content h1,.md-content h2,.md-content h3,.md-content h4,.md-content h5,.md-content h6{color:var(--t1);font-weight:600;margin:.8em 0 .4em 0;line-height:1.3}
 .md-content h1{font-size:1.5em;border-bottom:1px solid var(--border);padding-bottom:.25em}
@@ -177,7 +177,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .md-content table tr:last-child td{border-bottom:none}
 .md-content del{color:var(--t3);text-decoration:line-through}
 .md-content hr{border:none;border-top:1px solid var(--border);margin:1em 0}
-.md-content img{max-width:100%;border-radius:var(--rs);margin:.4em 0}
+.md-content img{max-width:100%;border-radius:var(--rs);margin:.4em 0;cursor:zoom-in}
 .copy-btn{position:absolute;top:6px;right:6px;background:rgba(255,255,255,.15);color:#aaa;border:1px solid #555;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;opacity:0;transition:opacity .2s}
 .md-content pre:hover .copy-btn{opacity:1}
 .md-content .copy-btn:hover{background:var(--border);color:var(--t1)}
@@ -196,7 +196,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .notification-msg .md-content blockquote{border-left-color:#f39c12;background:rgba(243,156,18,.08);color:#9a7d0a}
 .notification-msg .md-content a{color:#d68910}
 
-/* 鈹€鈹€ Thinking Block 鈹€鈹€ */
+/* 閳光偓閳光偓 Thinking Block 閳光偓閳光偓 */
 .think-block{border-radius:var(--rs);margin:6px 0;overflow:hidden;transition:all .3s}
 .think-block.active{border:1px solid transparent;background:rgba(118,75,162,.04);animation:pulseP 2s infinite}
 .think-block.done{border:1px solid transparent;background:rgba(118,75,162,.02)}
@@ -209,7 +209,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .think-body.open{padding:0 12px 10px;overflow-y:auto}
 .think-text{font-size:12px;color:var(--t2);font-style:italic;line-height:1.5;white-space:pre-wrap}
 
-/* 鈹€鈹€ Tool Block 鈹€鈹€ */
+/* 閳光偓閳光偓 Tool Block 閳光偓閳光偓 */
 .tool-block{border-radius:var(--rs);margin:6px 0;transition:all .3s}
 .tool-block.active{border:1px solid rgba(52,152,219,.3);background:rgba(52,152,219,.06)}
 .tool-block.done{border:1px solid rgba(52,152,219,.2);background:rgba(52,152,219,.04)}
@@ -390,9 +390,27 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .mcp-actions{display:flex;gap:6px;flex-wrap:wrap}
 .skill-triggers{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px}
 .skill-tag{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:500;line-height:1.4;white-space:nowrap}
+/* ── Image lightbox (click thumbnail to enlarge) ── */
+#lightbox{position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.88);display:none;align-items:center;justify-content:center;cursor:zoom-out;backdrop-filter:blur(4px)}
+#lightbox.open{display:flex;animation:lbFadeIn .15s ease}
+#lightbox img{max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5);cursor:default;object-fit:contain;animation:lbZoomIn .18s ease}
+.lb-close{position:absolute;top:18px;right:22px;width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.12);color:#fff;font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid rgba(255,255,255,.25);transition:background .15s;line-height:1}
+.lb-close:hover{background:rgba(255,255,255,.28)}
+.lb-open{position:absolute;top:26px;right:76px;color:#e2e8f0;font-size:12px;text-decoration:none;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);padding:8px 14px;border-radius:20px;transition:background .15s}
+.lb-open:hover{background:rgba(255,255,255,.28);color:#fff}
+.lb-cap{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#94a3b8;font-size:12px;font-family:var(--mono);max-width:80vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@keyframes lbFadeIn{from{opacity:0}to{opacity:1}}
+@keyframes lbZoomIn{from{transform:scale(.92);opacity:0}to{transform:scale(1);opacity:1}}
 </style>
 </head>
 <body>
+<!-- Image lightbox overlay -->
+<div id="lightbox" onclick="closeLightbox()">
+  <a class="lb-open" id="lbOpen" href="#" target="_blank" rel="noopener" onclick="event.stopPropagation()">&#8599; Open full size</a>
+  <div class="lb-close" title="Close (Esc)">&times;</div>
+  <img id="lbImg" src="" alt="Screenshot" onclick="event.stopPropagation()"/>
+  <div class="lb-cap" id="lbCap"></div>
+</div>
 <div class="container">
   <!-- Sidebar -->
   <div class="sidebar">
@@ -494,6 +512,16 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1">
             <small style="color:var(--t3)">Chat message timestamps will be displayed in this timezone (default: UTC+8)</small>
           </div>
+          <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <label style="margin-bottom:0">&#128421; Computer Use (GUI Control)</label>
+              <small style="color:var(--t3)">Enable screenshot, mouse, keyboard, window management tools</small>
+            </div>
+            <label class="perm-toggle">
+              <input type="checkbox" id="cuToggle" onchange="toggleComputerUse(this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
         <div class="settings-section">
           <h3>&#128196; Config</h3>
@@ -587,7 +615,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
         <div class="settings-section">
           <h3>&#9200; CRON Tasks</h3>
           <div style="padding:10px 12px;background:#fffaf3;border-left:3px solid #f39c12;border-radius:var(--rs);margin-bottom:14px;font-size:12px;color:#7d6608;line-height:1.5">
-            <strong>Note:</strong> CRON tasks are application-level — results are shown in chat.
+            <strong>Note:</strong> CRON tasks are application-level 鈥?results are shown in chat.
             For system-level tasks that run independently (even when RustAgent is closed),
             ask the agent to create a Windows scheduled task via <code>schtasks</code>.
           </div>
@@ -745,7 +773,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 </div>
 
 <script>
-// 鈹€鈹€ State 鈹€鈹€
+// 閳光偓閳光偓 State 閳光偓閳光偓
 let ws=null,connected=false,msgHist=[],logHist=[];
 let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
 let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0;
@@ -777,7 +805,7 @@ let permissions={};
   PERM_CATEGORIES.forEach(c=>{if(permissions[c.id]===undefined)permissions[c.id]=c.def});
 })();
 
-// 鈹€鈹€ Page Switch 鈹€鈹€
+// 閳光偓閳光偓 Page Switch 閳光偓閳光偓
 function switchPage(name,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
@@ -792,14 +820,14 @@ function switchPage(name,btn){
   if(name==='chat')setTimeout(()=>scrollBottom(false),50);
 }
 
-// 鈹€鈹€ WebSocket 鈹€鈹€
+// 閳光偓閳光偓 WebSocket 閳光偓閳光偓
 function connectWs(){
   const url=document.getElementById('wsUrl').value;
   const pwd=document.getElementById('wsPwd').value;
   if(!url){addLog('Enter WebSocket URL','error');return}
   intentionalDisconnect=false;
   if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null}
-  // Close stale WebSocket before opening a new one — prevents duplicate
+  // Close stale WebSocket before opening a new one 鈥?prevents duplicate
   // server-side broadcast subscriptions after sleep/wake reconnects.
   if(ws){try{ws.onclose=null;ws.close()}catch(e){}; ws=null}
   // Persist credentials for auto-reconnect on page refresh
@@ -855,7 +883,7 @@ function updateStatus(){
   else{dot.classList.remove('ok');txt.textContent='Disconnected';document.getElementById('msgInput').disabled=true;document.getElementById('sendBtn').disabled=true}
 }
 
-// 鈹€鈹€ Message Handler 鈹€鈹€
+// 閳光偓閳光偓 Message Handler 閳光偓閳光偓
 function handleMsg(msg){
   if(!msg||!msg.type)return;
   switch(msg.type){
@@ -933,7 +961,7 @@ function handleMsg(msg){
   }
 }
 
-// 鈹€鈹€ Chat Elements 鈹€鈹€
+// 閳光偓閳光偓 Chat Elements 閳光偓閳光偓
 function getOrCreateTextBlock(){
   if(!curTextEl){
     curTextEl=document.createElement('div');
@@ -987,7 +1015,7 @@ function showTyping(){
 }
 function hideTyping(){const el=document.getElementById('typingInd');if(el)el.remove()}
 
-// 鈹€鈹€ Thinking Block 鈹€鈹€
+// 閳光偓閳光偓 Thinking Block 閳光偓閳光偓
 function createThinkBlock(){
   const d=document.createElement('div');d.className='think-block active';
   d.innerHTML='<div class="think-hdr" onclick="toggleBlock(this)">&#128161; Thinking... <span class="arrow open">&#9660;</span></div><div class="think-body open"><div class="think-text"></div></div>';
@@ -1016,14 +1044,14 @@ function finalizeThink(){
       hdr.innerHTML='\uD83D\uDCA1 Thinking <span style="color:var(--t3);font-weight:400">\u2713</span> <span class="arrow">&#9660;</span>';
       hdr.onclick=function(){toggleBlock(this)};
     }
-    // Collapse body by default — user clicks header to expand
+    // Collapse body by default 鈥?user clicks header to expand
     const body=curThinkEl.querySelector('.think-body');
     if(body)body.classList.remove('open');
     curThinkEl=null;
   }
 }
 
-// 鈹€鈹€ Tool Block 鈹€鈹€
+// 閳光偓閳光偓 Tool Block 閳光偓閳光偓
 function createToolBlock(name,callId,args){
   const d=document.createElement('div');d.className='tool-block active';
   let summary='';
@@ -1050,7 +1078,7 @@ function updateToolResult(blk,result){
     let parsed=result;
     if(typeof result==='string'){try{parsed=JSON.parse(result)}catch(e){}}
     if(parsed&&typeof parsed==='object'&&parsed.url&&/\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(parsed.url)){
-      resEl.innerHTML='<img src="'+esc(parsed.url)+'" style="max-width:100%;border-radius:6px;margin:4px 0;cursor:pointer" onclick="window.open(this.src,\'_blank\')" title="Click to open full size"/>'
+      resEl.innerHTML='<img src="'+esc(parsed.url)+'" data-url="'+esc(parsed.url)+'" style="max-width:100%;border-radius:6px;margin:4px 0;cursor:zoom-in" onclick="openLightbox(this.src,this.dataset.url)" title="Click to enlarge"/>'
         +'<div style="font-size:11px;color:var(--t3);margin-top:2px">'+esc(parsed.url)+'</div>'
         +'<pre style="margin-top:4px;font-size:11px">'+esc(typeof result==='string'?result:JSON.stringify(result,null,2))+'</pre>';
     }else{
@@ -1062,8 +1090,36 @@ function toggleBlock(hdr){
   const body=hdr.nextElementSibling;
   if(body){body.classList.toggle('open');const sp=hdr.querySelector('.arrow');if(sp)sp.classList.toggle('open')}
 }
+// ── Image lightbox ──
+function openLightbox(src,caption){
+  const lb=document.getElementById('lightbox');
+  const img=document.getElementById('lbImg');
+  if(!lb||!img)return;
+  img.src=src;
+  const cap=document.getElementById('lbCap');
+  if(cap)cap.textContent=caption||src;
+  const open=document.getElementById('lbOpen');
+  if(open)open.href=src;
+  lb.classList.add('open');
+}
+function closeLightbox(){
+  const lb=document.getElementById('lightbox');
+  if(lb)lb.classList.remove('open');
+}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLightbox();});
+// Click-to-enlarge for images rendered inside agent replies (markdown). Uses
+// event delegation so it works for content injected at any time (streaming,
+// history, notifications) without needing inline handlers. Tool-result images
+// live outside .md-content and keep their own inline onclick.
+document.addEventListener('click',function(e){
+  var t=e.target;
+  if(!t||t.tagName!=='IMG'||t.id==='lbImg')return;
+  if(!t.closest('.md-content'))return;
+  var caption=t.getAttribute('data-url')||t.getAttribute('alt')||'';
+  openLightbox(t.currentSrc||t.src,caption||t.src);
+});
 
-// 鈹€鈹€ Send 鈹€鈹€
+// 閳光偓閳光偓 Send 閳光偓閳光偓
 function updateImgBtnState(){
   const sel=document.getElementById('modelSel');
   const btn=document.getElementById('imgBtn');
@@ -1164,7 +1220,7 @@ function showUserMsg(txt,imgsOrTime,time){
 }
 function appendToConv(el){document.getElementById('convArea').appendChild(el);scrollBottom()}
 
-// 鈹€鈹€ Clear/Export 鈹€鈹€
+// 閳光偓閳光偓 Clear/Export 閳光偓閳光偓
 function clearChat(){
   if(ws)ws.send(JSON.stringify({type:'clear'}));
   document.getElementById('convArea').innerHTML='';
@@ -1178,7 +1234,7 @@ function exportChat(){
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='rustagent-'+Date.now()+'.txt';a.click();
 }
 
-// 鈹€鈹€ Log 鈹€鈹€
+// 閳光偓閳光偓 Log 閳光偓閳光偓
 function addLog(text,cls){
   const log=document.getElementById('logArea');
   const e=document.createElement('div');e.className='log-entry '+(cls||'info');
@@ -1188,7 +1244,7 @@ function addLog(text,cls){
   logHist.push({text,cls:cls||'info',time:t.textContent});saveHist();
 }
 
-// 鈹€鈹€ API 鈹€鈹€
+// 閳光偓閳光偓 API 閳光偓閳光偓
 let pendingImages=[];
 let modelVisionMap={};
 async function loadModels(){
@@ -1425,7 +1481,7 @@ async function toggleTool(name){
   try{await fetch('/api/tools/'+encodeURIComponent(name)+'/toggle',{method:'POST'});loadTools()}catch(e){alert('Failed')}
 }
 
-// 鈹€鈹€ CRON Tasks 鈹€鈹€
+// 閳光偓閳光偓 CRON Tasks 閳光偓閳光偓
 async function loadCron(){
   try{
     const r=await fetch('/api/cron');const d=await r.json();
@@ -1655,7 +1711,7 @@ function addCopyBtns(container){
   });
 }
 
-// 鈹€鈹€ Helpers 鈹€鈹€
+// 閳光偓閳光偓 Helpers 閳光偓閳光偓
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function scrollBottom(smooth){requestAnimationFrame(()=>{const a=document.getElementById('convArea');if(a)a.scrollTo({top:a.scrollHeight,behavior:smooth===false?'auto':'smooth'});const l=document.getElementById('logArea');if(l)l.scrollTop=l.scrollHeight})}
 function saveHist(){try{const stripped=msgHist.slice(-200).map(m=>{if(m.images){const c={...m};delete c.images;return c;}return m;});localStorage.setItem('ra_msgs',JSON.stringify(stripped));localStorage.setItem('ra_logs',JSON.stringify(logHist.slice(-200)))}catch(e){}}
@@ -1676,7 +1732,7 @@ function showNotification(message, timestamp, skipHist){
   // Add copy buttons to code blocks (same as main chat)
   const nc=d.querySelector('.msg-content');if(nc)addCopyBtns(nc);
   if(!skipHist)scrollBottom(false);
-  // Also try browser native notification (plain text only) — skip when restoring history
+  // Also try browser native notification (plain text only) 鈥?skip when restoring history
   if(!skipHist){
     const plainText = message.replace(/[*#_~`\[\]]/g, '').substring(0, 200);
     if('Notification' in window && Notification.permission==='granted'){
@@ -1731,7 +1787,7 @@ function renderHistMessages(msgs){
   if(msgs.length)scrollBottom(false);
 }
 
-// 鈹€鈹€ Permissions 鈹€鈹€
+// 閳光偓閳光偓 Permissions 閳光偓閳光偓
 function renderPerms(){
   const el=document.getElementById('permList');if(!el)return;
   el.innerHTML=PERM_CATEGORIES.map(c=>{
@@ -1755,6 +1811,12 @@ function togglePerm(id,val){
   renderPerms();
   sendPerms();
   addLog('Permission '+id+': '+(val?'allowed':'endorsement'),'info');
+}
+function toggleComputerUse(enabled){
+  fetch('/api/settings/computer_use',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enabled})})
+    .then(r=>r.json())
+    .then(d=>{if(d.success)addLog('Computer Use '+(enabled?'ENABLED':'DISABLED'),'info');else addLog('Computer Use toggle failed','error');})
+    .catch(e=>addLog('Computer Use toggle error: '+e,'error'));
 }
 function sendPerms(){
   if(ws&&connected){
@@ -1816,7 +1878,7 @@ function respondPerm(requestId,allowed){
   addLog('Permission '+(allowed?'granted':'denied')+' for request '+requestId.substring(0,8),allowed?'info':'warn');
 }
 
-// ── Checkpoint Banner ──
+// 鈹€鈹€ Checkpoint Banner 鈹€鈹€
 async function checkCheckpoints(){
   try{
     const r=await fetch('/api/checkpoints');
@@ -1869,7 +1931,7 @@ async function discardCheckpoint(cpId){
   }catch(e){addLog('Failed to discard checkpoint','error')}
 }
 
-// 鈹€鈹€ Init 鈹€鈹€
+// 閳光偓閳光偓 Init 閳光偓閳光偓
 document.addEventListener('DOMContentLoaded',()=>{
   loadHist();
   renderPerms();
@@ -1902,7 +1964,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   }catch(e){}
 });
 
-// ─── Dashboard ───
+// 鈹€鈹€鈹€ Dashboard 鈹€鈹€鈹€
 let dashStartTime=Date.now();
 let dashRefreshTimer=null;
 

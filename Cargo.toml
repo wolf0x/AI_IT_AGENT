@@ -47,6 +47,24 @@ regex = "1"
 evtx = "0.8"
 # PCAP analysis
 pcap-parser = { version = "0.17", features = ["data"] }
+# Computer Use — Windows native desktop control
+windows = { version = "0.58", features = [
+    "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_Foundation",
+]}
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [build-dependencies]
 winresource = "0.1"

@@ -21,16 +21,18 @@ pub fn tool_category(name: &str) -> &'static str {
         | "ir_scan" | "ir_account" | "ir_persistence" | "ir_network" | "ir_eventlog"
         | "ir_file" | "ir_driver" | "ir_analyzer" | "ir_report"
         | "ir_weblog_scan" | "ir_evtx_parse" | "ir_log_parse" | "ir_pcap_analyze"
-        | "malware_scan" | "malware_deep" => "read",
+        | "malware_scan" | "malware_deep"
+        | "cu_screenshot" | "cu_window_list" | "cu_clipboard_read" | "cu_display_info"
+        | "cu_cursor_position" | "cu_process_list" | "cu_ui_tree" | "cu_ui_find" => "read",
         // Write — creates/overwrites content
-        "file_write" | "memory_md" | "todo_update" => "write",
+        "file_write" | "memory_md" | "todo_update" | "cu_clipboard_write" => "write",
         // Delete
         "file_delete" => "delete",
         // Modify — changes state of existing resources
         "file_modify" | "sys_process" | "sys_service" | "ir_process"
-        | "browser_cdp" | "browser_skill" | "cron_manage" => "modify",
+        | "browser_cdp" | "browser_skill" | "cron_manage" | "cu_window_activate" => "modify",
         // Execute — arbitrary code execution
-        "shell_exec" | "app_launch" => "execute",
+        "shell_exec" | "app_launch" | "cu_mouse" | "cu_keyboard" | "cu_process_kill" | "cu_ui_interact" => "execute",
         // Default: unknown tools (MCP, external) require endorsement
         _ => "execute",
     }

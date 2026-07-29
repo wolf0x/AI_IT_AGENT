@@ -454,6 +454,27 @@ You have two layers of memory:\n\n\
 - MEMORY.md is curated — quality over quantity\n\
 - The automatic SQLite memory handles day-to-day recall; MEMORY.md is for lasting insights\n",
             );
+
+            // ── Computer Use (GUI Control) Routing ──
+            prompt.push_str(
+                "\n## Computer Use (GUI Control) Tools\n\
+You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI tools cannot accomplish the task.\n\n\
+**Priority order (always prefer the earlier option):**\n\
+1. CLI tools (shell_exec, sys_info, ir_*, file_*) — for system queries, file ops, process management\n\
+2. Browser tools (browser_cdp, browser_skill) — for web pages and web apps\n\
+3. Computer Use tools (cu_*) — ONLY for native desktop GUI apps that have no CLI/API equivalent\n\n\
+**When to use Computer Use:**\n\
+- Interacting with native GUI applications (installers, legacy software, modal dialogs)\n\
+- Taking screenshots of the desktop or specific windows as evidence\n\
+- Reading/manipulating UI elements that have no programmatic API\n\
+- Automating workflows in applications that only expose a GUI\n\n\
+**When NOT to use Computer Use:**\n\
+- Anything achievable via shell_exec (ipconfig, Get-Process, taskkill, etc.)\n\
+- File operations (use file_read/file_write/file_list)\n\
+- Browser automation (use browser_cdp or browser_skill)\n\
+- Process/service management (use sys_process, sys_service)\n\n\
+**Screenshot workflow:** cu_screenshot returns a URL. Use markdown `![desc](url)` to display it.\n",
+            );
         }
 
         // ── Active Skills (weighted scoring, top-K) ──

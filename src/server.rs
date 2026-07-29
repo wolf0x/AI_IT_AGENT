@@ -71,6 +71,8 @@ pub struct AppState {
     pub workspace_dir: String,
     /// LLM provider for end-of-session knowledge distillation
     pub provider: Arc<OpenAiProvider>,
+    /// Whether Computer Use (GUI control) tools are enabled
+    pub computer_use_enabled: Arc<AtomicBool>,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -116,6 +118,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/config/files/{name}", put(config_file_save_handler))
         .route("/api/checkpoints", get(checkpoints_list_handler))
         .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
+        .route("/api/settings/computer_use", post(computer_use_toggle_handler))
         .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
 }
@@ -1291,6 +1294,31 @@ async fn tools_desc_handler(
     } else {
         Json(json!({ "success": false, "error": "Not found" }))
     }
+}
+
+// ============================================================
+// Computer Use toggle
+// ============================================================
+
+async fn computer_use_toggle_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let prev = state.computer_use_enabled.swap(enabled, Ordering::SeqCst);
+
+    if prev != enabled {
+        let mut registry = state.tools.write().await;
+        if enabled {
+            crate::tool::computer_use::register_computer_use_tools(&mut registry);
+            info!("Computer Use tools ENABLED ({} tools registered)", crate::tool::computer_use::CU_TOOL_NAMES.len());
+        } else {
+            crate::tool::computer_use::unregister_computer_use_tools(&mut registry);
+            info!("Computer Use tools DISABLED");
+        }
+    }
+
+    Json(json!({ "success": true, "enabled": enabled }))
 }
 
 // ============================================================

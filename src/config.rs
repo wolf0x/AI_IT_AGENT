@@ -43,6 +43,10 @@ pub struct AgentConfig {
     /// Default: true (enabled for IR workflow optimization)
     #[serde(default = "default_parallel_ir_tools")]
     pub parallel_ir_tools: bool,
+    /// Enable Computer Use (GUI control) tools — screenshot, mouse, keyboard, window management.
+    /// Default: false (disabled). Can be toggled at runtime via Settings UI.
+    #[serde(default)]
+    pub computer_use: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -122,6 +126,7 @@ impl Default for Config {
                 tool_timeout_secs: default_tool_timeout_secs(),
                 max_tool_retries: default_max_tool_retries(),
                 parallel_ir_tools: default_parallel_ir_tools(),
+                computer_use: false,
             },
         }
     }

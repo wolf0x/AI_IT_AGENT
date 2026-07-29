@@ -378,6 +378,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("Registered cron_manage + memory_md + todo_update + browser_cdp + browser_skill tools");
 
+    // Conditionally register Computer Use tools based on config
+    let computer_use_enabled = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.computer_use));
+    if config.agent.computer_use {
+        let mut reg = shared_tools.write().await;
+        crate::tool::computer_use::register_computer_use_tools(&mut reg);
+        info!("Computer Use tools registered (enabled in config)");
+    }
+
     // Build app state
     let state = Arc::new(AppState {
         runner: runner.clone(),
@@ -403,6 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notify_tx,
         workspace_dir,
         provider: provider_for_state,
+        computer_use_enabled,
     });
 
     // Create router and start server

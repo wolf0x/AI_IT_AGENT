@@ -33,6 +33,7 @@ pub mod ir_log_parse;
 pub mod ir_pcap_analyze;
 pub mod ir_timeline;
 pub mod external_exec;
+pub mod computer_use;
 
 use async_trait::async_trait;
 use serde_json::Value;
