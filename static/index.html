@@ -133,7 +133,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .log-time{font-size:9px;color:var(--t3);margin-right:4px}
 
 /* Messages */
-.msg{display:flex;align-items:flex-start;gap:8px;animation:fadeIn .3s}
+.msg{display:flex;align-items:flex-start;gap:8px;animation:fadeIn .3s;position:relative}
 .msg.user{flex-direction:row-reverse}
 .msg-avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
 .msg.user .msg-avatar{background:var(--accent)}
@@ -149,6 +149,19 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .msg.user .msg-content{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
 .msg.assistant .msg-content{background:#ecf0f1;color:#2c3e50;border-bottom-left-radius:4px}
 .msg-time{font-size:10px;color:var(--t3);margin-top:2px;padding:0 6px}
+/* ── Message hover actions (copy + select), placed right of the timestamp ── */
+.msg-meta-row{display:flex;align-items:center;gap:6px}
+.msg-actions{display:flex;gap:4px;opacity:0;transition:opacity .15s}
+.msg:hover .msg-actions,.msg.selected .msg-actions{opacity:1}
+.msg-copy-btn,.msg-sel-btn{width:22px;height:22px;border-radius:6px;border:1px solid var(--border);background:#fff;color:var(--t2);font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.15);transition:all .15s;padding:0;line-height:1}
+.msg-copy-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.msg-sel-btn:hover{background:var(--green);color:#fff;border-color:var(--green)}
+.msg-sel-btn.active{background:var(--green);color:#fff;border-color:var(--green)}
+.msg.selected .msg-content{outline:2px solid var(--green);outline-offset:1px}
+/* ── Selection export bar ── */
+.sel-bar{display:none;align-items:center;gap:12px;padding:8px 20px;background:#e8f5e9;border-top:1px solid #a5d6a7;font-size:12px;color:#2e7d32;flex-shrink:0}
+.sel-bar.visible{display:flex}
+.sel-bar #selCount{font-weight:600}
 
 /* 閳光偓閳光偓 Markdown Content Styling (full GFM, ref: NclawX) 閳光偓閳光偓 */
 .md-content{color:var(--t1);line-height:1.7;word-wrap:break-word;overflow-wrap:break-word}
@@ -755,6 +768,11 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           <div class="conv-area" id="convArea"></div>
           <div id="cpBanner"></div>
           <div class="img-preview-bar" id="imgPreviewBar"></div>
+          <div class="sel-bar" id="selBar">
+            <span id="selCount">0 selected</span>
+            <button class="btn btn-s" onclick="exportSelectedHtml()">&#128196; Export HTML</button>
+            <button class="btn btn-d" onclick="clearSelection()">Clear selection</button>
+          </div>
           <div class="input-bar">
             <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
             <button class="btn-img disabled" id="imgBtn" onclick="document.getElementById('imgFileInput').click()" title="Attach image (vision models only)" disabled>&#128247;</button>
@@ -1118,6 +1136,140 @@ document.addEventListener('click',function(e){
   var caption=t.getAttribute('data-url')||t.getAttribute('alt')||'';
   openLightbox(t.currentSrc||t.src,caption||t.src);
 });
+
+// ── Message hover actions: copy + multi-select/export ──
+// Inject a small action bar (copy + select) into each chat message. A
+// MutationObserver catches every message as it is appended (streaming,
+// history, notifications) so no creation site needs to be modified.
+function attachMsgControls(msgEl){
+  if(!msgEl||msgEl.dataset.controls==='1')return;
+  if(msgEl.id==='typingInd')return;
+  var body=msgEl.querySelector('.msg-body');
+  if(!body)return;
+  msgEl.dataset.controls='1';
+  var bar=document.createElement('div');
+  bar.className='msg-actions';
+  bar.innerHTML='<button class="msg-copy-btn" title="Copy message" onclick="copyMsgContent(this)">&#128203;</button>'
+    +'<button class="msg-sel-btn" title="Select for export" onclick="toggleMsgSelect(this)">&#10003;</button>';
+  // Place the action buttons on the same row, right of the timestamp.
+  var timeEl=body.querySelector('.msg-time');
+  if(timeEl&&timeEl.parentNode===body){
+    var row=document.createElement('div');
+    row.className='msg-meta-row';
+    body.replaceChild(row,timeEl);
+    row.appendChild(timeEl);
+    row.appendChild(bar);
+  }else{
+    body.appendChild(bar);
+  }
+}
+function copyMsgContent(btn){
+  var msg=btn.closest('.msg');
+  var content=msg?msg.querySelector('.msg-content'):null;
+  if(!content)return;
+  var text=content.innerText;
+  var done=function(){var o=btn.innerHTML;btn.innerHTML='&#10003;';setTimeout(function(){btn.innerHTML='&#128203;'},1200);};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(function(){fallbackCopy(text);done();});
+  }else{fallbackCopy(text);done();}
+}
+function fallbackCopy(text){
+  var ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+  document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();
+}
+function toggleMsgSelect(btn){
+  var msg=btn.closest('.msg');
+  if(!msg)return;
+  var on=msg.classList.toggle('selected');
+  btn.classList.toggle('active',on);
+  updateSelBar();
+}
+function updateSelBar(){
+  var n=document.querySelectorAll('#convArea .msg.selected').length;
+  var bar=document.getElementById('selBar');
+  var cnt=document.getElementById('selCount');
+  if(cnt)cnt.textContent=n+' selected';
+  if(bar)bar.classList.toggle('visible',n>0);
+}
+function clearSelection(){
+  document.querySelectorAll('#convArea .msg.selected').forEach(function(m){
+    m.classList.remove('selected');
+    var b=m.querySelector('.msg-sel-btn');if(b)b.classList.remove('active');
+  });
+  updateSelBar();
+}
+function blobToDataUrl(blob){
+  return new Promise(function(res,rej){
+    var r=new FileReader();
+    r.onload=function(){res(r.result)};
+    r.onerror=rej;
+    r.readAsDataURL(blob);
+  });
+}
+// Fetch every <img> in the container and inline it as a base64 data URL so
+// the exported file is fully self-contained (screenshots etc. keep working).
+async function inlineImages(container){
+  var imgs=container.querySelectorAll('img');
+  for(var i=0;i<imgs.length;i++){
+    var img=imgs[i];
+    var src=img.getAttribute('src')||'';
+    if(!src||src.indexOf('data:')===0)continue;
+    try{
+      var resp=await fetch(src);
+      if(!resp.ok)continue;
+      img.setAttribute('src',await blobToDataUrl(await resp.blob()));
+    }catch(e){/* keep original src */}
+  }
+}
+async function exportSelectedHtml(){
+  var sel=Array.prototype.slice.call(document.querySelectorAll('#convArea .msg.selected'));
+  if(!sel.length){addLog('No messages selected','warn');return;}
+  // Deep-clone each selected message so the export matches the web chat exactly.
+  var clones=sel.map(function(m){
+    var c=m.cloneNode(true);
+    c.querySelectorAll('.msg-actions').forEach(function(a){a.remove();});
+    c.querySelectorAll('[onclick]').forEach(function(el){el.removeAttribute('onclick');});
+    c.classList.remove('selected');
+    c.removeAttribute('data-controls');
+    return c;
+  });
+  // Inline images (screenshots etc.) as base64 so the file is self-contained.
+  for(var i=0;i<clones.length;i++){await inlineImages(clones[i]);}
+  var bodyHtml=clones.map(function(c){return c.outerHTML;}).join('');
+  // Embed the page's real stylesheet so the export looks identical to the chat.
+  var css='';
+  document.querySelectorAll('style').forEach(function(s){css+=s.textContent+'\n';});
+  var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>RustAgent Chat Export</title><style>'
+    +css
+    +'\n/* ── Export overrides ── */\n'
+    +'html,body{height:auto;overflow:visible}\n'
+    +'body{padding:28px 20px}\n'
+    +'.ex-page{max-width:1000px;margin:0 auto}\n'
+    +'.ex-hdr{font-size:18px;font-weight:700;color:#fff;margin-bottom:2px}\n'
+    +'.ex-sub{font-size:12px;color:rgba(255,255,255,.85);margin-bottom:16px}\n'
+    +'.ex-conv{background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);padding:20px;display:flex;flex-direction:column;gap:12px}\n'
+    +'</style></head><body><div class="ex-page">'
+    +'<div class="ex-hdr">&#129302; RustAgent Chat Export</div>'
+    +'<div class="ex-sub">'+sel.length+' message(s) &middot; '+esc(new Date().toLocaleString())+'</div>'
+    +'<div class="ex-conv">'+bodyHtml+'</div></div></body></html>';
+  var blob=new Blob([html],{type:'text/html'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='rustagent-chat-'+Date.now()+'.html';a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href)},1000);
+  addLog('Exported '+sel.length+' message(s) to HTML','info');
+}
+(function(){
+  var conv=document.getElementById('convArea');
+  if(!conv)return;
+  var obs=new MutationObserver(function(muts){
+    muts.forEach(function(m){
+      m.addedNodes.forEach(function(n){
+        if(n.nodeType===1&&n.classList&&n.classList.contains('msg'))attachMsgControls(n);
+      });
+    });
+  });
+  obs.observe(conv,{childList:true});
+  conv.querySelectorAll('.msg').forEach(attachMsgControls);
+})();
 
 // 閳光偓閳光偓 Send 閳光偓閳光偓
 function updateImgBtnState(){

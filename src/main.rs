@@ -99,37 +99,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // push messages to WebSocket clients (e.g. sys_remind) can hold a sender.
     let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(100);
 
-    // ── Random password (first-run) ──────────────────────────
-    // Each installation gets its own random 6-digit password, persisted to .password.
-    // Subsequent runs reuse the same password — no more default "123".
+    // ── Random password (regenerated on EVERY startup) ──────
+    // A fresh random 6-digit password is generated each time the process
+    // starts — it is never reused across runs. It is written to .password
+    // (for reference) and logged so the user can find the current one.
     let password = {
+        let mut bytes = [0u8; 3];
+        getrandom::fill(&mut bytes).expect("getrandom");
+        let num = ((bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32) % 1000000;
+        let password = format!("{:06}", num);
         let pwd_file = std::path::Path::new(&workspace_dir).join(".password");
-        if pwd_file.exists() {
-            let pwd = std::fs::read_to_string(&pwd_file)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            if pwd.is_empty() {
-                // .password file exists but empty — regenerate
-                let mut bytes = [0u8; 3];
-                getrandom::fill(&mut bytes).expect("getrandom");
-                let num = ((bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32) % 1000000;
-                let new_pwd = format!("{:06}", num);
-                let _ = std::fs::write(&pwd_file, &new_pwd);
-                new_pwd
-            } else {
-                pwd
-            }
-        } else {
-            let mut bytes = [0u8; 3];
-            getrandom::fill(&mut bytes).expect("getrandom");
-            let num = ((bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32) % 1000000;
-            let password = format!("{:06}", num);
-            if let Err(e) = std::fs::write(&pwd_file, &password) {
-                tracing::warn!("Failed to save password: {}", e);
-            }
-            password
+        if let Err(e) = std::fs::write(&pwd_file, &password) {
+            tracing::warn!("Failed to save password: {}", e);
         }
+        password
     };
 
     // ── Extract embedded workspace files (first-run only) ────
