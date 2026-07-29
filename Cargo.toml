@@ -47,6 +47,11 @@ regex = "1"
 evtx = "0.8"
 # PCAP analysis
 pcap-parser = { version = "0.17", features = ["data"] }
+# Linux IR — SSH remote execution (pure Rust)
+russh = "0.49"
+russh-keys = "0.49"
+ssh-key = "0.6"
+dirs-next = "2.0"
 # Computer Use — Windows native desktop control
 windows = { version = "0.58", features = [
     "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",

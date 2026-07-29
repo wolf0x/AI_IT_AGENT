@@ -498,8 +498,8 @@ impl Tool for McpProxyTool {
             let msg = result
                 .content
                 .iter()
-                .filter_map(|c| c.as_text().map(|t| t.text.as_ref()))
-                .collect::<Vec<_>>()
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+                .collect::<Vec<&str>>()
                 .join("\n");
             return Err(format!("MCP tool error: {}", msg).into());
         }

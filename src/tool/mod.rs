@@ -34,6 +34,22 @@ pub mod ir_pcap_analyze;
 pub mod ir_timeline;
 pub mod external_exec;
 pub mod computer_use;
+pub mod linux_ssh;
+pub mod linux_ir_common;
+pub mod linux_ir_process;
+pub mod linux_ir_network;
+pub mod linux_ir_persistence;
+pub mod linux_ir_rootkit;
+pub mod linux_ir_file;
+pub mod linux_ir_web;
+pub mod linux_ir_mining;
+pub mod linux_ir_lateral;
+pub mod linux_ir_auth;
+pub mod linux_ir_backdoor;
+pub mod linux_ir_bruteforce;
+pub mod linux_ir_integrity;
+pub mod linux_ir_config;
+pub mod ir_linux;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -290,6 +306,8 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_pcap_analyze::IrPcapAnalyzeTool));
         // Timeline reconstruction
         registry.register(Arc::new(ir_timeline::IrTimelineTool));
+        // Linux IR — remote SSH-based incident response
+        registry.register(Arc::new(ir_linux::IrLinuxTool));
         let _ = working_dir;
         registry
     }
