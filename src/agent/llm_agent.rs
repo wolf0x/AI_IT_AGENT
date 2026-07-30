@@ -253,7 +253,7 @@ impl LlmAgent {
         LlmAgentBuilder::new()
     }
 
-    fn build_system_prompt(&self, user_message: &str) -> String {
+    fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage]) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
         let mut prompt = format!(
             "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
@@ -478,9 +478,19 @@ You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI t
         }
 
         // ── Active Skills (weighted scoring, top-K) ──
-        let matching_skills = self.skill_manager.find_matching(user_message);
+        // Match against a bounded window of recent conversation + the current
+        // message so a skill activated by an earlier turn stays "sticky" across
+        // follow-up turns, even when the user no longer repeats the trigger keyword.
+        let matching_context = Self::build_skill_matching_context(history, user_message);
+        let matching_skills = self.skill_manager.find_matching(&matching_context);
         if !matching_skills.is_empty() {
             prompt.push_str("\n## Active Skills Context\n");
+            prompt.push_str(
+                "The following skill(s) are ALREADY loaded and active for this conversation — \
+matched and injected automatically. Follow their workflows directly. Do NOT re-load \
+them (no list_skills / file_read needed) and do NOT apologize for 'not loading' them; \
+their full content is present right here in your context.\n",
+            );
             for (skill_content, score) in &matching_skills {
                 tracing::debug!("Skill matched with score {:.3}", score);
                 prompt.push_str(&format!("\n{}\n", skill_content));
@@ -489,6 +499,46 @@ You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI t
         }
 
         prompt
+    }
+
+    /// Build the text used for skill matching: a bounded window of recent
+    /// conversation turns plus the current user message.
+    ///
+    /// Skill injection is stateless — the system prompt is rebuilt every turn —
+    /// so matching only the current message would drop a skill that was activated
+    /// by an earlier turn. Including recent history makes activation "sticky":
+    /// a skill triggered by "CVE" in turn 1 stays injected on turn 2 even when the
+    /// follow-up message no longer contains the keyword. This prevents the agent
+    /// from falsely concluding it "forgot" to load a skill and re-fetching it.
+    fn build_skill_matching_context(history: &[ChatMessage], user_message: &str) -> String {
+        /// Number of most recent messages considered for skill matching.
+        const RECENT_MESSAGES: usize = 6;
+        /// Cap on history characters fed into matching (most recent content kept).
+        const MAX_HISTORY_CHARS: usize = 8000;
+
+        let mut context = String::new();
+        let recent = &history[history.len().saturating_sub(RECENT_MESSAGES)..];
+        for msg in recent {
+            // Only user/assistant turns carry topical signal; skip tool/system chatter.
+            if msg.role != "user" && msg.role != "assistant" {
+                continue;
+            }
+            if let Some(text) = msg.content_as_text() {
+                let text = text.trim();
+                if !text.is_empty() {
+                    context.push_str(text);
+                    context.push('\n');
+                }
+            }
+        }
+        // Keep only the tail (most recent content) within the char budget.
+        let total_chars = context.chars().count();
+        if total_chars > MAX_HISTORY_CHARS {
+            let skip = total_chars - MAX_HISTORY_CHARS;
+            context = context.chars().skip(skip).collect::<String>();
+        }
+        context.push_str(user_message);
+        context
     }
 
     /// Read a file from the workspace directory. Returns None if missing or empty.
@@ -528,7 +578,7 @@ impl Agent for LlmAgent {
         let (tx, rx) = tokio::sync::mpsc::channel::<AgentResult<AgentEvent>>(200);
 
         // Build system prompt and history in the spawned task
-        let system_prompt = self.build_system_prompt(user_message);
+        let system_prompt = self.build_system_prompt(user_message, &ctx.conversation_history);
         let tool_defs = self.tools.read().await.definitions();
         let session_id = ctx.base.session_id.clone();
         info!("[session:{}] Agent sending {} tool definitions to LLM", session_id, tool_defs.len());
