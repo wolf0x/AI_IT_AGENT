@@ -1354,7 +1354,10 @@ async fn execute_tool_call(
             let tool = tools.read().await.get(tool_name);
             let tool_result = match tool {
                 Some(tool) => {
-                    let ctx = ToolContext::simple(working_dir.to_string(), workspace_dir.to_string());
+                    // Create progress channel for long-running tools
+                    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<String>(32);
+                    let ctx = ToolContext::simple(working_dir.to_string(), workspace_dir.to_string())
+                        .with_progress(progress_tx);
                     let args_clone = args.clone();
 
                     // Spawn the actual tool execution as a separate task
@@ -1386,7 +1389,24 @@ async fn execute_tool_call(
                                 }
                             }
 
-                            // Heartbeat: send progress event every 5 seconds
+                            // Progress message from tool (meaningful status updates)
+                            Some(msg) = progress_rx.recv() => {
+                                let elapsed = start.elapsed().as_secs();
+                                let progress = AgentEvent::progress(
+                                    tool_name,
+                                    &msg,
+                                    elapsed,
+                                    invocation_id,
+                                    author,
+                                );
+                                if tx.send(Ok(progress)).await.is_err() {
+                                    info!("[session] Consumer disconnected during tool '{}', aborting", tool_name);
+                                    tool_handle.abort();
+                                    break Some(serde_json::json!({ "error": "Cancelled by user (consumer disconnected)" }));
+                                }
+                            }
+
+                            // Heartbeat: send progress event every 5 seconds (fallback if tool doesn't report)
                             _ = interval.tick() => {
                                 let elapsed = start.elapsed().as_secs();
                                 let progress = AgentEvent::progress(

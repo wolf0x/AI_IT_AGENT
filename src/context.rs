@@ -70,6 +70,9 @@ pub struct ToolContext {
     pub function_call_id: String,
     pub working_dir: String,
     pub workspace_dir: String,
+    /// Optional progress channel for long-running tools to report status.
+    /// Messages sent here are forwarded to the frontend as `progress` events.
+    progress_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl ToolContext {
@@ -79,6 +82,7 @@ impl ToolContext {
             function_call_id,
             working_dir,
             workspace_dir,
+            progress_tx: None,
         }
     }
 
@@ -95,6 +99,21 @@ impl ToolContext {
             function_call_id: String::new(),
             working_dir,
             workspace_dir,
+            progress_tx: None,
+        }
+    }
+
+    /// Create a ToolContext with a progress reporting channel.
+    pub fn with_progress(mut self, tx: tokio::sync::mpsc::Sender<String>) -> Self {
+        self.progress_tx = Some(tx);
+        self
+    }
+
+    /// Report progress to the frontend. Non-blocking: drops the message if
+    /// the receiver is gone or the channel is full.
+    pub fn report_progress(&self, message: &str) {
+        if let Some(ref tx) = self.progress_tx {
+            let _ = tx.try_send(message.to_string());
         }
     }
 }

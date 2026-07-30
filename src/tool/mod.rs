@@ -308,6 +308,10 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_timeline::IrTimelineTool));
         // Linux IR — remote SSH-based incident response
         registry.register(Arc::new(ir_linux::IrLinuxTool));
+        // Linux IR — individual category tools (like Windows IR tools)
+        for tool in ir_linux::linux_ir_category_tools() {
+            registry.register(tool);
+        }
         let _ = working_dir;
         registry
     }
