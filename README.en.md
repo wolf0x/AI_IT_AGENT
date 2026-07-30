@@ -19,7 +19,7 @@ In traditional workflows, engineers constantly switch between tools — Event Vi
 
 **Why Fully Local**: Logs, process information, and registry data that IT engineers handle often contain sensitive internal network topology and credential information. RustAgent's AI conversation engine, tool execution, and data storage all run locally. API keys are encrypted with AES-256-GCM at rest. Only LLM inference requests are sent to the cloud model — raw system data never leaves the machine.
 
-A single Rust binary (~28MB) contains the complete AI conversation engine, tool execution layer, WebSocket gateway, and Web Dashboard — no additional runtime or external service dependencies required. Inspired by Google ADK's Agent → LlmAgent → EventStream architecture pattern, implementing a full Agentic Loop within the Rust ecosystem.
+A single Rust binary (~30+MB) contains the complete AI conversation engine, tool execution layer, WebSocket gateway, and Web Dashboard — no additional runtime or external service dependencies required. Inspired by Google ADK's Agent → LlmAgent → EventStream architecture pattern, implementing a full Agentic Loop within the Rust ecosystem.
 
 ## Core Architecture
 
