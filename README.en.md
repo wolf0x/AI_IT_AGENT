@@ -68,6 +68,10 @@ RustAgent implements a dual-layer security model: Category-based Gates + Intent 
   - **Block** (absolute prohibition): Disk formatting, security log clearing, encoded commands — irreversible operations hard-blocked regardless of any authorization state
   - **Audit** (logged pass-through): File deletion, process termination, service stops — high-risk but legitimate operations, logged then executed normally
   - **Pass** (silent pass-through): Read-only queries and routine operations
+- **Linux SSH Command Safety Policy**: Same IntentPolicy engine applied to `linux_ssh` remote commands. Parses bash/sh commands into structured intent (verb + targets), with Linux-specific rules:
+  - **Block**: Root filesystem destruction (`rm -rf /`), direct disk writes (`dd of=/dev/sda`), disk formatting (`mkfs`), security log destruction, fork bombs, bootloader modification
+  - **Audit**: File deletion (`rm`), process termination (`kill`), service control (`systemctl stop`), config writes, mount operations
+  - **Pass**: Read-only commands (`ps`, `ls`, `netstat`, `cat`, etc.)
 - **Cross-category bypass detection**: When shell_exec is pre-authorized (execute:true) but the command intent maps to a denied permission category (e.g., delete:false), automatically escalates to require user confirmation — prevents LLM from bypassing file_delete permission control via shell_exec
 - **Permission denial strong feedback**: On denial, returns strongly-worded error messages to the LLM prohibiting fallback to alternative tools
 
@@ -271,9 +275,11 @@ src/
 │   └── malware_*.rs     # Malware analysis (YARA + PE)
 ├── permission.rs        # Permission checker (category gates + async auth + cross-category bypass detection)
 ├── policy/              # Command Intent Policy Engine
-│   ├── mod.rs           # IntentPolicy (Block/Audit/Pass three-tier verdicts)
-│   ├── parse.rs         # Lightweight PS/CMD intent parser (verb + targets)
-│   └── rules.rs         # BlockRule (absolute prohibition) + AuditRule (audit logging)
+│   ├── mod.rs           # IntentPolicy + LinuxIntentPolicy (Block/Audit/Pass)
+│   ├── parse.rs         # Windows PS/CMD intent parser (verb + targets)
+│   ├── rules.rs         # Windows BlockRule + AuditRule
+│   ├── linux_parse.rs   # Linux bash/sh intent parser
+│   └── linux_rules.rs   # Linux BlockRule + AuditRule
 ├── memory.rs            # MemoryStore (SQLite + FTS5)
 ├── distill.rs           # Knowledge distillation engine
 ├── scheduler.rs         # CRON scheduler

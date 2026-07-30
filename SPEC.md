@@ -2532,9 +2532,9 @@ pub fn decrypt(maybe_encrypted: &str) -> String {
 
 ### 13.2 Command Intent Policy
 
-**Location**: `src/policy/mod.rs` (154 lines), `src/policy/parse.rs` (415 lines), `src/policy/rules.rs` (298 lines)
+**Location**: `src/policy/mod.rs` (222 lines), `src/policy/parse.rs` (415 lines), `src/policy/rules.rs` (298 lines), `src/policy/linux_parse.rs` (290 lines), `src/policy/linux_rules.rs` (279 lines)
 
-**Purpose**: Safety interlock layer for `shell_exec` that operates **independently** of the Permission system. While Permission answers "is this tool allowed?", IntentPolicy answers "is this specific command catastrophically dangerous?"
+**Purpose**: Safety interlock layer for `shell_exec` (Windows) and `linux_ssh` (Linux) that operates **independently** of the Permission system. While Permission answers "is this tool allowed?", IntentPolicy answers "is this specific command catastrophically dangerous?"
 
 **Design Principles**:
 - **Absolute Block**: irreversible operations with NO legitimate IR use case (the "fuse")
@@ -2657,6 +2657,80 @@ pub fn evaluate(&self, command: &str, shell: &str) -> IntentVerdict {
 
     // Phase 3: Normal
     IntentVerdict::Pass
+}
+```
+
+### 13.2.6 Linux Intent Policy (`linux_parse.rs` + `linux_rules.rs`)
+
+**Location**: `src/policy/linux_parse.rs` (290 lines), `src/policy/linux_rules.rs` (279 lines)
+
+**Purpose**: Same safety interlock pattern as Windows IntentPolicy, applied to `linux_ssh` remote commands. Parses bash/sh commands into structured intent for safety evaluation.
+
+#### Linux Parsed Intent
+
+```rust
+pub struct LinuxParsedIntent {
+    pub verb: LinuxVerb,           // Primary action verb
+    pub targets: Vec<String>,      // Target paths/devices extracted
+    pub raw_lower: String,         // Lowercased command
+    pub confidence: f64,           // 0.0 to 1.0
+    pub has_pipe_chain: bool,      // Contains pipe chains
+    pub has_device_redirect: bool, // Redirects to /dev/*
+}
+```
+
+**Linux Verb Categories**:
+| Verb | Meaning | Examples |
+|------|---------|----------|
+| `Delete` | Delete/remove files | `rm`, `unlink` |
+| `Format` | Format disk/partition | `mkfs.ext4`, `mke2fs`, `fdisk`, `parted` |
+| `DeviceWrite` | Write directly to device | `dd of=/dev/sda`, `shred /dev/sda` |
+| `Stop` | Stop/kill process | `kill`, `pkill`, `systemctl stop` |
+| `Disable` | Disable service/firewall | `systemctl disable`, `ufw disable` |
+| `Write` | Modify system config | `echo > /etc/*`, `sed -i`, `tee /etc/*` |
+| `Read` | Read/query information | `ls`, `cat`, `ps`, `netstat`, `grep`, `find` |
+| `ClearLog` | Clear/truncate logs | `rm /var/log/*`, `truncate /var/log/*` |
+| `Mount` | Mount/unmount filesystems | `mount`, `umount` |
+| `Execute` | Execute/run a program | `systemctl start`, `apt`, `chmod` |
+
+#### Linux Block Rules (Absolute Interlock)
+
+| Rule Name | Pattern | Explanation |
+|-----------|---------|-------------|
+| `rm_rf_root` | `rm -rf /` or `rm -r /` | Root filesystem destruction |
+| `dd_to_disk` | `verb == DeviceWrite` | Direct write to disk device |
+| `format_disk` | `verb == Format` | Disk/partition format operation |
+| `destroy_security_logs` | `/var/log/auth` + `rm/truncate` | Security audit log destruction |
+| `grub_destroy` | `grub` | Bootloader modification/destruction |
+| `kernel_panic` | `echo c > /proc/sysrq-trigger` | Kernel panic trigger |
+| `force_reboot` | `echo b > /proc/sysrq-trigger` | Force reboot trigger |
+| `fork_bomb` | `:(){ :|:& };:` | Fork bomb detection |
+| `null_to_disk` | `dd if=/dev/null of=/dev/` | Overwrite disk with /dev/null |
+
+#### Linux Audit Rules (High-Risk Logging)
+
+| Category | Matcher | Description |
+|----------|---------|-------------|
+| `file_deletion` | `verb == Delete` | File/directory deletion |
+| `process_stop` | `verb == Stop` | Process termination |
+| `disable_operation` | `verb == Disable` | Service/firewall disable |
+| `config_write` | `verb == Write` | System config modification |
+| `log_clear` | `verb == ClearLog` | Log clearing (non-security) |
+| `mount_operation` | `verb == Mount` | Mount/unmount operations |
+| `unparseable_command` | `confidence < 0.5 && verb == Unknown` | Low-confidence commands |
+
+#### Integration in `linux_ssh.rs`
+
+```rust
+let policy = LinuxIntentPolicy::new();
+match policy.evaluate(command) {
+    LinuxIntentVerdict::Block { reason } => {
+        return Err(format!("BLOCKED (safety interlock): {}", reason).into());
+    }
+    LinuxIntentVerdict::Audit { reason } => {
+        tracing::warn!("[AUDIT] linux_ssh high-risk: {}", reason);
+    }
+    LinuxIntentVerdict::Pass => { /* silent */ }
 }
 ```
 
@@ -3313,9 +3387,11 @@ Complete mapping of all source files to their responsibilities:
 | `src/context.rs` | 248 | Context hierarchy with parent-child value inheritance |
 | `src/session.rs` | 140 | Session struct + SessionService trait + InMemorySessionService |
 | `src/callbacks.rs` | 146 | 7 callback traits + AgentCallbacks container |
-| `src/policy/mod.rs` | 154 | IntentPolicy engine: Block/Audit/Pass verdicts |
-| `src/policy/parse.rs` | 415 | Command intent parser: verb classification, target extraction |
-| `src/policy/rules.rs` | 298 | Block rules (13 absolute interlocks) + Audit rules (7 categories) |
+| `src/policy/mod.rs` | 222 | IntentPolicy + LinuxIntentPolicy engines: Block/Audit/Pass verdicts |
+| `src/policy/parse.rs` | 415 | Windows command intent parser: verb classification, target extraction |
+| `src/policy/rules.rs` | 298 | Windows Block rules (13 absolute interlocks) + Audit rules (7 categories) |
+| `src/policy/linux_parse.rs` | 290 | Linux bash/sh intent parser: LinuxVerb classification, device/path extraction |
+| `src/policy/linux_rules.rs` | 279 | Linux Block rules (9 absolute interlocks) + Audit rules (7 categories) |
 
 ### 25.2 Agent System
 
@@ -3354,6 +3430,7 @@ Complete mapping of all source files to their responsibilities:
 | `src/tool/todo_update.rs` | 214 | TODO list management (set/update/clear/list) |
 | `src/tool/mcp_client.rs` | 295 | MCP client: stdio + HTTP transport, tool proxy, hot-swap |
 | `src/tool/external_exec.rs` | 224 | External tool executor: wraps workspace/tools/ as ext_{name} tools |
+| `src/tool/linux_ssh.rs` | 539 | SSH command execution for remote Linux hosts + IntentPolicy safety |
 
 ### 25.5 Incident Response Tools
 

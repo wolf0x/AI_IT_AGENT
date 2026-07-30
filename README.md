@@ -68,6 +68,10 @@ RustAgent 实现了分类门控（Category-based Gates）+ 意图策略（Intent
   - **Block**（绝对禁止）：磁盘格式化、安全日志清除、编码命令等不可逆操作，无视任何授权状态硬拦截
   - **Audit**（审计放行）：文件删除、进程终止、服务停止等高危但合法操作，记录日志后正常执行
   - **Pass**（静默放行）：只读查询等常规操作
+- **Linux SSH 命令安全策略**：同样的 IntentPolicy 引擎应用于 `linux_ssh` 远程命令。解析 bash/sh 命令为结构化意图（verb + targets），Linux 专用规则：
+  - **Block**：根文件系统销毁（`rm -rf /`）、磁盘直写（`dd of=/dev/sda`）、磁盘格式化（`mkfs`）、安全日志销毁、Fork 炸弹、引导加载器修改
+  - **Audit**：文件删除（`rm`）、进程终止（`kill`）、服务控制（`systemctl stop`）、配置写入、挂载操作
+  - **Pass**：只读命令（`ps`、`ls`、`netstat`、`cat` 等）
 - **跨类别绕过检测**：当 shell_exec 已免确认（execute:true）但命令意图映射到被拒绝的权限类别（如 delete:false）时，自动升级为需要用户确认，防止 LLM 通过 shell_exec 绕过 file_delete 权限控制
 - **权限拒绝强反馈**：拒绝时向 LLM 返回强措辞错误消息，禁止使用替代工具绕过
 
@@ -271,9 +275,11 @@ src/
 │   └── malware_*.rs     # 恶意软件分析（YARA + PE）
 ├── permission.rs        # 权限检查器（分类门控 + 异步授权 + 跨类别绕过检测）
 ├── policy/              # 命令意图策略引擎
-│   ├── mod.rs           # IntentPolicy（Block/Audit/Pass 三级判定）
-│   ├── parse.rs         # 轻量 PS/CMD 意图解析器（verb + targets）
-│   └── rules.rs         # BlockRule（绝对禁止）+ AuditRule（审计日志）
+│   ├── mod.rs           # IntentPolicy + LinuxIntentPolicy（Block/Audit/Pass）
+│   ├── parse.rs         # Windows PS/CMD 意图解析器（verb + targets）
+│   ├── rules.rs         # Windows BlockRule + AuditRule
+│   ├── linux_parse.rs   # Linux bash/sh 意图解析器
+│   └── linux_rules.rs   # Linux BlockRule + AuditRule
 ├── memory.rs            # MemoryStore（SQLite + FTS5）
 ├── distill.rs           # 知识蒸馏引擎
 ├── scheduler.rs         # CRON 调度器
