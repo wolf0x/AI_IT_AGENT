@@ -335,6 +335,7 @@ impl Tool for SshExecTool {
 
     fn description(&self) -> &str {
         "Execute commands on remote Linux/Unix hosts via SSH. Returns stdout, stderr, and exit code.\n\n\
+         IMPORTANT: ALWAYS use this tool for remote SSH commands. DO NOT use shell_exec with ssh/sshpass.\n\n\
          Use this tool to:\n\
          - Run arbitrary Linux commands on remote hosts\n\
          - Check system status, logs, configurations\n\

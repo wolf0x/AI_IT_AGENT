@@ -13,7 +13,8 @@ pub struct ShellExecTool;
 impl Tool for ShellExecTool {
     fn name(&self) -> &str { "shell_exec" }
     fn description(&self) -> &str {
-        "Execute a command in PowerShell or CMD. Returns stdout, stderr, and exit code. Use shell='powershell' (default) or shell='cmd'."
+        "Execute a command in PowerShell or CMD. Returns stdout, stderr, and exit code. Use shell='powershell' (default) or shell='cmd'.\n\n\
+         IMPORTANT: DO NOT use this tool for SSH commands to remote Linux/Unix hosts. Use the 'linux_ssh' tool instead."
     }
     fn is_builtin(&self) -> bool { true }
     fn parameters_schema(&self) -> Value {
