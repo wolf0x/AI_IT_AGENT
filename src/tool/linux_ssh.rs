@@ -100,11 +100,28 @@ impl SshClient {
 
         let handler = ClientHandler { accept_all: true };
 
-        // Connect TCP + SSH handshake
+        // Connect TCP + SSH handshake (with timeout to avoid long hangs on unreachable hosts)
         let addr = (self.config.host.as_str(), self.config.port);
-        let mut session = client::connect(Arc::new(config), addr, handler)
-            .await
-            .map_err(|e| SshError::Connection(format!("SSH connect failed: {}", e)))?;
+        let connect_timeout = Duration::from_secs(std::cmp::min(self.config.timeout_secs, 10));
+        let mut session = match tokio::time::timeout(
+            connect_timeout,
+            client::connect(Arc::new(config), addr, handler),
+        )
+        .await
+        {
+            Ok(Ok(sess)) => sess,
+            Ok(Err(e)) => {
+                return Err(SshError::Connection(format!("SSH connect failed: {}", e)));
+            }
+            Err(_) => {
+                return Err(SshError::Timeout(format!(
+                    "SSH connection to {}:{} timed out after {}s",
+                    self.config.host,
+                    self.config.port,
+                    connect_timeout.as_secs()
+                )));
+            }
+        };
 
         // Authenticate
         match &self.config.auth {

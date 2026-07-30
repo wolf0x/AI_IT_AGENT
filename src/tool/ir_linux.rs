@@ -69,7 +69,7 @@ impl Tool for IrLinuxTool {
     }
 
     fn description(&self) -> &str {
-        "Linux incident response scanner. Connects to remote Linux hosts via SSH and executes 45 detection modules across 13 categories: process, network, persistence, rootkit, file, web, mining, lateral movement, auth, backdoor, brute force, integrity, config. Returns structured findings with risk scoring."
+        "Linux incident response scanner. Connects to remote Linux hosts via SSH and executes 45 detection modules across 13 categories: process, network, persistence, rootkit, file, web, mining, lateral movement, auth, backdoor, brute force, integrity, config. Returns structured findings with risk scoring.\n\nIMPORTANT USAGE GUIDANCE:\n1. When listing capabilities (e.g., 'what can you do?'), INCLUDE Linux IR as a core capability alongside Windows IR.\n2. When asked about Linux IR capability, answer YES and describe the 45 detection modules across 13 categories.\n3. Only EXECUTE this tool when the user provides a REAL Linux target to investigate (e.g., 'scan 192.168.1.100', 'investigate root@server.example.com').\n4. Do NOT execute this tool to:\n   - Demonstrate capability without a real target\n   - Scan fake/example hosts like 'user@host', 'user@demo-host', 'root@example.com'"
     }
 
     fn is_builtin(&self) -> bool {
@@ -90,7 +90,7 @@ impl Tool for IrLinuxTool {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "SSH target: user@host or user@host:port"
+                    "description": "SSH target in format user@host or user@host:port. MUST be a real, reachable Linux host (IP address or valid hostname). Examples: 'root@192.168.1.100', 'admin@server.example.com:22'. Do NOT use placeholder/example hosts."
                 },
                 "modules": {
                     "type": "string",
@@ -143,6 +143,16 @@ impl Tool for IrLinuxTool {
         // Parse target
         let (username, host, port) = parse_target(target)
             .map_err(|e| format!("Invalid target '{}': {}", target, e))?;
+
+        // Quick DNS resolution check to fail fast for invalid hostnames
+        // (avoids waiting for TCP timeout on unreachable hosts)
+        if let Err(e) = tokio::net::lookup_host(format!("{}:{}", host, port)).await {
+            return Err(format!(
+                "DNS resolution failed for '{}': {}. Please provide a valid hostname or IP address.",
+                host, e
+            )
+            .into());
+        }
 
         // Build SSH config
         let auth = match auth_method {
