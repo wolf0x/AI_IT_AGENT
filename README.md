@@ -19,7 +19,7 @@ RustAgent 专为本地 IT 系统工程师设计，解决日常运维中最耗时
 
 **为什么完全本地**：IT 工程师处理的日志、进程信息、注册表数据往往包含敏感的内网拓扑和凭据信息。RustAgent 的 AI 对话引擎、工具执行、数据存储全部在本地完成，API 密钥 AES-256-GCM 加密存储，只有 LLM 推理请求发往云端模型——原始系统数据不出本机。
 
-单个 Rust 编译产物（~28MB）即包含完整的 AI 对话引擎、工具执行层、WebSocket 网关和 Web Dashboard，无需安装额外运行时或外部服务依赖。灵感来源于 Google ADK 的 Agent → LlmAgent → EventStream 架构模式，在 Rust 生态中实现了完整的 Agentic Loop。
+单个 Rust 编译产物（~30+MB）即包含完整的 AI 对话引擎、工具执行层、WebSocket 网关和 Web Dashboard，无需安装额外运行时或外部服务依赖。灵感来源于 Google ADK 的 Agent → LlmAgent → EventStream 架构模式，在 Rust 生态中实现了完整的 Agentic Loop。
 
 ## 核心架构
 
