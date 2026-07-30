@@ -312,6 +312,8 @@ impl ToolRegistry {
         for tool in ir_linux::linux_ir_category_tools() {
             registry.register(tool);
         }
+        // General-purpose SSH command execution (like shell_exec for remote Linux)
+        registry.register(Arc::new(linux_ssh::SshExecTool));
         let _ = working_dir;
         registry
     }
