@@ -84,10 +84,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         info!("Workspace directory: {}", workspace_dir);
     }
-    let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output", "knowledge"];
+    let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output", "knowledge", "rules"];
     for sub in &ws_subdirs {
         let p = std::path::Path::new(&workspace_dir).join(sub);
         let _ = std::fs::create_dir_all(&p);
+    }
+
+    // Extract embedded YARA rules to workspace/rules/ on first run
+    let rules_dir = std::path::Path::new(&workspace_dir).join("rules");
+    if let Err(e) = tool::malware_analysis::ensure_rules(&rules_dir) {
+        tracing::warn!("Failed to extract YARA rules: {}", e);
     }
 
     // Load config from workspace (generates default config.toml on first run)
