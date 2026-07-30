@@ -321,6 +321,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
+use crate::policy::{LinuxIntentPolicy, LinuxIntentVerdict};
 use super::Tool;
 
 /// SSH command execution tool — connect to remote Linux hosts and run commands.
@@ -403,6 +404,31 @@ impl Tool for SshExecTool {
         let command = args["command"]
             .as_str()
             .ok_or("Missing required parameter: command")?;
+
+        // ── Intent Policy evaluation (safety interlock for Linux commands) ──
+        // This layer operates independently of the Permission system:
+        // - Block: catastrophic irreversible ops → hard reject regardless of permissions
+        // - Audit: high-risk but legitimate → log and proceed
+        // - Pass: normal → silent
+        let policy = LinuxIntentPolicy::new();
+        match policy.evaluate(command) {
+            LinuxIntentVerdict::Block { reason } => {
+                return Err(format!(
+                    "BLOCKED (safety interlock): {}. \
+                     This operation is irreversible and cannot be executed through RustAgent. \
+                     If you truly need this, execute it manually outside the agent.",
+                    reason
+                ).into());
+            }
+            LinuxIntentVerdict::Audit { reason } => {
+                tracing::warn!(
+                    "[AUDIT] linux_ssh high-risk: {} | target={} | command={}",
+                    reason, target, command
+                );
+                // Proceed — user has authorized via Permission gate or accepts risk
+            }
+            LinuxIntentVerdict::Pass => { /* silent */ }
+        }
 
         let auth_method = args["auth_method"].as_str().unwrap_or("key");
         let password = args["password"].as_str();
