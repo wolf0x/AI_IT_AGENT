@@ -127,10 +127,10 @@ impl HiveFile {
             }
             0x6972 => {
                 // "ri" — indirect: count(2) + [offset(4)]... each pointing to lf/lh
-                let count = read_u16(&self.data, list_abs + 4).unwrap_or(0);
+                let count = read_u16(&self.data, list_abs + 6).unwrap_or(0);
                 let mut names = Vec::new();
                 for i in 0..count.min(200) {
-                    let sub_list_off = read_u32(&self.data, list_abs + 6 + (i as usize) * 4).unwrap_or(0);
+                    let sub_list_off = read_u32(&self.data, list_abs + 8 + (i as usize) * 4).unwrap_or(0);
                     let sub_abs = self.hive_data_start() + sub_list_off as usize;
                     if sub_abs + 6 <= self.data.len() {
                         let mut sub = self.enum_lf_lh(sub_abs);
@@ -141,10 +141,10 @@ impl HiveFile {
             }
             0x696C => {
                 // "li" — direct list: count(2) + [offset(4)]...
-                let count = read_u16(&self.data, list_abs + 4).unwrap_or(0);
+                let count = read_u16(&self.data, list_abs + 6).unwrap_or(0);
                 let mut names = Vec::new();
                 for i in 0..count.min(200) {
-                    let child_off = read_u32(&self.data, list_abs + 6 + (i as usize) * 4).unwrap_or(0);
+                    let child_off = read_u32(&self.data, list_abs + 8 + (i as usize) * 4).unwrap_or(0);
                     let child_abs = self.hive_data_start() + child_off as usize;
                     if let Some(name) = self.nk_name(child_abs) {
                         names.push(name);
@@ -190,9 +190,9 @@ impl HiveFile {
         match list_sig {
             0x686C | 0x666C => {
                 // lh/lf
-                let count = read_u16(&self.data, list_abs + 4).unwrap_or(0);
+                let count = read_u16(&self.data, list_abs + 6).unwrap_or(0);
                 for i in 0..count.min(200) {
-                    let child_off = read_u32(&self.data, list_abs + 6 + (i as usize) * 8).unwrap_or(0);
+                    let child_off = read_u32(&self.data, list_abs + 8 + (i as usize) * 8).unwrap_or(0);
                     let child_abs = self.hive_data_start() + child_off as usize;
                     if let Some(child_name) = self.nk_name(child_abs) {
                         if child_name.to_lowercase() == name_lower {
@@ -204,9 +204,9 @@ impl HiveFile {
             }
             0x6972 => {
                 // ri — indirect
-                let count = read_u16(&self.data, list_abs + 4).unwrap_or(0);
+                let count = read_u16(&self.data, list_abs + 6).unwrap_or(0);
                 for i in 0..count.min(200) {
-                    let sub_list_off = read_u32(&self.data, list_abs + 6 + (i as usize) * 4).unwrap_or(0);
+                    let sub_list_off = read_u32(&self.data, list_abs + 8 + (i as usize) * 4).unwrap_or(0);
                     let sub_abs = self.hive_data_start() + sub_list_off as usize;
                     if sub_abs + 6 <= self.data.len() {
                         if let Some(off) = self.find_subkey_in_lf_lh(sub_abs, name_lower.as_str()) {
@@ -218,9 +218,9 @@ impl HiveFile {
             }
             0x696C => {
                 // li
-                let count = read_u16(&self.data, list_abs + 4).unwrap_or(0);
+                let count = read_u16(&self.data, list_abs + 6).unwrap_or(0);
                 for i in 0..count.min(200) {
-                    let child_off = read_u32(&self.data, list_abs + 6 + (i as usize) * 4).unwrap_or(0);
+                    let child_off = read_u32(&self.data, list_abs + 8 + (i as usize) * 4).unwrap_or(0);
                     let child_abs = self.hive_data_start() + child_off as usize;
                     if let Some(child_name) = self.nk_name(child_abs) {
                         if child_name.to_lowercase() == name_lower {
@@ -235,9 +235,9 @@ impl HiveFile {
     }
 
     fn find_subkey_in_lf_lh(&self, list_abs: usize, name_lower: &str) -> Option<usize> {
-        let count = read_u16(&self.data, list_abs + 4).unwrap_or(0);
+        let count = read_u16(&self.data, list_abs + 6).unwrap_or(0);
         for i in 0..count.min(200) {
-            let child_off = read_u32(&self.data, list_abs + 6 + (i as usize) * 8).unwrap_or(0);
+            let child_off = read_u32(&self.data, list_abs + 8 + (i as usize) * 8).unwrap_or(0);
             let child_abs = self.hive_data_start() + child_off as usize;
             if let Some(child_name) = self.nk_name(child_abs) {
                 if child_name.to_lowercase() == name_lower {
@@ -249,10 +249,10 @@ impl HiveFile {
     }
 
     fn enum_lf_lh(&self, list_abs: usize) -> Vec<String> {
-        let count = read_u16(&self.data, list_abs + 4).unwrap_or(0);
+        let count = read_u16(&self.data, list_abs + 6).unwrap_or(0);
         let mut names = Vec::new();
         for i in 0..count.min(200) {
-            let child_off = read_u32(&self.data, list_abs + 6 + (i as usize) * 8).unwrap_or(0);
+            let child_off = read_u32(&self.data, list_abs + 8 + (i as usize) * 8).unwrap_or(0);
             let child_abs = self.hive_data_start() + child_off as usize;
             if let Some(name) = self.nk_name(child_abs) {
                 names.push(name);

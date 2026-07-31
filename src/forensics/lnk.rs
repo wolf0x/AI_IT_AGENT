@@ -122,15 +122,9 @@ pub fn parse_lnk(data: &[u8]) -> Option<LnkEntry> {
     }
 
     // Parse StringData (order: Name, RelativePath, WorkingDir, Arguments, IconLocation)
-    let string_flags = [
-        (HAS_NAME, &mut entry.file_name.clone()),
-        (HAS_RELATIVE_PATH, &mut entry.relative_path.clone()),
-        (HAS_WORKING_DIR, &mut entry.working_dir.clone()),
-        (HAS_ARGUMENTS, &mut entry.arguments.clone()),
-        (HAS_ICON_LOCATION, &mut entry.icon_location.clone()),
-    ];
+    let string_flags = [HAS_NAME, HAS_RELATIVE_PATH, HAS_WORKING_DIR, HAS_ARGUMENTS, HAS_ICON_LOCATION];
     let mut string_results: Vec<(u32, String)> = Vec::new();
-    for (flag, _) in &string_flags {
+    for flag in &string_flags {
         if flags & *flag != 0 {
             if let Some((s, new_pos)) = parse_string_data(data, pos, flags & IS_UNICODE != 0) {
                 string_results.push((*flag, s));

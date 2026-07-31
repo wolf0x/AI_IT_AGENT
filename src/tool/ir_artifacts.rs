@@ -87,30 +87,35 @@ impl IrArtifactsTool {
     async fn run_all(&self, limit: usize, days: u32, custom_path: Option<&str>) -> Value {
         let mut results = serde_json::Map::new();
 
-        // Run all parsers concurrently where possible
-        let prefetch = tokio::task::spawn_blocking({
+        // Spawn all parsers concurrently, then await all handles
+        let prefetch_handle = tokio::task::spawn_blocking({
             let p = custom_path.map(String::from);
             move || Self::parse_prefetch(limit, p.as_deref())
-        })
-        .await;
+        });
 
-        let amcache = tokio::task::spawn_blocking({
+        let amcache_handle = tokio::task::spawn_blocking({
             let p = custom_path.map(String::from);
             move || Self::parse_amcache(limit, p.as_deref())
-        })
-        .await;
+        });
 
-        let shimcache = tokio::task::spawn_blocking(move || Self::parse_shimcache(limit)).await;
+        let shimcache_handle = tokio::task::spawn_blocking(move || Self::parse_shimcache(limit));
 
-        let lnk = tokio::task::spawn_blocking({
+        let lnk_handle = tokio::task::spawn_blocking({
             let p = custom_path.map(String::from);
             move || Self::parse_lnk(limit, p.as_deref())
-        })
-        .await;
+        });
 
-        let userassist = tokio::task::spawn_blocking(move || Self::parse_userassist(limit)).await;
+        let userassist_handle = tokio::task::spawn_blocking(move || Self::parse_userassist(limit));
 
-        let browser = tokio::task::spawn_blocking(move || Self::parse_browser(days, limit)).await;
+        let browser_handle = tokio::task::spawn_blocking(move || Self::parse_browser(days, limit));
+
+        // Await all handles (they run in parallel on the blocking pool)
+        let prefetch = prefetch_handle.await;
+        let amcache = amcache_handle.await;
+        let shimcache = shimcache_handle.await;
+        let lnk = lnk_handle.await;
+        let userassist = userassist_handle.await;
+        let browser = browser_handle.await;
 
         // Collect results, tolerating individual failures
         if let Ok(Ok(v)) = prefetch {
@@ -199,7 +204,7 @@ impl IrArtifactsTool {
         let path = custom_path.unwrap_or(default_path);
         
         // Copy to temp to avoid file lock (Amcache.hve is locked by the system)
-        let tmp_path = std::env::temp_dir().join("Amcache_rustagent.hve");
+        let tmp_path = std::env::temp_dir().join(format!("Amcache_{}.hve", uuid::Uuid::new_v4()));
         let hive = if custom_path.is_none() {
             std::fs::copy(path, &tmp_path)
                 .map_err(|e| format!("Cannot copy Amcache.hve (admin required?): {}", e))?;

@@ -142,7 +142,7 @@ mod live_tests {
         use crate::forensics::regapi;
         let data = match regapi::read_binary_value(
             "HKLM",
-            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\AppCompatibility",
+            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\AppCompatCache",
             "AppCompatCache",
         ) {
             Some(d) => d,
