@@ -14,7 +14,7 @@ const PS_PREFIX: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF
 impl Tool for IrPersistenceTool {
     fn name(&self) -> &str { "ir_persistence" }
     fn description(&self) -> &str {
-        "Incident response persistence enumeration. Checks autoruns (registry Run keys, startup folder), scheduled tasks, services, WMI subscriptions, and startup directories for persistence mechanisms."
+        "Incident response persistence enumeration. Checks autoruns (Run keys, startup folder), scheduled tasks, services, WMI subscriptions, startup directories, deep registry persistence (ServiceDlls, AppInit_DLLs, Winlogon, SilentProcessExit, AutodialDLL, .NET hooks, AMSI, AppCertDlls), and LSA packages (extensions, password filters, auth/security packages). Uses Authenticode signature checks to filter Microsoft-signed binaries."
     }
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { true }
@@ -24,8 +24,8 @@ impl Tool for IrPersistenceTool {
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["all", "autoruns", "tasks", "services", "wmi", "startup"],
-                    "description": "Which persistence category to check (default 'all')"
+                    "enum": ["all", "autoruns", "tasks", "services", "wmi", "startup", "registry_deep", "lsa"],
+                    "description": "Which persistence category to check (default 'all'). registry_deep: DLL hijacking, Winlogon, SilentProcessExit, AMSI, .NET hooks. lsa: LSASS-loaded packages."
                 }
             }
         })
@@ -35,7 +35,7 @@ impl Tool for IrPersistenceTool {
         let category = args["category"].as_str().unwrap_or("all");
 
         let categories: Vec<&str> = if category == "all" {
-            vec!["autoruns", "tasks", "services", "wmi", "startup"]
+            vec!["autoruns", "tasks", "services", "wmi", "startup", "registry_deep", "lsa"]
         } else {
             vec![category]
         };
@@ -48,6 +48,8 @@ impl Tool for IrPersistenceTool {
                 "services" => script_services(),
                 "wmi" => script_wmi(),
                 "startup" => script_startup(),
+                "registry_deep" => script_registry_deep(),
+                "lsa" => script_lsa(),
                 _ => { combined.push_str(&format!("=== Unknown category: {} ===\n", cat)); continue; }
             };
             let full = format!("{}{}", PS_PREFIX, script);
@@ -141,6 +143,83 @@ Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Exe
   if ($debugger) { [PSCustomObject]@{Key=$_.PSChildName; Debugger=$debugger} }
 } | Format-Table -AutoSize
 "#.to_string()
+}
+
+/// Helper: returns $true if the file exists and is NOT a Microsoft OS binary.
+/// Used to filter out legitimate signed DLLs and reduce false positives.
+const PS_IS_UNSAFE: &str = r#"function IsUnsafe($p){if([string]::IsNullOrWhiteSpace($p)){return $false};$p=[Environment]::ExpandEnvironmentVariables($p);if(-not [IO.Path]::IsPathRooted($p)){$p="C:\Windows\System32\$p"};if(Test-Path $p){return -not (Get-AuthenticodeSignature $p).IsOSBinary};return $true}"#;
+
+fn script_registry_deep() -> String {
+    format!(r#"
+$ErrorActionPreference='SilentlyContinue'
+{}
+"=== ServiceDlls (svchost DLL hijacking) ==="
+Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services' -ErrorAction SilentlyContinue | ForEach-Object {{
+  $img = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).ImagePath
+  if ($img -and $img -like '*svchost*') {{
+    $sd = $null
+    if (Test-Path "$($_.PSPath)\Parameters") {{ $sd = (Get-ItemProperty "$($_.PSPath)\Parameters" -ErrorAction SilentlyContinue).ServiceDll }}
+    else {{ $sd = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).ServiceDll }}
+    if ($sd -and (IsUnsafe $sd)) {{ [PSCustomObject]@{{Service=$_.PSChildName; ServiceDll=$sd}} }}
+  }}
+}} | Format-Table -AutoSize
+"=== AppInit_DLLs (T1546.010) ==="
+$ai = (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Windows' -ErrorAction SilentlyContinue).AppInit_DLLs
+if ($ai) {{ "HKLM: $ai" }}
+$ai32 = (Get-ItemProperty 'HKLM:\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\Windows' -ErrorAction SilentlyContinue).AppInit_DLLs
+if ($ai32) {{ "Wow6432Node: $ai32" }}
+if (-not $ai -and -not $ai32) {{ "(not set)" }}
+"=== Winlogon Userinit (T1547.004) ==="
+$ui = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction SilentlyContinue).Userinit
+if ($ui -and $ui -ne 'C:\Windows\system32\userinit.exe,') {{ "[!] Non-default: $ui" }} else {{ "OK: $ui" }}
+"=== Winlogon Shell (T1547.004) ==="
+$sh = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction SilentlyContinue).Shell
+if ($sh -and $sh -ne 'explorer.exe') {{ "[!] Non-default: $sh" }} else {{ "OK: $sh" }}
+"=== Winlogon Notify Packages (T1547.004) ==="
+Get-ItemProperty 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Notify' -ErrorAction SilentlyContinue | ForEach-Object {{ $_.PSObject.Properties | Where-Object {{ $_.Name -notlike 'PS*' }} | Select-Object Name, @{{N='DLL';E={{$_.Value}}}} | Format-Table -AutoSize }}
+"=== SilentProcessExit Monitor (T1546.012) ==="
+Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit' -ErrorAction SilentlyContinue | ForEach-Object {{
+  $mp = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).MonitorProcess
+  if ($mp) {{ [PSCustomObject]@{{MonitoredApp=$_.PSChildName; MonitorProcess=$mp}} }}
+}} | Format-Table -AutoSize
+"=== AutodialDLL (Winsock injection) ==="
+$ad = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters' -ErrorAction SilentlyContinue).AutodialDLL
+if ($ad -and (IsUnsafe $ad)) {{ "[!] Non-MS AutodialDLL: $ad" }} elseif ($ad) {{ "OK (MS-signed): $ad" }} else {{ "(not set)" }}
+"=== .NET Startup Hooks (T1574.002) ==="
+$dh = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).DOTNET_STARTUP_HOOKS
+if ($dh) {{ "[!] System: $dh" }}
+$dhu = (Get-ItemProperty 'HKCU:\Environment' -ErrorAction SilentlyContinue).DOTNET_STARTUP_HOOKS
+if ($dhu) {{ "[!] User: $dhu" }}
+if (-not $dh -and -not $dhu) {{ "(not set)" }}
+"=== AMSI Providers (non-Microsoft) ==="
+$legit = '{{2781761E-28E0-4109-99FE-B9D127C57AFE}}'
+Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\AMSI\Providers' -ErrorAction SilentlyContinue | Where-Object {{ $_.PSChildName -ne $legit }} | ForEach-Object {{
+  $dll = (Get-ItemProperty "HKLM:\SOFTWARE\Classes\CLSID\$($_.PSChildName)\InprocServer32" -ErrorAction SilentlyContinue).'(Default)'
+  [PSCustomObject]@{{GUID=$_.PSChildName; DLL=$dll}}
+}} | Format-Table -AutoSize
+"=== AppCertDlls (T1574.009) ==="
+$ac = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -ErrorAction SilentlyContinue).AppCertDlls
+if ($ac) {{ foreach ($d in $ac) {{ if (IsUnsafe $d) {{ "[!] $d" }} }} }} else {{ "(not set)" }}
+"#, PS_IS_UNSAFE)
+}
+
+fn script_lsa() -> String {
+    format!(r#"
+$ErrorActionPreference='SilentlyContinue'
+{}
+"=== LSA Extensions (loaded by LSASS at boot) ==="
+$le = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\LsaExtensionConfig\LsaSrv' -ErrorAction SilentlyContinue).Extensions
+if ($le) {{ foreach ($d in ($le -split '\s+')) {{ if (IsUnsafe $d) {{ "[!] $d" }} }} }} else {{ "(not set)" }}
+"=== LSA Notification Packages / Password Filters (T1556.002) ==="
+$np = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -ErrorAction SilentlyContinue).'Notification Packages'
+if ($np) {{ foreach ($d in ($np -split '\s+')) {{ $p = "C:\Windows\System32\$d"; if (-not $p.EndsWith('.dll')) {{ $p += '.dll' }}; if (IsUnsafe $p) {{ "[!] $p" }} }} }} else {{ "(not set)" }}
+"=== LSA Authentication Packages (T1547.002) ==="
+$ap = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -ErrorAction SilentlyContinue).'Authentication Packages'
+if ($ap) {{ foreach ($d in ($ap -split '\s+')) {{ $p = "C:\Windows\System32\$d.dll"; if (IsUnsafe $p) {{ "[!] $p" }} }} }} else {{ "(not set)" }}
+"=== LSA Security Packages (T1547.005) ==="
+$sp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -ErrorAction SilentlyContinue).'Security Packages'
+if ($sp) {{ foreach ($d in (($sp -replace '"','') -split '\s+')) {{ if ($d -eq '') {{ continue }}; $p = "C:\Windows\System32\$d.dll"; if (IsUnsafe $p) {{ "[!] $p" }} }} }} else {{ "(not set)" }}
+"#, PS_IS_UNSAFE)
 }
 
 async fn run_ps_raw(cmd: &str) -> AgentResult<String> {
