@@ -119,6 +119,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/checkpoints", get(checkpoints_list_handler))
         .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
         .route("/api/settings/computer_use", post(computer_use_toggle_handler))
+        .route("/api/output/list", get(output_list_handler))
+        .route("/api/output/download/{filename}", get(output_download_handler))
+        .route("/api/output/open", post(output_open_handler))
         .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
 }
@@ -166,6 +169,96 @@ async fn workspace_file_handler(State(state): State<Arc<AppState>>, Path(path): 
             response
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// List the most recent output artifacts in workspace/output/ (max 5).
+async fn output_list_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let output_dir = std::path::Path::new(&state.workspace_dir).join("output");
+
+    let mut files: Vec<Value> = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(&output_dir).await {
+        let mut items: Vec<(String, u64, i64)> = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                if meta.is_file() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let size = meta.len();
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    items.push((name, size, mtime));
+                }
+            }
+        }
+        // Sort by modification time, newest first
+        items.sort_by(|a, b| b.2.cmp(&a.2));
+        for (name, size, mtime) in items.into_iter().take(5) {
+            files.push(json!({
+                "name": name,
+                "size": size,
+                "modified": mtime,
+                "url": format!("/workspace/output/{}", name),
+                "download": format!("/api/output/download/{}", name),
+            }));
+        }
+    }
+
+    Json(json!({ "files": files, "dir": output_dir.to_string_lossy() }))
+}
+
+/// Download an output artifact with Content-Disposition: attachment.
+async fn output_download_handler(
+    State(state): State<Arc<AppState>>,
+    Path(filename): Path<String>,
+) -> Response {
+    use axum::http::{header, StatusCode};
+
+    // Prevent path traversal — only allow a plain file name
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let file_path = std::path::Path::new(&state.workspace_dir)
+        .join("output")
+        .join(&filename);
+
+    match tokio::fs::read(&file_path).await {
+        Ok(data) => {
+            let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
+            let mut response = axum::body::Body::from(data).into_response();
+            response.headers_mut().insert(header::CONTENT_TYPE, mime.to_string().parse().unwrap());
+            let disposition = format!("attachment; filename=\"{}\"", filename);
+            response.headers_mut().insert(
+                header::CONTENT_DISPOSITION,
+                disposition.parse().unwrap(),
+            );
+            response
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Open the workspace/output folder in the system file explorer.
+async fn output_open_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let output_dir = std::path::Path::new(&state.workspace_dir).join("output");
+    if let Err(e) = std::fs::create_dir_all(&output_dir) {
+        return Json(json!({ "success": false, "error": format!("Failed to create output dir: {}", e) }));
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer.exe").arg(&output_dir).spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&output_dir).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = std::process::Command::new("xdg-open").arg(&output_dir).spawn();
+
+    match result {
+        Ok(_) => Json(json!({ "success": true, "dir": output_dir.to_string_lossy() })),
+        Err(e) => Json(json!({ "success": false, "error": format!("Failed to open folder: {}", e) })),
     }
 }
 

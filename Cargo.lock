@@ -2508,6 +2508,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prefetch-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "171bd6107a130a2198dc0435e698a67fd8baa2b98147458e5053a02c362dd30a"
+dependencies = [
+ "xpress-huffman",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3112,6 +3121,7 @@ dependencies = [
  "memmap2",
  "mime_guess",
  "pcap-parser",
+ "prefetch-core",
  "rayon",
  "regex",
  "reqwest",
@@ -5042,6 +5052,12 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "xpress-huffman"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3524c98a825aa6c40dea897e6008b533db6a18c8829c6cdc87ba9250dd0e9488"
 
 [[package]]
 name = "yoke"

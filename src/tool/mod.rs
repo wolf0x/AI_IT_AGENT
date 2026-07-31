@@ -21,6 +21,7 @@ pub mod ir_persistence;
 pub mod ir_network;
 pub mod ir_eventlog;
 pub mod ir_file;
+pub mod ir_artifacts;
 pub mod ir_driver;
 pub mod ir_analyzer;
 pub mod ir_report;
@@ -292,6 +293,7 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_network::IrNetworkTool));
         registry.register(Arc::new(ir_eventlog::IrEventLogTool));
         registry.register(Arc::new(ir_file::IrFileTool));
+        registry.register(Arc::new(ir_artifacts::IrArtifactsTool));
         registry.register(Arc::new(ir_driver::IrDriverTool));
         registry.register(Arc::new(ir_analyzer::IrAnalyzerTool));
         registry.register(Arc::new(ir_report::IrReportTool));

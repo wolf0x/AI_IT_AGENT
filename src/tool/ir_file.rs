@@ -14,7 +14,7 @@ const PS_PREFIX: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF
 impl Tool for IrFileTool {
     fn name(&self) -> &str { "ir_file" }
     fn description(&self) -> &str {
-        "File forensics: scan temp directories, downloads, recent executables, prefetch, alternate data streams (ADS), and compute file hashes. Returns risk-classified file listings."
+        "File forensics: scan temp directories, downloads, recent executables, alternate data streams (ADS), and compute file hashes. Returns risk-classified file listings. For Prefetch execution evidence, use ir_artifacts."
     }
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { true }
@@ -24,7 +24,7 @@ impl Tool for IrFileTool {
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["all", "temp", "downloads", "executables", "prefetch", "ads", "hash"],
+                    "enum": ["all", "temp", "downloads", "executables", "ads", "hash"],
                     "description": "File forensics category (default 'all')"
                 },
                 "path": {
@@ -51,7 +51,7 @@ impl Tool for IrFileTool {
         }
 
         let categories: Vec<&str> = if category == "all" {
-            vec!["temp", "downloads", "executables", "prefetch", "ads"]
+            vec!["temp", "downloads", "executables", "ads"]
         } else {
             vec![category]
         };
@@ -62,7 +62,6 @@ impl Tool for IrFileTool {
                 "temp" => script_temp(days),
                 "downloads" => script_downloads(days),
                 "executables" => script_executables(days),
-                "prefetch" => script_prefetch(),
                 "ads" => script_ads(),
                 _ => continue,
             };
@@ -164,29 +163,6 @@ foreach($root in $roots){{
 }}
 @($out) | Sort-Object lastWrite -Descending | Select-Object -First 180 | ConvertTo-Json -Depth 3 -Compress
 "#, days)
-}
-
-fn script_prefetch() -> String {
-    r#"
-$ErrorActionPreference='SilentlyContinue'
-$root = "$env:WINDIR\Prefetch"
-$out=@()
-if(Test-Path $root){
-  Get-ChildItem -Path $root -Filter *.pf -File -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 160 |
-    ForEach-Object {
-      $out+=[PSCustomObject]@{
-        name=$_.Name
-        path=$_.FullName
-        size=$_.Length
-        lastWrite=$_.LastWriteTime.ToString('o')
-        lastAccess=$_.LastAccessTime.ToString('o')
-      }
-    }
-}
-@($out) | ConvertTo-Json -Depth 3 -Compress
-"#.to_string()
 }
 
 fn script_ads() -> String {

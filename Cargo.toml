@@ -68,8 +68,11 @@ windows = { version = "0.58", features = [
     "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",
     "Win32_Foundation",
+    "Win32_System_Registry",
 ]}
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Windows prefetch file parser (MAM/Xpress-Huffman + SCCA)
+prefetch-core = "0.1"
 
 [build-dependencies]
 winresource = "0.1"
