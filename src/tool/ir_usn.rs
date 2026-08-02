@@ -113,6 +113,64 @@ extern "system" {
     ) -> i32;
 
     fn CloseHandle(hObject: isize) -> i32;
+
+    fn GetCurrentProcess() -> isize;
+
+    fn OpenProcessToken(
+        hProcess: isize,
+        dwDesiredAccess: u32,
+        phToken: *mut isize,
+    ) -> i32;
+
+    fn LookupPrivilegeValueW(
+        lpSystemName: *const (),
+        lpName: *const u16,
+        lpLuid: *mut i64,
+    ) -> i32;
+
+    fn AdjustTokenPrivileges(
+        hToken: isize,
+        bDisableAllPrivileges: i32,
+        pNewState: *const TokenPrivileges,
+        cbBufferLength: u32,
+        pPreviousState: *const (),
+        pReturnLength: *const (),
+    ) -> i32;
+}
+
+#[repr(C)]
+struct TokenPrivileges {
+    privilege_count: u32,
+    luid: i64,
+    attributes: u32,
+}
+
+const TOKEN_ADJUST_PRIVILEGES: u32 = 0x0020;
+const TOKEN_QUERY: u32 = 0x0008;
+const SE_PRIVILEGE_ENABLED: u32 = 0x0002;
+
+/// Enable SE_MANAGE_VOLUME_NAME on the current process token.
+/// Required for FSCTL_READ_USN_JOURNAL on non-elevated admin tokens.
+fn enable_manage_volume_privilege() {
+    unsafe {
+        let mut token: isize = 0;
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token) == 0 {
+            return;
+        }
+        let priv_name: Vec<u16> = "SeManageVolumePrivilege".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut luid: i64 = 0;
+        if LookupPrivilegeValueW(std::ptr::null(), priv_name.as_ptr(), &mut luid) == 0 {
+            CloseHandle(token);
+            return;
+        }
+        let tp = TokenPrivileges {
+            privilege_count: 1,
+            luid,
+            attributes: SE_PRIVILEGE_ENABLED,
+        };
+        AdjustTokenPrivileges(token, 0, &tp, mem::size_of::<TokenPrivileges>() as u32, std::ptr::null(), std::ptr::null());
+        CloseHandle(token);
+    }
 }
 
 // ============================================================
@@ -194,6 +252,7 @@ impl Tool for IrUsnTool {
 // ============================================================
 
 fn open_volume(volume: &str) -> Result<isize, String> {
+    enable_manage_volume_privilege();
     let path = format!("\\\\.\\{}", volume.trim_end_matches(':'));
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let handle = unsafe {
