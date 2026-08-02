@@ -51,6 +51,9 @@ pub mod linux_ir_bruteforce;
 pub mod linux_ir_integrity;
 pub mod linux_ir_config;
 pub mod ir_linux;
+pub mod ir_vss;
+pub mod ir_usn;
+pub mod ir_memdump;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -316,6 +319,10 @@ impl ToolRegistry {
         }
         // General-purpose SSH command execution (like shell_exec for remote Linux)
         registry.register(Arc::new(linux_ssh::SshExecTool));
+        // Forensic disk/memory tools
+        registry.register(Arc::new(ir_vss::IrVssTool));
+        registry.register(Arc::new(ir_usn::IrUsnTool));
+        registry.register(Arc::new(ir_memdump::IrMemdumpTool));
         let _ = working_dir;
         registry
     }
