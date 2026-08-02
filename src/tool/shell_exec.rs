@@ -72,6 +72,7 @@ impl Tool for ShellExecTool {
         };
 
         cmd.creation_flags(0x08000000);
+        cmd.kill_on_drop(true);
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout),

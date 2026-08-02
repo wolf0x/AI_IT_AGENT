@@ -83,20 +83,28 @@ struct FunctionChunk {
 
 impl OpenAiProvider {
     pub fn new(models: Vec<ModelConfig>) -> Self {
+        let insecure = std::env::var("RUST_AGENT_INSECURE_TLS").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
         let client = Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(insecure)
             .timeout(std::time::Duration::from_secs(180))  // 3 minute timeout for LLM requests
             .build()
             .expect("Failed to create HTTP client");
+        if insecure {
+            warn!("TLS certificate verification is DISABLED (RUST_AGENT_INSECURE_TLS=1)");
+        }
         Self { client, models: Arc::new(tokio::sync::RwLock::new(models)) }
     }
 
     pub fn new_with_shared(models: Arc<tokio::sync::RwLock<Vec<ModelConfig>>>) -> Self {
+        let insecure = std::env::var("RUST_AGENT_INSECURE_TLS").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
         let client = Client::builder()
-            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_certs(insecure)
             .timeout(std::time::Duration::from_secs(180))
             .build()
             .expect("Failed to create HTTP client");
+        if insecure {
+            warn!("TLS certificate verification is DISABLED (RUST_AGENT_INSECURE_TLS=1)");
+        }
         Self { client, models }
     }
 
@@ -203,7 +211,7 @@ impl OpenAiProvider {
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
         let mut tool_calls_map: Vec<ToolCallAccum> = Vec::new();
-        let mut buffer = String::new();
+        let mut byte_buf: Vec<u8> = Vec::new();
         let mut captured_usage: Option<crate::model::UsageMetadata> = None;
 
         // If the consumer (agent stream / WebSocket) drops the receiver, there is
@@ -217,12 +225,14 @@ impl OpenAiProvider {
                 Ok(b) => b,
                 Err(e) => { warn!("Stream chunk error: {}", e); break; }
             };
-            let text = String::from_utf8_lossy(&chunk_bytes);
-            buffer.push_str(&text);
+            byte_buf.extend_from_slice(&chunk_bytes);
 
-            while let Some(pos) = buffer.find('\n') {
-                let line = buffer[..pos].trim().to_string();
-                buffer = buffer[pos + 1..].to_string();
+            // Process complete lines (delimited by \n = 0x0A) from the byte buffer.
+            // This avoids corrupting multi-byte UTF-8 characters split across chunks.
+            while let Some(pos) = byte_buf.iter().position(|&b| b == b'\n') {
+                let line_bytes: Vec<u8> = byte_buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line_bytes);
+                let line = line.trim();
 
                 if line.is_empty() || line == "data: [DONE]" { continue; }
 
@@ -372,9 +382,31 @@ impl Llm for OpenAiProvider {
 
             let content = parsed["choices"][0]["message"]["content"]
                 .as_str().map(|s| s.to_string());
+
+            // Parse tool_calls from non-streamed response
+            let tool_calls: Vec<ToolCallDelta> = parsed["choices"][0]["message"]["tool_calls"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter().filter_map(|tc| {
+                        let id = tc["id"].as_str().unwrap_or_default().to_string();
+                        let name = tc["function"]["name"].as_str().unwrap_or_default().to_string();
+                        let arguments = tc["function"]["arguments"].as_str().unwrap_or_default().to_string();
+                        if name.is_empty() { return None; }
+                        Some(ToolCallDelta {
+                            id,
+                            call_type: "function".to_string(),
+                            function: FunctionCallDelta {
+                                name: Some(name),
+                                arguments: Some(arguments),
+                            },
+                        })
+                    }).collect()
+                })
+                .unwrap_or_default();
+
             let response = LlmResponse {
                 content,
-                tool_calls: vec![],
+                tool_calls,
                 finish_reason: parsed["choices"][0]["finish_reason"].as_str().map(|s| s.to_string()),
                 usage: None,
             };
@@ -385,7 +417,7 @@ impl Llm for OpenAiProvider {
         let byte_stream = resp.bytes_stream();
 
         let parsed_stream = async_stream::stream! {
-            let mut buf = String::new();
+            let mut byte_buf: Vec<u8> = Vec::new();
             let mut tc_map: Vec<ToolCallAccum> = Vec::new();
             let mut accumulated_content = String::new();
             let mut accumulated_reasoning = String::new();
@@ -400,12 +432,12 @@ impl Llm for OpenAiProvider {
                         return;
                     }
                 };
-                let text = String::from_utf8_lossy(&chunk_bytes);
-                buf.push_str(&text);
+                byte_buf.extend_from_slice(&chunk_bytes);
 
-                while let Some(pos) = buf.find('\n') {
-                    let line = buf[..pos].trim().to_string();
-                    buf = buf[pos + 1..].to_string();
+                while let Some(pos) = byte_buf.iter().position(|&b| b == b'\n') {
+                    let line_bytes: Vec<u8> = byte_buf.drain(..=pos).collect();
+                    let line = String::from_utf8_lossy(&line_bytes);
+                    let line = line.trim();
 
                     if line.is_empty() || line == "data: [DONE]" { continue; }
 

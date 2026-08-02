@@ -14,7 +14,7 @@ const PS_PREFIX: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF
 impl Tool for IrPersistenceTool {
     fn name(&self) -> &str { "ir_persistence" }
     fn description(&self) -> &str {
-        "Incident response persistence enumeration. Checks autoruns (Run keys, startup folder), scheduled tasks, services, WMI subscriptions, startup directories, deep registry persistence (ServiceDlls, AppInit_DLLs, Winlogon, SilentProcessExit, AutodialDLL, .NET hooks, AMSI, AppCertDlls), and LSA packages (extensions, password filters, auth/security packages). Uses Authenticode signature checks to filter Microsoft-signed binaries."
+        "Incident response persistence enumeration. Checks autoruns (Run keys, startup folder), scheduled tasks, services, WMI subscriptions, startup directories, deep registry persistence (ServiceDlls, AppInit_DLLs, Winlogon, SilentProcessExit, AutodialDLL, .NET hooks, AMSI, AppCertDlls), LSA packages (extensions, password filters, auth/security packages), COM hijacking (T1546.015), accessibility features (T1546.008), port monitors/time providers/print processors (T1547.010/T1547.003), browser extensions, and Office add-ins. Uses Authenticode signature checks to filter Microsoft-signed binaries."
     }
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { true }
@@ -24,8 +24,8 @@ impl Tool for IrPersistenceTool {
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["all", "autoruns", "tasks", "services", "wmi", "startup", "registry_deep", "lsa"],
-                    "description": "Which persistence category to check (default 'all'). registry_deep: DLL hijacking, Winlogon, SilentProcessExit, AMSI, .NET hooks. lsa: LSASS-loaded packages."
+                    "enum": ["all", "autoruns", "tasks", "services", "wmi", "startup", "registry_deep", "lsa", "com", "accessibility", "port_time", "browser", "office"],
+                    "description": "Which persistence category to check (default 'all'). registry_deep: DLL hijacking, Winlogon, SilentProcessExit, AMSI, .NET hooks. lsa: LSASS-loaded packages. com: COM object hijacking. accessibility: sethc/utilman/osk debugger hooks. port_time: port monitors, time providers, print processors. browser: Chrome/Edge/Firefox extensions. office: Office add-ins."
                 }
             }
         })
@@ -35,7 +35,7 @@ impl Tool for IrPersistenceTool {
         let category = args["category"].as_str().unwrap_or("all");
 
         let categories: Vec<&str> = if category == "all" {
-            vec!["autoruns", "tasks", "services", "wmi", "startup", "registry_deep", "lsa"]
+            vec!["autoruns", "tasks", "services", "wmi", "startup", "registry_deep", "lsa", "com", "accessibility", "port_time", "browser", "office"]
         } else {
             vec![category]
         };
@@ -50,6 +50,11 @@ impl Tool for IrPersistenceTool {
                 "startup" => script_startup(),
                 "registry_deep" => script_registry_deep(),
                 "lsa" => script_lsa(),
+                "com" => script_com(),
+                "accessibility" => script_accessibility(),
+                "port_time" => script_port_time(),
+                "browser" => script_browser(),
+                "office" => script_office(),
                 _ => { combined.push_str(&format!("=== Unknown category: {} ===\n", cat)); continue; }
             };
             let full = format!("{}{}", PS_PREFIX, script);
@@ -220,6 +225,262 @@ if ($ap) {{ foreach ($d in ($ap -split '\s+')) {{ $p = "C:\Windows\System32\$d.d
 $sp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -ErrorAction SilentlyContinue).'Security Packages'
 if ($sp) {{ foreach ($d in (($sp -replace '"','') -split '\s+')) {{ if ($d -eq '') {{ continue }}; $p = "C:\Windows\System32\$d.dll"; if (IsUnsafe $p) {{ "[!] $p" }} }} }} else {{ "(not set)" }}
 "#, PS_IS_UNSAFE)
+}
+
+fn script_com() -> String {
+    format!(r#"
+$ErrorActionPreference='SilentlyContinue'
+{}
+"=== COM Hijacking — HKCU overrides of HKLM CLSIDs (T1546.015) ==="
+$hkcu = Get-ChildItem 'HKCU:\Software\Classes\CLSID' -ErrorAction SilentlyContinue
+$count = 0
+foreach ($clsid in $hkcu) {{
+  $guid = $clsid.PSChildName
+  $hklmPath = "HKLM:\SOFTWARE\Classes\CLSID\$guid\InprocServer32"
+  $hkcuPath = "$($clsid.PSPath)\InprocServer32"
+  if ((Test-Path $hklmPath) -and (Test-Path $hkcuPath)) {{
+    $hklmDll = (Get-ItemProperty $hklmPath -ErrorAction SilentlyContinue).'(Default)'
+    $hkcuDll = (Get-ItemProperty $hkcuPath -ErrorAction SilentlyContinue).'(Default)'
+    if ($hkcuDll -and $hkcuDll -ne $hklmDll -and (IsUnsafe $hkcuDll)) {{
+      [PSCustomObject]@{{CLSID=$guid; HKCU_DLL=$hkcuDll; Original=$hklmDll}}
+      $count++
+    }}
+  }}
+  if ($count -ge 30) {{ break }}
+}}
+if ($count -eq 0) {{ "(no suspicious HKCU COM overrides found)" }}
+"=== COM LocalServer32 overrides (EXE hijacking) ==="
+$count2 = 0
+foreach ($clsid in $hkcu) {{
+  $guid = $clsid.PSChildName
+  $hklmPath = "HKLM:\SOFTWARE\Classes\CLSID\$guid\LocalServer32"
+  $hkcuPath = "$($clsid.PSPath)\LocalServer32"
+  if ((Test-Path $hklmPath) -and (Test-Path $hkcuPath)) {{
+    $hkcuExe = (Get-ItemProperty $hkcuPath -ErrorAction SilentlyContinue).'(Default)'
+    if ($hkcuExe -and (IsUnsafe $hkcuExe)) {{
+      [PSCustomObject]@{{CLSID=$guid; HKCU_EXE=$hkcuExe}}
+      $count2++
+    }}
+  }}
+  if ($count2 -ge 20) {{ break }}
+}}
+if ($count2 -eq 0) {{ "(no suspicious LocalServer32 overrides)" }}
+"=== TreatAs / ProgID redirects ==="
+$count3 = 0
+foreach ($clsid in $hkcu) {{
+  $guid = $clsid.PSChildName
+  $treatAs = Get-ItemProperty "$($clsid.PSPath)\TreatAs" -ErrorAction SilentlyContinue
+  if ($treatAs -and $treatAs.'(Default)') {{
+    $target = $treatAs.'(Default)'
+    $targetDll = (Get-ItemProperty "HKCU:\Software\Classes\CLSID\$target\InprocServer32" -ErrorAction SilentlyContinue).'(Default)'
+    if ($targetDll -and (IsUnsafe $targetDll)) {{
+      [PSCustomObject]@{{CLSID=$guid; TreatAs=$target; DLL=$targetDll}}
+      $count3++
+    }}
+  }}
+  if ($count3 -ge 10) {{ break }}
+}}
+if ($count3 -eq 0) {{ "(no suspicious TreatAs redirects)" }}
+"#, PS_IS_UNSAFE)
+}
+
+fn script_accessibility() -> String {
+    format!(r#"
+$ErrorActionPreference='SilentlyContinue'
+{}
+"=== Accessibility Feature Hijacking (T1546.008) ==="
+$targets = @('sethc.exe','utilman.exe','osk.exe','magnify.exe','narrator.exe','displayswitch.exe','atbroker.exe','DisplaySwitch.exe')
+$ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+foreach ($t in $targets) {{
+  $dbg = (Get-ItemProperty "$ifeo\$t" -Name Debugger -ErrorAction SilentlyContinue).Debugger
+  if ($dbg) {{
+    if (IsUnsafe $dbg) {{ "[!] $t -> Debugger: $dbg" }}
+    else {{ "OK (MS-signed): $t -> $dbg" }}
+  }}
+}}
+"=== Direct binary replacement check (hash mismatch vs System32 originals) ==="
+$sys32 = "$env:WINDIR\System32"
+$bins = @('sethc.exe','utilman.exe','osk.exe','magnify.exe','narrator.exe')
+foreach ($b in $bins) {{
+  $path = "$sys32\$b"
+  if (Test-Path $path) {{
+    $sig = Get-AuthenticodeSignature $path -ErrorAction SilentlyContinue
+    if (-not $sig -or $sig.Status -ne 'Valid' -or -not $sig.IsOSBinary) {{
+      "[!] $b — signature invalid or not MS: Status=$($sig.Status)"
+    }}
+  }}
+}}
+"=== Sticky Keys / Filter Keys registry flags ==="
+$sk = (Get-ItemProperty 'HKCU:\Control Panel\Accessibility\StickyKeys' -Name Flags -ErrorAction SilentlyContinue).Flags
+$fk = (Get-ItemProperty 'HKCU:\Control Panel\Accessibility\Keyboard Response' -Name Flags -ErrorAction SilentlyContinue).Flags
+"StickyKeys Flags: $sk (default 510)"
+"FilterKeys Flags: $fk (default 122)"
+"#, PS_IS_UNSAFE)
+}
+
+fn script_port_time() -> String {
+    format!(r#"
+$ErrorActionPreference='SilentlyContinue'
+{}
+"=== Port Monitors (T1547.010) ==="
+Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors' -ErrorAction SilentlyContinue | ForEach-Object {{
+  $drv = (Get-ItemProperty $_.PSPath -Name Driver -ErrorAction SilentlyContinue).Driver
+  if ($drv) {{
+    $full = "C:\Windows\System32\$drv"
+    if (IsUnsafe $full) {{ "[!] Monitor=$($_.PSChildName) Driver=$drv" }}
+  }}
+}}
+"=== Print Processors ==="
+$envs = Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Environments' -ErrorAction SilentlyContinue
+foreach ($env in $envs) {{
+  $pp = Get-ChildItem "$($env.PSPath)\Print Processors" -ErrorAction SilentlyContinue
+  foreach ($p in $pp) {{
+    $drv = (Get-ItemProperty $p.PSPath -Name Driver -ErrorAction SilentlyContinue).Driver
+    if ($drv) {{
+      $full = "C:\Windows\System32\$drv"
+      if (IsUnsafe $full) {{ "[!] Env=$($env.PSChildName) Processor=$($p.PSChildName) Driver=$drv" }}
+    }}
+  }}
+}}
+"=== Time Providers (T1547.003) ==="
+Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders' -ErrorAction SilentlyContinue | ForEach-Object {{
+  $dll = (Get-ItemProperty $_.PSPath -Name DllName -ErrorAction SilentlyContinue).DllName
+  $enabled = (Get-ItemProperty $_.PSPath -Name Enabled -ErrorAction SilentlyContinue).Enabled
+  if ($dll -and $enabled -eq 1) {{
+    if (IsUnsafe $dll) {{ "[!] Provider=$($_.PSChildName) DLL=$dll" }}
+    else {{ "OK: $($_.PSChildName) -> $dll" }}
+  }}
+}}
+"=== Network Providers (T1547.008) ==="
+$np = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order' -Name ProviderOrder -ErrorAction SilentlyContinue).ProviderOrder
+if ($np) {{
+  foreach ($name in ($np -split ',')) {{
+    $dll = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$name\NetworkProvider" -Name ProviderPath -ErrorAction SilentlyContinue).ProviderPath
+    if ($dll -and (IsUnsafe $dll)) {{ "[!] Provider=$name DLL=$dll" }}
+  }}
+}} else {{ "(ProviderOrder not set)" }}
+"#, PS_IS_UNSAFE)
+}
+
+fn script_browser() -> String {
+    r#"
+$ErrorActionPreference='SilentlyContinue'
+"=== Chrome Extensions ==="
+$chromePaths = @(
+  "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Extensions",
+  "$env:LOCALAPPDATA\Google\Chrome\User Data\Profile 1\Extensions"
+)
+foreach ($cp in $chromePaths) {
+  if (Test-Path $cp) {
+    Get-ChildItem $cp -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+      $manifest = Get-ChildItem $_.FullName -Recurse -Filter manifest.json -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($manifest) {
+        $j = Get-Content $manifest.FullName -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $perms = ($j.permissions -join ', ')
+        $hostPerms = ($j.content_scripts | ForEach-Object { $_.matches }) -join ', '
+        [PSCustomObject]@{ID=$_.Name; Name=$j.name; Version=$j.version; Permissions=$perms; HostPerms=$hostPerms}
+      }
+    } | Format-Table -AutoSize
+  }
+}
+"=== Edge Extensions ==="
+$edgePaths = @(
+  "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Extensions",
+  "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Profile 1\Extensions"
+)
+foreach ($ep in $edgePaths) {
+  if (Test-Path $ep) {
+    Get-ChildItem $ep -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+      $manifest = Get-ChildItem $_.FullName -Recurse -Filter manifest.json -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($manifest) {
+        $j = Get-Content $manifest.FullName -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $perms = ($j.permissions -join ', ')
+        [PSCustomObject]@{ID=$_.Name; Name=$j.name; Version=$j.version; Permissions=$perms}
+      }
+    } | Format-Table -AutoSize
+  }
+}
+"=== Firefox Extensions (user profile) ==="
+$ffProfiles = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ffProfiles) {
+  Get-ChildItem $ffProfiles -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    $extDir = "$($_.FullName)\extensions"
+    if (Test-Path $extDir) {
+      Get-ChildItem $extDir -Filter *.xpi -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime
+      Get-ChildItem $extDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $manifest = "$($_.FullName)\manifest.json"
+        if (Test-Path $manifest) {
+          $j = Get-Content $manifest -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+          [PSCustomObject]@{ID=$_.Name; Name=$j.name; Version=$j.version}
+        }
+      }
+    }
+  } | Format-Table -AutoSize
+}
+"=== Suspicious extension permissions (flagged) ==="
+$suspPerms = 'debugger','webRequest','webRequestBlocking','tabs','<all_urls>','nativeMessaging','downloads'
+foreach ($cp in $chromePaths) {
+  if (Test-Path $cp) {
+    Get-ChildItem $cp -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+      $manifest = Get-ChildItem $_.FullName -Recurse -Filter manifest.json -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($manifest) {
+        $j = Get-Content $manifest.FullName -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $hits = @($j.permissions | Where-Object { $suspPerms -contains $_ })
+        if ($hits.Count -ge 2) {
+          "[!] $($_.Name) ($($j.name)): $($hits -join ', ')"
+        }
+      }
+    }
+  }
+}
+"#.to_string()
+}
+
+fn script_office() -> String {
+    r#"
+$ErrorActionPreference='SilentlyContinue'
+"=== Office COM Add-ins (all apps) ==="
+$apps = @('Word','Excel','PowerPoint','Outlook','Access','OneNote')
+foreach ($app in $apps) {
+  $paths = @(
+    "HKCU:\Software\Microsoft\Office\$app\Addins",
+    "HKLM:\Software\Microsoft\Office\$app\Addins",
+    "HKLM:\Software\WOW6432Node\Microsoft\Office\$app\Addins"
+  )
+  foreach ($p in $paths) {
+    if (Test-Path $p) {
+      Get-ChildItem $p -ErrorAction SilentlyContinue | ForEach-Object {
+        $desc = (Get-ItemProperty $_.PSPath -Name Description -ErrorAction SilentlyContinue).Description
+        $friendly = (Get-ItemProperty $_.PSPath -Name FriendlyName -ErrorAction SilentlyContinue).FriendlyName
+        $load = (Get-ItemProperty $_.PSPath -Name LoadBehavior -ErrorAction SilentlyContinue).LoadBehavior
+        [PSCustomObject]@{App=$app; Addin=$_.PSChildName; Friendly=$friendly; Load=$load; Source=$p.Split(':')[0]}
+      }
+    }
+  }
+} | Format-Table -AutoSize
+"=== Office VBA Project References (macro persistence) ==="
+$trustKey = 'HKCU:\Software\Microsoft\Office\16.0\Common\Security'
+$vbaWarn = (Get-ItemProperty $trustKey -Name VBAWarnings -ErrorAction SilentlyContinue).VBAWarnings
+$accessNotif = (Get-ItemProperty $trustKey -Name AccessVBOM -ErrorAction SilentlyContinue).AccessVBOM
+"VBAWarnings: $vbaWarn (1=enable all [DANGEROUS], 2=disable with notification, 3=disable all except signed, 4=disable all)"
+"AccessVBOM (programmatic access): $accessNotif (1=enabled [DANGEROUS])"
+"=== Office Trusted Locations ==="
+foreach ($app in $apps) {
+  $tlPath = "HKCU:\Software\Microsoft\Office\16.0\$app\Security\Trusted Locations"
+  if (Test-Path $tlPath) {
+    Get-ChildItem $tlPath -ErrorAction SilentlyContinue | ForEach-Object {
+      $loc = (Get-ItemProperty $_.PSPath -Name Path -ErrorAction SilentlyContinue).Path
+      $allSub = (Get-ItemProperty $_.PSPath -Name AllLocationsDisabled -ErrorAction SilentlyContinue).AllLocationsDisabled
+      if ($loc) { [PSCustomObject]@{App=$app; Location=$loc; SubFolders=$allSub} }
+    }
+  }
+} | Format-Table -AutoSize
+"=== Office Startup folder add-ins ==="
+$xlStart = "$env:APPDATA\Microsoft\Excel\XLSTART"
+$wbStart = "$env:APPDATA\Microsoft\Word\STARTUP"
+if (Test-Path $xlStart) { "XLSTART:"; Get-ChildItem $xlStart -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize }
+if (Test-Path $wbStart) { "Word STARTUP:"; Get-ChildItem $wbStart -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize }
+"#.to_string()
 }
 
 async fn run_ps_raw(cmd: &str) -> AgentResult<String> {

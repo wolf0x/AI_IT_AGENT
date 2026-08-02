@@ -163,6 +163,7 @@ async fn run_with_timeout(
 ) -> Result<std::process::Output, String> {
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
 
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
 
