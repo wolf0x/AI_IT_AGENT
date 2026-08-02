@@ -232,19 +232,111 @@ impl Tool for IrUsnTool {
         let path_filter = args["path_filter"].as_str().unwrap_or("").to_string();
         let max_entries = args["max_entries"].as_u64().unwrap_or(100).min(500) as usize;
 
-        // Run blocking I/O in a dedicated thread
-        let result = tokio::task::spawn_blocking(move || {
-            match action.as_str() {
-                "query" => usn_query(&volume, hours_ago, &reason_filter, &path_filter, max_entries),
-                "stats" | "config" => usn_stats(&volume),
-                _ => Err(format!("Unknown action: {}", action)),
+        // Try native FFI first (fastest, constant memory)
+        let native_args = (action.clone(), volume.clone(), hours_ago, reason_filter.clone(), path_filter.clone(), max_entries);
+        let native_result = tokio::task::spawn_blocking(move || {
+            match native_args.0.as_str() {
+                "query" => usn_query(&native_args.1, native_args.2, &native_args.3, &native_args.4, native_args.5),
+                "stats" | "config" => usn_stats(&native_args.1),
+                _ => Err(format!("Unknown action: {}", native_args.0)),
             }
         })
         .await
-        .map_err(|e| format!("spawn_blocking failed: {}", e))??;
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?;
 
-        Ok(result)
+        match native_result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                // Fallback to PowerShell if native fails (typically permission)
+                let ps_script = ps_fallback_script(&action, &volume, hours_ago, &reason_filter, &path_filter, max_entries);
+                let full = format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {}", ps_script);
+                let mut cmd = tokio::process::Command::new("powershell.exe");
+                cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &full]);
+                cmd.creation_flags(0x08000000);
+                cmd.kill_on_drop(true);
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
+
+                let output = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    cmd.output(),
+                )
+                .await
+                .map_err(|_| "USN PowerShell fallback timed out (60s)".to_string())?
+                .map_err(|e| format!("PowerShell exec failed: {}", e))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if stdout.trim().is_empty() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Ok(json!({
+                        "success": false,
+                        "error": format!("Native: {}. PowerShell: {}", e, stderr.trim()),
+                        "hint": "Run RustAgent as Administrator (elevated) for direct USN access."
+                    }));
+                }
+                match serde_json::from_str::<Value>(stdout.trim()) {
+                    Ok(v) => Ok(v),
+                    Err(_) => Ok(json!({"success": true, "output": stdout.trim(), "note": "PowerShell fallback (native unavailable)"})),
+                }
+            }
+        }
     }
+}
+
+/// Generate optimized PowerShell fallback script (streaming, filtered, early-stop).
+fn ps_fallback_script(
+    action: &str, volume: &str, hours_ago: u64,
+    reason_filter: &str, path_filter: &str, max_entries: usize,
+) -> String {
+    let vol = volume.trim_end_matches(':');
+
+    if action == "stats" || action == "config" {
+        return format!(
+            r#"fsutil usn queryjournal {vol}: 2>&1 | ForEach-Object {{ $_.ToString() }} | ConvertTo-Json"#
+        );
+    }
+
+    // Reason code hex for PowerShell filter
+    let reason_check = match reason_filter {
+        "create" => "0x100",
+        "delete" => "0x8000",
+        "modify" => "0x7",
+        "rename" => "0x3000",
+        "security" => "0x80000",
+        _ => "0",
+    };
+
+    let path_clause = if path_filter.is_empty() {
+        String::new()
+    } else {
+        format!(r#"if ($fname -notlike '*{}*') {{ return }}"#, path_filter.replace('\'', "''"))
+    };
+
+    format!(
+        r#"
+$cutoff = (Get-Date).AddHours(-{hours_ago})
+$entries = @()
+$scanned = 0
+fsutil usn readjournal {vol}: csv 2>&1 | ForEach-Object {{
+    if ($entries.Count -ge {max_entries}) {{ return }}
+    $line = $_.ToString().Trim()
+    if (-not $line -or $line -match '^Usn Journal|^Volume') {{ return }}
+    $parts = $line -split ','
+    if ($parts.Count -lt 4) {{ return }}
+    $scanned++
+    $fname = $parts[0].Trim()
+    $reasonHex = $parts[1].Trim()
+    $usn = $parts[2].Trim()
+    {path_clause}
+    $rc = 0
+    try {{ $rc = [Convert]::ToInt32($reasonHex, 16) }} catch {{}}
+    if ({reason_check} -ne 0 -and ($rc -band {reason_check}) -eq 0) {{ return }}
+    $reason = if ($rc -band 0x100) {{'CREATE'}} elseif ($rc -band 0x8000) {{'DELETE'}} elseif ($rc -band 0x2000) {{'RENAME'}} elseif ($rc -band 0x1) {{'WRITE'}} elseif ($rc -band 0x80000) {{'SECURITY'}} else {{'OTHER'}}
+    $entries += @{{file=$fname; reason=$reason; usn=$usn}}
+}}
+@{{success=$true; volume='{vol}:'; filter=@{{reason='{reason_filter}'; hours_ago={hours_ago}; path='{path_filter}'}}; returned=$entries.Count; scanned=$scanned; entries=$entries; note='PowerShell fallback'}} | ConvertTo-Json -Depth 3 -Compress
+"#
+    )
 }
 
 // ============================================================
