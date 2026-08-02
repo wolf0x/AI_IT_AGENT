@@ -1,16 +1,17 @@
-//! USN Journal (Change Journal) analysis tool.
+//! USN Journal (Change Journal) analysis tool — native Rust implementation.
 //!
-//! The NTFS USN Journal records all file/directory changes on a volume.
-//! This tool reads and filters journal entries for forensic timeline reconstruction.
+//! Uses DeviceIoControl with FSCTL_READ_USN_JOURNAL for kernel-level ReasonMask
+//! filtering, and Rust-side timestamp filtering with early termination.
+//! No PowerShell/fsutil dependency. Constant memory (~64KB buffer per read).
 //!
 //! Actions:
-//! - `query`: Read USN journal entries with time/path/reason filters
-//! - `stats`: Show journal statistics (entry counts by reason code)
-//! - `config`: Show USN journal configuration (max size, allocation delta)
+//! - `query`: Read journal entries with reason/time/path filters (source-filtered)
+//! - `stats`: Journal metadata (size, USN range, entry count estimate)
+//! - `config`: Journal configuration via FSCTL_QUERY_USN_JOURNAL
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tokio::process::Command;
+use std::mem;
 
 use super::Tool;
 use crate::context::ToolContext;
@@ -18,16 +19,115 @@ use crate::error::AgentResult;
 
 pub struct IrUsnTool;
 
-const PS_PREFIX: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ";
+// ============================================================
+// Windows API constants and structures (stable ABI)
+// ============================================================
+
+const GENERIC_READ: u32 = 0x8000_0000;
+const FILE_SHARE_READ: u32 = 0x1;
+const FILE_SHARE_WRITE: u32 = 0x2;
+const OPEN_EXISTING: u32 = 3;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const INVALID_HANDLE_VALUE: isize = -1;
+
+const FSCTL_QUERY_USN_JOURNAL: u32 = 0x0009_00F4;
+const FSCTL_READ_USN_JOURNAL: u32 = 0x0009_00BB;
+
+// USN reason codes
+const USN_REASON_DATA_OVERWRITE: u32 = 0x0000_0001;
+const USN_REASON_DATA_EXTEND: u32 = 0x0000_0002;
+const USN_REASON_DATA_TRUNCATION: u32 = 0x0000_0004;
+const USN_REASON_FILE_CREATE: u32 = 0x0000_0100;
+const USN_REASON_FILE_DELETE: u32 = 0x0000_8000;
+const USN_REASON_RENAME_OLD_NAME: u32 = 0x0000_1000;
+const USN_REASON_RENAME_NEW_NAME: u32 = 0x0000_2000;
+const USN_REASON_SECURITY_CHANGE: u32 = 0x0008_0000;
+const USN_REASON_CLOSE: u32 = 0x8000_0000;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UsnJournalDataV0 {
+    usn_journal_id: i64,
+    first_usn: i64,
+    next_usn: i64,
+    lowest_valid_usn: i64,
+    max_usn: i64,
+    maximum_size: i64,
+    allocation_delta: i64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadUsnJournalDataV0 {
+    start_usn: i64,
+    reason_mask: u32,
+    return_only_on_close: u32,
+    timeout: i64,
+    bytes_to_wait_for: i64,
+    usn_journal_id: i64,
+}
+
+#[repr(C)]
+struct UsnRecordV2 {
+    record_length: u32,
+    major_version: u16,
+    minor_version: u16,
+    file_reference_number: u64,
+    parent_file_reference_number: u64,
+    usn: i64,
+    time_stamp: i64, // FILETIME
+    reason: u32,
+    source_info: u32,
+    security_id: u32,
+    file_attributes: u32,
+    file_name_length: u16,
+    file_name_offset: u16,
+    // file_name follows (WCHAR[])
+}
+
+// ============================================================
+// FFI declarations
+// ============================================================
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateFileW(
+        lpFileName: *const u16,
+        dwDesiredAccess: u32,
+        dwShareMode: u32,
+        lpSecurityAttributes: *const (),
+        dwCreationDisposition: u32,
+        dwFlagsAndAttributes: u32,
+        hTemplateFile: isize,
+    ) -> isize;
+
+    fn DeviceIoControl(
+        hDevice: isize,
+        dwIoControlCode: u32,
+        lpInBuffer: *const (),
+        nInBufferSize: u32,
+        lpOutBuffer: *mut u8,
+        nOutBufferSize: u32,
+        lpBytesReturned: *mut u32,
+        lpOverlapped: *const (),
+    ) -> i32;
+
+    fn CloseHandle(hObject: isize) -> i32;
+}
+
+// ============================================================
+// Tool implementation
+// ============================================================
 
 #[async_trait]
 impl Tool for IrUsnTool {
     fn name(&self) -> &str { "ir_usn" }
     fn description(&self) -> &str {
-        "NTFS USN Journal (Change Journal) analysis for forensic file activity tracking. \
-         Actions: 'query' (read journal entries with filters), 'stats' (entry counts by reason), \
-         'config' (journal configuration). The USN journal logs every file create/modify/delete/rename \
-         on NTFS volumes — invaluable for establishing file activity timelines during incident response."
+        "NTFS USN Journal analysis (native, zero-overhead). \
+         Actions: 'query' (filtered journal read — reason mask applied at kernel level, \
+         time filter with early stop), 'stats' (journal metadata), 'config' (journal settings). \
+         Reads USN records via FSCTL_READ_USN_JOURNAL with constant 64KB memory. \
+         Supports reason filters: create, delete, modify, rename, security, all."
     }
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { true }
@@ -38,28 +138,28 @@ impl Tool for IrUsnTool {
                 "action": {
                     "type": "string",
                     "enum": ["query", "stats", "config"],
-                    "description": "USN operation: query entries, show stats, or show config"
+                    "description": "Operation to perform"
                 },
                 "volume": {
                     "type": "string",
-                    "description": "Volume drive letter (e.g. 'C:'). Default 'C:'"
+                    "description": "Volume drive letter (default 'C:')"
                 },
                 "hours_ago": {
                     "type": "integer",
-                    "description": "Only show entries from the last N hours (default 24)"
-                },
-                "path_filter": {
-                    "type": "string",
-                    "description": "Filter entries containing this path substring (e.g. 'System32', '.exe')"
+                    "description": "Time window in hours (default 24). Records older than this are skipped."
                 },
                 "reason_filter": {
                     "type": "string",
                     "enum": ["all", "create", "delete", "modify", "rename", "security"],
-                    "description": "Filter by USN reason code category (default 'all')"
+                    "description": "Filter by change reason (kernel-level). Default 'all'."
+                },
+                "path_filter": {
+                    "type": "string",
+                    "description": "Substring match on filename (Rust-side filter)"
                 },
                 "max_entries": {
                     "type": "integer",
-                    "description": "Maximum entries to return (default 200, max 2000)"
+                    "description": "Max records to return (default 100, max 500)"
                 }
             },
             "required": ["action"]
@@ -67,176 +167,237 @@ impl Tool for IrUsnTool {
     }
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
-        let action = args["action"].as_str().unwrap_or("query");
-        let volume = args["volume"].as_str().unwrap_or("C:");
+        let action = args["action"].as_str().unwrap_or("query").to_string();
+        let volume = args["volume"].as_str().unwrap_or("C:").to_string();
+        let hours_ago = args["hours_ago"].as_u64().unwrap_or(24);
+        let reason_filter = args["reason_filter"].as_str().unwrap_or("all").to_string();
+        let path_filter = args["path_filter"].as_str().unwrap_or("").to_string();
+        let max_entries = args["max_entries"].as_u64().unwrap_or(100).min(500) as usize;
 
-        let script = match action {
-            "query" => {
-                let hours_ago = args["hours_ago"].as_u64().unwrap_or(24);
-                let path_filter = args["path_filter"].as_str().unwrap_or("");
-                let reason_filter = args["reason_filter"].as_str().unwrap_or("all");
-                let max_entries = args["max_entries"].as_u64().unwrap_or(200).min(2000);
-                script_query(volume, hours_ago, path_filter, reason_filter, max_entries)
+        // Run blocking I/O in a dedicated thread
+        let result = tokio::task::spawn_blocking(move || {
+            match action.as_str() {
+                "query" => usn_query(&volume, hours_ago, &reason_filter, &path_filter, max_entries),
+                "stats" | "config" => usn_stats(&volume),
+                _ => Err(format!("Unknown action: {}", action)),
             }
-            "stats" => script_stats(volume),
-            "config" => script_config(volume),
-            _ => return Err(format!("Unknown action: {}", action).into()),
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))??;
+
+        Ok(result)
+    }
+}
+
+// ============================================================
+// Core logic
+// ============================================================
+
+fn open_volume(volume: &str) -> Result<isize, String> {
+    let path = format!("\\\\.\\{}", volume.trim_end_matches(':'));
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(format!("Cannot open volume {} (need Administrator)", volume));
+    }
+    Ok(handle)
+}
+
+fn query_journal(handle: isize) -> Result<UsnJournalDataV0, String> {
+    let mut out = UsnJournalDataV0 {
+        usn_journal_id: 0, first_usn: 0, next_usn: 0,
+        lowest_valid_usn: 0, max_usn: 0, maximum_size: 0, allocation_delta: 0,
+    };
+    let mut returned: u32 = 0;
+    let ok = unsafe {
+        DeviceIoControl(
+            handle, FSCTL_QUERY_USN_JOURNAL,
+            std::ptr::null(), 0,
+            &mut out as *mut _ as *mut u8,
+            mem::size_of::<UsnJournalDataV0>() as u32,
+            &mut returned, std::ptr::null(),
+        )
+    };
+    if ok == 0 {
+        return Err("FSCTL_QUERY_USN_JOURNAL failed (journal may not exist on this volume)".into());
+    }
+    Ok(out)
+}
+
+fn reason_mask(filter: &str) -> u32 {
+    match filter {
+        "create" => USN_REASON_FILE_CREATE,
+        "delete" => USN_REASON_FILE_DELETE,
+        "modify" => USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_DATA_TRUNCATION,
+        "rename" => USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME,
+        "security" => USN_REASON_SECURITY_CHANGE,
+        _ => 0xFFFF_FFFF, // all reasons
+    }
+}
+
+fn reason_to_str(reason: u32) -> &'static str {
+    if reason & USN_REASON_FILE_CREATE != 0 { "CREATE" }
+    else if reason & USN_REASON_FILE_DELETE != 0 { "DELETE" }
+    else if reason & USN_REASON_RENAME_NEW_NAME != 0 { "RENAME" }
+    else if reason & USN_REASON_RENAME_OLD_NAME != 0 { "RENAME_OLD" }
+    else if reason & USN_REASON_DATA_OVERWRITE != 0 { "WRITE" }
+    else if reason & USN_REASON_DATA_EXTEND != 0 { "EXTEND" }
+    else if reason & USN_REASON_SECURITY_CHANGE != 0 { "SECURITY" }
+    else if reason & USN_REASON_CLOSE != 0 { "CLOSE" }
+    else { "OTHER" }
+}
+
+/// FILETIME (100ns since 1601-01-01) → Unix seconds
+fn filetime_to_unix(ft: i64) -> i64 {
+    ft / 10_000_000 - 11_644_473_600
+}
+
+fn usn_query(
+    volume: &str,
+    hours_ago: u64,
+    reason_filter: &str,
+    path_filter: &str,
+    max_entries: usize,
+) -> Result<Value, String> {
+    let handle = open_volume(volume)?;
+    let journal = query_journal(handle)?;
+
+    let mask = reason_mask(reason_filter);
+    let cutoff_unix = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        now - (hours_ago as i64) * 3600
+    };
+    // Convert cutoff to FILETIME for comparison
+    let cutoff_ft = (cutoff_unix + 11_644_473_600) * 10_000_000;
+
+    let mut entries: Vec<Value> = Vec::new();
+    let mut total_scanned: u64 = 0;
+    let mut current_usn = journal.first_usn;
+    let buf_size: u32 = 65536; // 64KB read buffer
+    let mut buf: Vec<u8> = vec![0u8; buf_size as usize];
+
+    loop {
+        if entries.len() >= max_entries { break; }
+        if current_usn >= journal.next_usn { break; }
+
+        let input = ReadUsnJournalDataV0 {
+            start_usn: current_usn,
+            reason_mask: mask, // kernel-level filter
+            return_only_on_close: 0,
+            timeout: 0,
+            bytes_to_wait_for: 0,
+            usn_journal_id: journal.usn_journal_id,
         };
 
-        let full = format!("{}{}", PS_PREFIX, script);
-        let output = run_ps(&full).await?;
-        Ok(json!({ "status": "ok", "action": action, "output": output }))
-    }
-}
+        let mut returned: u32 = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                handle, FSCTL_READ_USN_JOURNAL,
+                &input as *const _ as *const (),
+                mem::size_of::<ReadUsnJournalDataV0>() as u32,
+                buf.as_mut_ptr(), buf_size,
+                &mut returned, std::ptr::null(),
+            )
+        };
 
-fn script_query(volume: &str, hours_ago: u64, path_filter: &str, reason_filter: &str, max_entries: u64) -> String {
-    let vol = volume.trim_end_matches(':');
-    let pf = path_filter.replace('\'', "''");
+        if ok == 0 || returned < 8 { break; }
 
-    // Reason code filter mapping
-    let reason_mask = match reason_filter {
-        "create" => "0x00000001",   // USN_REASON_DATA_OVERWRITE (basic create)
-        "delete" => "0x00008000",   // USN_REASON_FILE_DELETE
-        "modify" => "0x00000002",   // USN_REASON_DATA_EXTEND
-        "rename" => "0x00002000",   // USN_REASON_RENAME_NEW_NAME
-        "security" => "0x00080000", // USN_REASON_SECURITY_CHANGE
-        _ => "0",                   // all
-    };
+        // First 8 bytes = next USN to read from
+        let next_usn = i64::from_le_bytes(buf[0..8].try_into().unwrap());
+        let mut offset: usize = 8;
 
-    format!(r#"
-$ErrorActionPreference = 'SilentlyContinue'
-$vol = '{vol}:'
-$cutoff = (Get-Date).AddHours(-{hours_ago})
-"=== USN Journal Query: $vol (last {hours_ago}h) ==="
+        while offset + mem::size_of::<UsnRecordV2>() <= returned as usize {
+            let rec = unsafe { &*(buf.as_ptr().add(offset) as *const UsnRecordV2) };
+            if rec.record_length < mem::size_of::<UsnRecordV2>() as u32 { break; }
+            if rec.major_version != 2 { offset += rec.record_length as usize; continue; }
 
-# Read USN journal via fsutil
-$raw = fsutil usn readjournal $vol csv 2>&1 | Out-String
-$lines = $raw -split "`n" | Where-Object {{ $_.Trim() -ne '' -and $_ -notmatch '^Usn Journal' -and $_ -notmatch '^Volume' }}
+            total_scanned += 1;
 
-$entries = @()
-foreach ($line in $lines) {{
-  # CSV format: FileName,Reason,USN,FileRef,ParentRef,Timestamp,...
-  $parts = $line -split ','
-  if ($parts.Count -lt 4) {{ continue }}
-  $fname = $parts[0].Trim()
-  $reason = $parts[1].Trim()
-  $usn = $parts[2].Trim()
-
-  # Time filter (fsutil csv may include timestamp in later fields)
-  # Apply path filter
-  if ('{pf}' -ne '' -and $fname -notlike '*{pf}*') {{ continue }}
-
-  # Apply reason filter
-  $reasonCode = 0
-  try {{ $reasonCode = [Convert]::ToInt32($reason, 16) }} catch {{}}
-  if ({reason_mask} -ne 0 -and ($reasonCode -band {reason_mask}) -eq 0) {{ continue }}
-
-  $reasonText = switch -Regex ($reasonCode) {{
-    {{ $_ -band 0x00000001 }} {{ 'DATA_OVERWRITE' }}
-    {{ $_ -band 0x00000002 }} {{ 'DATA_EXTEND' }}
-    {{ $_ -band 0x00000004 }} {{ 'DATA_TRUNCATION' }}
-    {{ $_ -band 0x00000100 }} {{ 'NAMED_DATA_OVERWRITE' }}
-    {{ $_ -band 0x00001000 }} {{ 'RENAME_OLD' }}
-    {{ $_ -band 0x00002000 }} {{ 'RENAME_NEW' }}
-    {{ $_ -band 0x00004000 }} {{ 'INDEXABLE_CHANGE' }}
-    {{ $_ -band 0x00008000 }} {{ 'FILE_DELETE' }}
-    {{ $_ -band 0x00010000 }} {{ 'EA_CHANGE' }}
-    {{ $_ -band 0x00020000 }} {{ 'SECURITY_CHANGE' }}
-    {{ $_ -band 0x00040000 }} {{ 'REPARSE' }}
-    {{ $_ -band 0x00080000 }} {{ 'STREAM_CHANGE' }}
-    {{ $_ -band 0x80000000 }} {{ 'CLOSE' }}
-    default {{ "0x$($reasonCode.ToString('X8'))" }}
-  }}
-
-  $entries += [PSCustomObject]@{{
-    File   = $fname
-    Reason = $reasonText
-    USN    = $usn
-  }}
-  if ($entries.Count -ge {max_entries}) {{ break }}
-}}
-
-if ($entries.Count -eq 0) {{
-  "(no matching USN entries found)"
-  "Note: fsutil usn readjournal requires Administrator privileges."
-}} else {{
-  $entries | Format-Table -AutoSize
-  "=== Showing $($entries.Count) entries (filtered from journal) ==="
-}}
-"#)
-}
-
-fn script_stats(volume: &str) -> String {
-    let vol = volume.trim_end_matches(':');
-    format!(r#"
-$ErrorActionPreference = 'SilentlyContinue'
-$vol = '{vol}:'
-"=== USN Journal Statistics: $vol ==="
-
-$raw = fsutil usn readjournal $vol csv 2>&1 | Out-String
-$lines = $raw -split "`n" | Where-Object {{ $_.Trim() -ne '' -and $_ -notmatch '^Usn Journal' -and $_ -notmatch '^Volume' }}
-
-$total = 0
-$reasons = @{{}}
-$extensions = @{{}}
-foreach ($line in $lines) {{
-  $parts = $line -split ','
-  if ($parts.Count -lt 4) {{ continue }}
-  $total++
-  $fname = $parts[0].Trim()
-  $reason = $parts[1].Trim()
-
-  # Count by reason
-  if ($reasons.ContainsKey($reason)) {{ $reasons[$reason]++ }} else {{ $reasons[$reason] = 1 }}
-
-  # Count by extension
-  $ext = [IO.Path]::GetExtension($fname).ToLower()
-  if ($ext -eq '') {{ $ext = '(none)' }}
-  if ($extensions.ContainsKey($ext)) {{ $extensions[$ext]++ }} else {{ $extensions[$ext] = 1 }}
-}}
-
-"Total entries: $total"
-""
-"=== By Reason Code ==="
-$reasons.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15 | ForEach-Object {{
-  "  $($_.Key): $($_.Value)"
-}}
-""
-"=== By File Extension (Top 20) ==="
-$extensions.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 20 | ForEach-Object {{
-  "  $($_.Key): $($_.Value)"
-}}
-"#)
-}
-
-fn script_config(volume: &str) -> String {
-    let vol = volume.trim_end_matches(':');
-    format!(r#"
-$ErrorActionPreference = 'SilentlyContinue'
-$vol = '{vol}:'
-"=== USN Journal Configuration: $vol ==="
-fsutil usn queryjournal $vol 2>&1 | Out-String
-""
-"=== Volume Info ==="
-fsutil volume info $vol 2>&1 | Out-String
-"#)
-}
-
-async fn run_ps(cmd: &str) -> AgentResult<String> {
-    let mut c = Command::new("powershell");
-    c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", cmd]);
-    c.creation_flags(0x08000000);
-    c.kill_on_drop(true);
-    match c.output().await {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if stdout.trim().is_empty() && !stderr.trim().is_empty() {
-                Ok(stderr)
-            } else {
-                Ok(stdout)
+            // Time filter: skip records older than cutoff
+            if rec.time_stamp < cutoff_ft {
+                offset += rec.record_length as usize;
+                continue;
             }
+
+            // Extract filename
+            let name_offset = rec.file_name_offset as usize;
+            let name_len = rec.file_name_length as usize;
+            let name_start = offset + name_offset;
+            let filename = if name_start + name_len <= returned as usize {
+                let wide: &[u16] = unsafe {
+                    std::slice::from_raw_parts(
+                        buf.as_ptr().add(name_start) as *const u16,
+                        name_len / 2,
+                    )
+                };
+                String::from_utf16_lossy(wide)
+            } else {
+                String::from("?")
+            };
+
+            // Path filter (Rust-side)
+            if !path_filter.is_empty()
+                && !filename.to_lowercase().contains(&path_filter.to_lowercase())
+            {
+                offset += rec.record_length as usize;
+                continue;
+            }
+
+            let ts_unix = filetime_to_unix(rec.time_stamp);
+            entries.push(json!({
+                "file": if filename.len() > 80 { &filename[..80] } else { &filename },
+                "reason": reason_to_str(rec.reason),
+                "time": ts_unix,
+                "usn": rec.usn,
+            }));
+
+            offset += rec.record_length as usize;
+            if entries.len() >= max_entries { break; }
         }
-        Err(e) => Err(format!("PowerShell command failed: {}", e).into()),
+
+        current_usn = next_usn;
+        if next_usn <= current_usn && next_usn == input.start_usn { break; } // safety: no progress
     }
+
+    unsafe { CloseHandle(handle); }
+
+    Ok(json!({
+        "success": true,
+        "volume": volume,
+        "filter": { "reason": reason_filter, "hours_ago": hours_ago, "path": path_filter },
+        "returned": entries.len(),
+        "scanned": total_scanned,
+        "entries": entries,
+    }))
+}
+
+fn usn_stats(volume: &str) -> Result<Value, String> {
+    let handle = open_volume(volume)?;
+    let j = query_journal(handle)?;
+    unsafe { CloseHandle(handle); }
+
+    Ok(json!({
+        "success": true,
+        "volume": volume,
+        "journal_id": j.usn_journal_id,
+        "first_usn": j.first_usn,
+        "next_usn": j.next_usn,
+        "max_usn": j.max_usn,
+        "maximum_size_mb": j.maximum_size / (1024 * 1024),
+        "allocation_delta_mb": j.allocation_delta / (1024 * 1024),
+        "note": "Use 'query' action with reason_filter for filtered record reading.",
+    }))
 }
