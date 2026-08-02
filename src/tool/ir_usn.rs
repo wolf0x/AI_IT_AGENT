@@ -262,6 +262,62 @@ fn filetime_to_unix(ft: i64) -> i64 {
     ft / 10_000_000 - 11_644_473_600
 }
 
+/// Binary search for the USN closest to (but before) cutoff_ft.
+/// Uses ALL-reason probes to read timestamps at arbitrary USN positions.
+/// Returns the USN to start the filtered read from.
+fn seek_to_time(handle: isize, journal: &UsnJournalDataV0, cutoff_ft: i64) -> i64 {
+    let mut lo = journal.first_usn;
+    let mut hi = journal.next_usn;
+    let mut probe_buf = [0u8; 4096]; // small buffer for single-record probes
+
+    // ~23 iterations converges a 10M USN range
+    for _ in 0..24 {
+        if hi - lo < 4096 { break; } // close enough (USN granularity)
+        let mid = lo + (hi - lo) / 2;
+
+        let input = ReadUsnJournalDataV0 {
+            start_usn: mid,
+            reason_mask: 0xFFFF_FFFF, // probe with ALL reasons
+            return_only_on_close: 0,
+            timeout: 0,
+            bytes_to_wait_for: 0,
+            usn_journal_id: journal.usn_journal_id,
+        };
+
+        let mut returned: u32 = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                handle, FSCTL_READ_USN_JOURNAL,
+                &input as *const _ as *const (),
+                mem::size_of::<ReadUsnJournalDataV0>() as u32,
+                probe_buf.as_mut_ptr(), probe_buf.len() as u32,
+                &mut returned, std::ptr::null(),
+            )
+        };
+
+        if ok == 0 || returned < 8 + mem::size_of::<UsnRecordV2>() as u32 {
+            // No records at this position → search lower
+            hi = mid;
+            continue;
+        }
+
+        // Read first record's timestamp
+        let rec = unsafe { &*(probe_buf.as_ptr().add(8) as *const UsnRecordV2) };
+        if rec.record_length < mem::size_of::<UsnRecordV2>() as u32 {
+            hi = mid;
+            continue;
+        }
+
+        if rec.time_stamp < cutoff_ft {
+            lo = mid; // record is too old, search upper half
+        } else {
+            hi = mid; // record is within window, search lower half
+        }
+    }
+
+    lo
+}
+
 fn usn_query(
     volume: &str,
     hours_ago: u64,
@@ -285,7 +341,8 @@ fn usn_query(
 
     let mut entries: Vec<Value> = Vec::new();
     let mut total_scanned: u64 = 0;
-    let mut current_usn = journal.first_usn;
+    // Binary search to skip directly to the time window (O(log N) probes)
+    let mut current_usn = seek_to_time(handle, &journal, cutoff_ft);
     let buf_size: u32 = 65536; // 64KB read buffer
     let mut buf: Vec<u8> = vec![0u8; buf_size as usize];
 
