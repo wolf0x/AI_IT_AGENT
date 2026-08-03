@@ -30,11 +30,13 @@ impl Tool for SysEventLogTool {
     }
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
         let log_name = args["log_name"].as_str().ok_or_else(|| "Missing 'log_name'".to_string())?;
+        // Escape single quotes to prevent PowerShell injection
+        let log_name_escaped = log_name.replace('\'', "''");
         let max_count = args["max_count"].as_u64().unwrap_or(20);
         let hours_ago = args["hours_ago"].as_u64();
         let level = args["level"].as_str();
 
-        let mut filter_parts = vec![format!("LogName='{}'", log_name)];
+        let mut filter_parts = vec![format!("LogName='{}'", log_name_escaped)];
         if let Some(level_str) = level {
             let level_num = match level_str {
                 "Critical" => "1", "Error" => "2", "Warning" => "3",

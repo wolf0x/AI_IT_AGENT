@@ -29,6 +29,12 @@ impl Tool for BrowserOpenTool {
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
         let mut url = args["url"].as_str().ok_or_else(|| "Missing 'url'".to_string())?.to_string();
 
+        // Reject URLs containing cmd.exe metacharacters to prevent command injection
+        let dangerous_chars = ['&', '|', '>', '<', '^', '`', ';'];
+        if url.chars().any(|c| dangerous_chars.contains(&c)) {
+            return Err(format!("URL contains dangerous characters: {:?}. Only http/https URLs with standard characters are allowed.", dangerous_chars).into());
+        }
+
         if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("file://") {
             url = format!("https://{}", url);
         }

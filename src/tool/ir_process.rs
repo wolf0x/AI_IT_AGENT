@@ -61,7 +61,7 @@ impl Tool for IrProcessTool {
         "Incident response process analysis. 'list' enumerates all processes with risk classification (high/medium/low/safe). 'kill' terminates a process by PID. Risk filter available via risk_filter parameter."
     }
     fn is_builtin(&self) -> bool { true }
-    fn is_read_only(&self) -> bool { true }
+    fn is_read_only(&self) -> bool { false } // Has 'kill' action with destructive side effects
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",

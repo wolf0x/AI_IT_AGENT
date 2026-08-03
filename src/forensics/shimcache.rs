@@ -34,14 +34,25 @@ pub fn parse_shimcache(data: &[u8]) -> Result<Vec<ShimCacheEntry>, String> {
 }
 
 /// Windows 10/11 format:
-///   Header (16 bytes): signature(4) + 3× unknown(4)
-///   Entries: path_size(2) + path(UTF-16) + data_size(2) + data(data_size)
+///   Header: 0x30 bytes (build 10240) or 0x34 bytes (build 14316+, Win11)
+///   Signature: 0x00000080
+///   Entries: [entry_sig(4)] + path_size(2) + path(UTF-16) + data_size(2) + data(data_size)
 fn parse_win10(data: &[u8]) -> Result<Vec<ShimCacheEntry>, String> {
     let mut entries = Vec::new();
-    let mut pos = 16; // Skip header
+    // Win10/11 header size: 0x34 (52 bytes) for build 14316+ / Win11,
+    // 0x30 (48 bytes) for earlier Win10 builds. Detect from data length.
+    let header_size = if data.len() >= 0x34 { 0x34usize } else { 0x30usize };
+    let mut pos = header_size;
     let mut index = 0;
 
     while pos + 4 < data.len() {
+        // Check for per-entry signature (0x30 or 0x34) and skip it
+        if let Some(entry_sig) = read_u32(data, pos) {
+            if entry_sig == 0x00000030 || entry_sig == 0x00000034 {
+                pos += 4;
+            }
+        }
+
         let path_size = match read_u16(data, pos) {
             Some(s) => s as usize,
             None => break,

@@ -132,7 +132,7 @@ impl Default for Config {
     }
 }
 
-fn default_host() -> String { "0.0.0.0".to_string() }
+fn default_host() -> String { "127.0.0.1".to_string() }
 fn default_port() -> u16 { 7788 }
 fn default_working_dir() -> String { ".".to_string() }
 fn default_workspace_dir() -> String {
@@ -189,7 +189,7 @@ impl Config {
 # Settings can also be changed via the Web UI Settings page.
 
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 7788
 
 [agent]

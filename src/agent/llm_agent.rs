@@ -1372,6 +1372,11 @@ async fn execute_tool_call(
                     let mut interval = tokio::time::interval(heartbeat_interval);
                     interval.tick().await; // consume the immediate first tick
 
+                    // Pin timeout future BEFORE the loop so it accumulates across iterations.
+                    // Without pinning, the sleep is recreated every heartbeat tick and never fires.
+                    let timeout_fut = tokio::time::sleep(timeout_duration);
+                    tokio::pin!(timeout_fut);
+
                     loop {
                         tokio::select! {
                             // Tool execution completed
@@ -1430,8 +1435,8 @@ async fn execute_tool_call(
                                 break Some(serde_json::json!({ "error": "Cancelled by user" }));
                             }
 
-                            // Timeout
-                            _ = tokio::time::sleep(timeout_duration) => {
+                            // Timeout (pinned — survives across loop iterations)
+                            _ = &mut timeout_fut => {
                                 warn!("Tool '{}' timed out after {}s", tool_name, timeout_duration.as_secs());
                                 tool_handle.abort();
                                 break Some(serde_json::json!({ "error": format!("Tool execution timed out after {}s", timeout_duration.as_secs()) }));
