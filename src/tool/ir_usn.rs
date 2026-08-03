@@ -12,6 +12,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::mem;
+use std::ptr;
 
 use super::Tool;
 use crate::context::ToolContext;
@@ -185,6 +186,16 @@ struct TokenPrivileges {
 const TOKEN_ADJUST_PRIVILEGES: u32 = 0x0020;
 const TOKEN_QUERY: u32 = 0x0008;
 const SE_PRIVILEGE_ENABLED: u32 = 0x0002;
+
+/// RAII guard for Windows HANDLE — ensures CloseHandle is called on all exit paths.
+struct HandleGuard(isize);
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        if self.0 != INVALID_HANDLE_VALUE && self.0 != 0 {
+            unsafe { CloseHandle(self.0); }
+        }
+    }
+}
 
 /// Enable SE_MANAGE_VOLUME_NAME on the current process token.
 /// Required for FSCTL_READ_USN_JOURNAL on non-elevated admin tokens.
@@ -649,8 +660,8 @@ fn seek_to_time(handle: isize, journal: &UsnJournalDataV0, cutoff_ft: i64) -> i6
             continue;
         }
 
-        // Read first record's timestamp
-        let rec = unsafe { &*(probe_buf.as_ptr().add(8) as *const UsnRecordV2) };
+        // Read first record's timestamp (read_unaligned avoids alignment UB)
+        let rec: UsnRecordV2 = unsafe { ptr::read_unaligned(probe_buf.as_ptr().add(8) as *const UsnRecordV2) };
         if rec.record_length < mem::size_of::<UsnRecordV2>() as u32 {
             hi = mid;
             continue;
@@ -673,8 +684,8 @@ fn usn_query(
     path_filter: &str,
     max_entries: usize,
 ) -> Result<Value, String> {
-    let handle = open_volume(volume)?;
-    let journal = query_journal(handle)?;
+    let handle = HandleGuard(open_volume(volume)?);
+    let journal = query_journal(handle.0)?;
 
     let mask = reason_mask(reason_filter);
     let cutoff_unix = {
@@ -690,9 +701,11 @@ fn usn_query(
     let mut entries: Vec<Value> = Vec::new();
     let mut total_scanned: u64 = 0;
     let mut paths_resolved: usize = 0;
-    let mut resolver = PathResolver::new(handle, volume);
+    let mut resolver = PathResolver::new(handle.0, volume);
     // Binary search to skip directly to the time window (O(log N) probes)
-    let mut current_usn = seek_to_time(handle, &journal, cutoff_ft);
+    let mut current_usn = seek_to_time(handle.0, &journal, cutoff_ft);
+    // Pre-compute lowercase path filter once (avoids per-record allocation)
+    let path_filter_lower = path_filter.to_lowercase();
     let buf_size: u32 = 65536; // 64KB read buffer
     let mut buf: Vec<u8> = vec![0u8; buf_size as usize];
 
@@ -712,7 +725,7 @@ fn usn_query(
         let mut returned: u32 = 0;
         let ok = unsafe {
             DeviceIoControl(
-                handle, FSCTL_READ_USN_JOURNAL,
+                handle.0, FSCTL_READ_USN_JOURNAL,
                 &input as *const _ as *const (),
                 mem::size_of::<ReadUsnJournalDataV0>() as u32,
                 buf.as_mut_ptr(), buf_size,
@@ -727,7 +740,7 @@ fn usn_query(
         let mut offset: usize = 8;
 
         while offset + mem::size_of::<UsnRecordV2>() <= returned as usize {
-            let rec = unsafe { &*(buf.as_ptr().add(offset) as *const UsnRecordV2) };
+            let rec: UsnRecordV2 = unsafe { ptr::read_unaligned(buf.as_ptr().add(offset) as *const UsnRecordV2) };
             if rec.record_length < mem::size_of::<UsnRecordV2>() as u32 { break; }
             if rec.major_version != 2 { offset += rec.record_length as usize; continue; }
 
@@ -768,8 +781,8 @@ fn usn_query(
             };
 
             // Path filter (Rust-side, matches against full path)
-            if !path_filter.is_empty()
-                && !full_path.to_lowercase().contains(&path_filter.to_lowercase())
+            if !path_filter_lower.is_empty()
+                && !full_path.to_lowercase().contains(&path_filter_lower)
             {
                 offset += rec.record_length as usize;
                 continue;
@@ -792,8 +805,7 @@ fn usn_query(
         current_usn = next_usn;
     }
 
-    unsafe { CloseHandle(handle); }
-
+    // HandleGuard drops automatically — no manual CloseHandle needed
     Ok(json!({
         "success": true,
         "volume": volume,
@@ -806,9 +818,8 @@ fn usn_query(
 }
 
 fn usn_stats(volume: &str) -> Result<Value, String> {
-    let handle = open_volume(volume)?;
-    let j = query_journal(handle)?;
-    unsafe { CloseHandle(handle); }
+    let handle = HandleGuard(open_volume(volume)?);
+    let j = query_journal(handle.0)?;
 
     Ok(json!({
         "success": true,

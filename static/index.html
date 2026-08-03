@@ -1829,9 +1829,45 @@ function _extractToolName(json){
   try{var o=JSON.parse(json);return o.name||o.tool||'unknown'}catch(e){return'unknown'}
 }
 
+// Repair tables broken by intervening non-table lines (list items, text)
+// that the LLM generated inside a table cell. Merges orphan lines back
+// into the previous row's last cell using <br> so marked.js sees a
+// contiguous table block.
+function fixBrokenTables(text){
+  var NL=String.fromCharCode(10);
+  var lines=text.split(NL);
+  var result=[];
+  var i=0;
+  var isTRow=function(l){return /^\|.*\|/.test(l.trim())};
+  var isSep=function(l){return /^\|[\s:|-]+\|$/.test(l.trim())};
+  while(i<lines.length){
+    if(!isTRow(lines[i])){result.push(lines[i]);i++;continue}
+    var tbl=[];var end=false;
+    while(i<lines.length&&!end){
+      if(isTRow(lines[i])){tbl.push(lines[i]);i++}
+      else if(lines[i].trim()===''){
+        var j=i+1;while(j<lines.length&&lines[j].trim()==='')j++;
+        if(j<lines.length&&isTRow(lines[j])&&!isSep(lines[j])){i=j}else{end=true}
+      }else{
+        var j=i;var orph=[];
+        while(j<lines.length&&!isTRow(lines[j])&&lines[j].trim()!==''){orph.push(lines[j]);j++}
+        if(j<lines.length&&isTRow(lines[j])&&!isSep(lines[j])&&tbl.length>0){
+          var last=tbl[tbl.length-1];
+          var add=orph.map(function(l){return l.trim().replace(/^[-*+]\s+/,'\u2022 ').replace(/\|\s*$/,'')}).filter(function(l){return l.length>0}).join('<br>');
+          if(add){tbl[tbl.length-1]=last.replace(/\|\s*$/,'')+'<br>'+add+' |'}
+          i=j;
+        }else{end=true}
+      }
+    }
+    for(var k=0;k<tbl.length;k++)result.push(tbl[k]);
+  }
+  return result.join(NL);
+}
+
 function renderMd(text){
   if(!text)return'';
   var NL=String.fromCharCode(10);
+  text=fixBrokenTables(text);
   var lines=text.split(NL);for(var _i=1;_i<lines.length;_i++){if(/^\|.+\|$/.test(lines[_i])&&/^\|[\s:|-]+\|$/.test(lines[_i+1]||'')&&lines[_i-1]!==''){lines.splice(_i,0,'');_i++}}text=lines.join(NL);
   if(typeof marked!=='undefined'){try{return marked.parse(text)}catch(e){}}
   return renderMdFallback(text);

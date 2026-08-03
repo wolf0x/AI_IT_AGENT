@@ -487,11 +487,25 @@ async fn run_ps_raw(cmd: &str) -> AgentResult<String> {
     let mut c = Command::new("powershell");
     c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", cmd]);
     c.creation_flags(0x08000000);
-    match c.output().await {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            Ok(stdout)
-        }
-        Err(e) => Err(format!("PowerShell command failed: {}", e).into()),
+    c.kill_on_drop(true);
+    c.stdout(std::process::Stdio::piped());
+    c.stderr(std::process::Stdio::piped());
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        c.output(),
+    )
+    .await
+    .map_err(|_| "PowerShell command timed out (120s)".to_string())?
+    .map_err(|e| format!("PowerShell command failed: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // Return stdout; append stderr if stdout is empty
+    if stdout.trim().is_empty() && !stderr.trim().is_empty() {
+        Ok(stderr)
+    } else {
+        Ok(stdout)
     }
 }

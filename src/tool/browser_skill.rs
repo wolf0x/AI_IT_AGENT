@@ -200,12 +200,13 @@ impl Tool for BrowserSkillTool {
             }
 
             "session_stop" => {
-                let guard = self.session_id.lock().await;
-                if let Some(ref sid) = *guard {
-                    let result = self.run_bsk(&["session", "stop", sid], None).await;
-                    drop(guard);
+                // Take the session ID out atomically to avoid TOCTOU race
+                let sid_opt = {
                     let mut guard = self.session_id.lock().await;
-                    *guard = None;
+                    guard.take() // removes and returns the value
+                };
+                if let Some(sid) = sid_opt {
+                    let result = self.run_bsk(&["session", "stop", &sid], None).await;
                     result.map_err(|e| e.into())
                 } else {
                     Ok(json!({ "message": "No active session to stop" }))

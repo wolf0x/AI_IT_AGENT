@@ -700,9 +700,24 @@ impl Agent for LlmAgent {
                 messages.push(ChatMessage::system(&effective_system_prompt));
                 messages.extend(history.iter().cloned());
 
-                // Call LLM via legacy chat_stream (uses mpsc for text deltas)
+                // Call LLM via legacy chat_stream (uses mpsc for text deltas).
+                // During re-prompt iterations, suppress text streaming to the UI
+                // by using a throwaway channel — the model's response is expected
+                // to be raw tool-call JSON which should NOT be displayed.
+                let stream_tx = if reprompt_count > 0 && !has_executed_tools {
+                    // Re-prompt mode: create a dummy channel to swallow text deltas
+                    let (dummy_tx, mut dummy_rx) = tokio::sync::mpsc::channel::<AgentResult<AgentEvent>>(4);
+                    // Spawn a drain task so the channel never blocks
+                    tokio::spawn(async move {
+                        while dummy_rx.recv().await.is_some() {}
+                    });
+                    dummy_tx
+                } else {
+                    tx.clone()
+                };
+
                 let result = provider
-                    .chat_stream(&active_model, &messages, &tool_defs, tx.clone(), &invocation_id, &author)
+                    .chat_stream(&active_model, &messages, &tool_defs, stream_tx, &invocation_id, &author)
                     .await;
 
                 match result {

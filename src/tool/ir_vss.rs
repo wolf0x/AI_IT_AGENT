@@ -5,7 +5,7 @@
 //! - `create`: Create a new shadow copy of a specified volume
 //! - `delete`: Delete a specific shadow copy (by install date or "all")
 //! - `query`: Query VSS provider/service status and diff area usage
-//! - `expose`: Expose a shadow copy as a drive letter for file access
+//! - `locate`: Find a shadow copy and provide its accessible path for file recovery
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -26,7 +26,7 @@ impl Tool for IrVssTool {
         "Volume Shadow Copy Service (VSS) operations for forensic file access. \
          Actions: 'list' (enumerate shadow copies), 'create' (new shadow copy of a volume), \
          'delete' (remove shadow copy by date or 'all'), 'query' (VSS status/diff area), \
-         'expose' (mount shadow copy as drive letter for file recovery). \
+         'locate' (find shadow copy and return its accessible path for file recovery). \
          Shadow copies preserve historical file states — critical for recovering deleted/modified \
          evidence without altering the live filesystem."
     }
@@ -38,7 +38,7 @@ impl Tool for IrVssTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "create", "delete", "query", "expose"],
+                    "enum": ["list", "create", "delete", "query", "locate"],
                     "description": "VSS operation to perform"
                 },
                 "volume": {
@@ -51,12 +51,8 @@ impl Tool for IrVssTool {
                 },
                 "shadow_id": {
                     "type": "string",
-                    "description": "Shadow copy ID (GUID) or install date string for expose/delete"
+                    "description": "Shadow copy ID (GUID) or install date string for locate/delete"
                 },
-                "drive_letter": {
-                    "type": "string",
-                    "description": "Drive letter to expose shadow copy as (e.g. 'Z:'). For 'expose' action."
-                }
             },
             "required": ["action"]
         })
@@ -77,10 +73,9 @@ impl Tool for IrVssTool {
                 script_delete(date, shadow_id)
             }
             "query" => script_query(),
-            "expose" => {
+            "locate" => {
                 let shadow_id = args["shadow_id"].as_str().unwrap_or("");
-                let drive_letter = args["drive_letter"].as_str().unwrap_or("Z:");
-                script_expose(shadow_id, drive_letter)
+                script_locate(shadow_id)
             }
             _ => return Err(format!("Unknown action: {}", action).into()),
         };
@@ -179,12 +174,11 @@ vssadmin list shadowstorage 2>&1 | Out-String
 "#.to_string()
 }
 
-fn script_expose(shadow_id: &str, drive_letter: &str) -> String {
+fn script_locate(shadow_id: &str) -> String {
     let id = shadow_id.replace('\'', "''");
-    let letter = drive_letter.trim_end_matches(':');
     format!(r#"
 $ErrorActionPreference = 'Stop'
-"Exposing shadow copy as {letter}:"
+"Locating shadow copy: {id}"
 $sc = Get-CimInstance Win32_ShadowCopy | Where-Object {{
   $_.ShadowID -eq '{id}' -or $_.InstallDate.ToString('yyyy-MM-dd HH:mm:ss') -eq '{id}'
 }} | Select-Object -First 1
@@ -198,9 +192,12 @@ $clientPath = $sc.ClientAccessiblePath
 if ($clientPath -and (Test-Path $clientPath)) {{
   "Client-accessible path: $clientPath"
   "Historical files are directly accessible at this path."
+  "Example: Get-ChildItem '$clientPath' to browse historical files."
 }} else {{
   "Device path: $($sc.DeviceObject)"
-  "Client path not available. Try: mklink /D C:\shadow_mount $($sc.DeviceObject)"
+  "Client path not directly accessible."
+  "To access files, try: mklink /D C:\shadow_mount $($sc.DeviceObject)"
+  "Or use: vssadmin list shadows /for=$($sc.VolumeName)"
 }}
 "#)
 }

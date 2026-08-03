@@ -422,6 +422,7 @@ impl Llm for OpenAiProvider {
             let mut accumulated_content = String::new();
             let mut accumulated_reasoning = String::new();
             let mut finish_reason: Option<String> = None;
+            let mut captured_usage: Option<crate::model::UsageMetadata> = None;
 
             tokio::pin!(byte_stream);
             while let Some(chunk_result) = byte_stream.next().await {
@@ -444,6 +445,14 @@ impl Llm for OpenAiProvider {
                     if let Some(data) = line.strip_prefix("data: ") {
                         match serde_json::from_str::<StreamChunk>(data) {
                             Ok(chunk) => {
+                                // Capture usage from final chunk (stream_options.include_usage=true)
+                                if let Some(ref raw) = chunk.usage {
+                                    captured_usage = Some(crate::model::UsageMetadata {
+                                        prompt_tokens: raw.prompt_tokens,
+                                        completion_tokens: raw.completion_tokens,
+                                        total_tokens: raw.total_tokens,
+                                    });
+                                }
                                 if let Some(choices) = chunk.choices {
                                     for choice in choices {
                                         if let Some(fr) = &choice.finish_reason {
@@ -513,7 +522,7 @@ impl Llm for OpenAiProvider {
                 content: if accumulated_content.is_empty() { None } else { Some(accumulated_content) },
                 tool_calls,
                 finish_reason,
-                usage: None,
+                usage: captured_usage,
             });
         };
 

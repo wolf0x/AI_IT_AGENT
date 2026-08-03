@@ -267,17 +267,18 @@ if ($hProcess -eq [IntPtr]::Zero) {{
     exit
 }}
 
-# Create dump file
-$hFile = [System.IO.File]::Create($outPath).SafeFileHandle.DangerousGetHandle()
+# Create dump file (store FileStream to prevent GC finalizer race)
+$fileStream = [System.IO.File]::Create($outPath)
+$hFile = $fileStream.SafeFileHandle.DangerousGetHandle()
 $dumpType = [uint32]({dump_flags})
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $success = [DbgHelp]::MiniDumpWriteDump($hProcess, $targetPid, $hFile, $dumpType, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
 $sw.Stop()
 
-[System.IO.File]::WriteAllBytes($outPath, [System.IO.File]::ReadAllBytes($outPath)) # flush
-# Close handles properly
-try {{ [System.IO.File]::OpenWrite($outPath).Close() }} catch {{}}
+# Close file stream properly (flushes + releases handle)
+$fileStream.Flush()
+$fileStream.Close()
 [DbgHelp]::CloseHandle($hProcess) | Out-Null
 
 if ($success) {{
@@ -300,7 +301,7 @@ if ($success) {{
 }}
 "#,
         pid = pid,
-        output_path = output_path.replace('\'', "\\\\"),
+        output_path = output_path.replace('\'', "''"),
         dump_type = dump_type,
         dump_flags = dump_flags
     ))
