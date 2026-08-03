@@ -26,9 +26,12 @@ pub struct IrUsnTool;
 const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_SHARE_READ: u32 = 0x1;
 const FILE_SHARE_WRITE: u32 = 0x2;
+const FILE_SHARE_DELETE: u32 = 0x4;
 const OPEN_EXISTING: u32 = 3;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const INVALID_HANDLE_VALUE: isize = -1;
+const ERROR_MORE_DATA: u32 = 234;
 
 const FSCTL_QUERY_USN_JOURNAL: u32 = 0x0009_00F4;
 const FSCTL_READ_USN_JOURNAL: u32 = 0x0009_00BB;
@@ -136,7 +139,41 @@ extern "system" {
         pPreviousState: *const (),
         pReturnLength: *const (),
     ) -> i32;
+
+    fn OpenFileById(
+        hFile: isize,
+        lpFileId: *const FileIdDescriptor,
+        dwDesiredAccess: u32,
+        dwShareMode: u32,
+        lpSecurityAttributes: *const (),
+        dwCreationDisposition: u32,
+        dwFlagsAndAttributes: u32,
+        hTemplateFile: isize,
+    ) -> isize;
+
+    fn GetFileInformationByHandleEx(
+        hFile: isize,
+        file_info_class: u32,
+        lpFileInformation: *mut u8,
+        dwBufferSize: u32,
+    ) -> i32;
+
+    fn GetLastError() -> u32;
 }
+
+/// FILE_ID_DESCRIPTOR (FILE_ID_TYPE = 0): open a file/directory by its MFT file ID.
+/// Layout: dwSize(u32) + Type(i32) + union{ FileId | GUID | FILE_ID_128 }(16 bytes) = 24 bytes.
+/// NOTE: the union is 16 bytes (largest member FILE_ID_128/GUID), so dwSize MUST be 24 —
+/// a 16-byte layout makes OpenFileById fail with ERROR_INVALID_PARAMETER.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FileIdDescriptor {
+    dw_size: u32,
+    id_type: i32,      // 0 = FileIdType
+    file_id: [u64; 2], // union storage; NTFS uses first u64 (LARGE_INTEGER file reference)
+}
+
+const FILE_INFO_CLASS_FILE_NAME_INFO: u32 = 2;
 
 #[repr(C)]
 struct TokenPrivileges {
@@ -183,7 +220,8 @@ impl Tool for IrUsnTool {
     fn description(&self) -> &str {
         "NTFS USN Journal analysis (native, zero-overhead). \
          Actions: 'query' (filtered journal read — reason mask applied at kernel level, \
-         time filter with early stop), 'stats' (journal metadata), 'config' (journal settings). \
+         time filter with binary-seek early stop, full paths resolved via MFT file IDs), \
+         'stats' (journal metadata), 'config' (journal settings). \
          Reads USN records via FSCTL_READ_USN_JOURNAL with constant 64KB memory. \
          Supports reason filters: create, delete, modify, rename, security, all."
     }
@@ -213,7 +251,7 @@ impl Tool for IrUsnTool {
                 },
                 "path_filter": {
                     "type": "string",
-                    "description": "Substring match on filename (Rust-side filter)"
+                    "description": "Substring match on resolved full path (Rust-side filter)"
                 },
                 "max_entries": {
                     "type": "integer",
@@ -334,7 +372,7 @@ fsutil usn readjournal {vol}: csv 2>&1 | ForEach-Object {{
     $reason = if ($rc -band 0x100) {{'CREATE'}} elseif ($rc -band 0x8000) {{'DELETE'}} elseif ($rc -band 0x2000) {{'RENAME'}} elseif ($rc -band 0x1) {{'WRITE'}} elseif ($rc -band 0x80000) {{'SECURITY'}} else {{'OTHER'}}
     $entries += @{{file=$fname; reason=$reason; usn=$usn}}
 }}
-@{{success=$true; volume='{vol}:'; filter=@{{reason='{reason_filter}'; hours_ago={hours_ago}; path='{path_filter}'}}; returned=$entries.Count; scanned=$scanned; entries=$entries; note='PowerShell fallback'}} | ConvertTo-Json -Depth 3 -Compress
+@{{success=$true; volume='{vol}:'; filter=@{{reason='{reason_filter}'; hours_ago={hours_ago}; path='{path_filter}'}}; returned=$entries.Count; scanned=$scanned; entries=$entries; note='PowerShell fallback (bare filenames, no full-path resolution)'}} | ConvertTo-Json -Depth 3 -Compress
 "#
     )
 }
@@ -345,7 +383,9 @@ fsutil usn readjournal {vol}: csv 2>&1 | ForEach-Object {{
 
 fn open_volume(volume: &str) -> Result<isize, String> {
     enable_manage_volume_privilege();
-    let path = format!("\\\\.\\{}", volume.trim_end_matches(':'));
+    // Device path must keep the trailing colon: \\.\C: (MSDN change-journal convention)
+    let letter = volume.trim_end_matches(':');
+    let path = format!("\\\\.\\{}:", letter);
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let handle = unsafe {
         CreateFileW(
@@ -359,7 +399,11 @@ fn open_volume(volume: &str) -> Result<isize, String> {
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        return Err(format!("Cannot open volume {} (need Administrator)", volume));
+        let err = unsafe { GetLastError() };
+        return Err(format!(
+            "Cannot open volume {} (error {}, need elevated Administrator)",
+            path, err
+        ));
     }
     Ok(handle)
 }
@@ -411,6 +455,159 @@ fn reason_to_str(reason: u32) -> &'static str {
 /// FILETIME (100ns since 1601-01-01) → Unix seconds
 fn filetime_to_unix(ft: i64) -> i64 {
     ft / 10_000_000 - 11_644_473_600
+}
+
+// ============================================================
+// Full-path resolution (ported from usn-journal-rs PathResolver)
+//
+// USN records only carry the bare file name + parent file ID.
+// To get a full path we open the parent directory by its MFT file ID
+// (OpenFileById + FILE_ID_DESCRIPTOR) and query its name via
+// GetFileInformationByHandleEx(FileNameInfo), then join the file name.
+// A bounded directory-FID cache amortizes resolution across entries
+// sharing the same parent directory.
+// ============================================================
+
+const PATH_CACHE_CAPACITY: usize = 4096;
+
+struct PathResolver {
+    volume_handle: isize,
+    drive_root: String, // e.g. "C:\"
+    cache: std::collections::HashMap<u64, (String, String)>, // dir fid -> (full path, dir name)
+}
+
+impl PathResolver {
+    fn new(volume_handle: isize, volume: &str) -> Self {
+        let letter = volume.trim_end_matches(':').chars().next().unwrap_or('C');
+        let letter = letter.to_ascii_uppercase();
+        PathResolver {
+            volume_handle,
+            drive_root: format!("{}:\\", letter),
+            cache: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Resolve the full path for a USN record.
+    /// Returns None when the parent FID cannot be opened (deleted dir, ACL, etc).
+    fn resolve(&mut self, fid: u64, parent_fid: u64, file_name: &str, is_dir: bool) -> Option<String> {
+        // Volume root self-entry (fid == parent_fid, name == ".")
+        if fid == parent_fid && file_name == "." {
+            return Some(self.drive_root.clone());
+        }
+
+        // 1. Cache hit for this FID (previously resolved directory)
+        if let Some((cached_path, cached_name)) = self.cache.get(&fid) {
+            if *cached_name == file_name {
+                return Some(cached_path.clone());
+            }
+            // Name changed (dir renamed) — stale, re-resolve
+            self.cache.remove(&fid);
+        }
+
+        // 2. Parent directory path: cache first, then filesystem
+        let parent_path: String = match self.cache.get(&parent_fid) {
+            Some((p, _)) => p.clone(),
+            None => {
+                let resolved = file_id_to_path(self.volume_handle, parent_fid, &self.drive_root)?;
+                // Cache the resolved parent (bounded; simple clear-on-overflow)
+                if self.cache.len() >= PATH_CACHE_CAPACITY {
+                    self.cache.clear();
+                }
+                let parent_name = resolved
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                self.cache.insert(parent_fid, (resolved.clone(), parent_name));
+                resolved
+            }
+        };
+
+        // 3. Join parent path + file name (avoid double backslash at root)
+        let full = if parent_path.ends_with('\\') {
+            format!("{}{}", parent_path, file_name)
+        } else {
+            format!("{}\\{}", parent_path, file_name)
+        };
+
+        // 4. Cache directories for descendants
+        if is_dir {
+            if self.cache.len() >= PATH_CACHE_CAPACITY {
+                self.cache.clear();
+            }
+            self.cache.insert(fid, (full.clone(), file_name.to_string()));
+        }
+
+        Some(full)
+    }
+}
+
+/// Open a file/directory by MFT file ID and query its volume-relative name.
+/// Returns the full path prefixed with the drive root, e.g. "C:\Windows\System32".
+fn file_id_to_path(volume_handle: isize, file_id: u64, drive_root: &str) -> Option<String> {
+    let desc = FileIdDescriptor {
+        dw_size: mem::size_of::<FileIdDescriptor>() as u32,
+        id_type: 0, // FileIdType
+        file_id: [file_id, 0],
+    };
+
+    let h = unsafe {
+        OpenFileById(
+            volume_handle,
+            &desc,
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            0,
+        )
+    };
+    if h == INVALID_HANDLE_VALUE || h == 0 {
+        return None;
+    }
+
+    // FILE_NAME_INFO: FileNameLength(u32) + WCHAR[] (volume-relative, starts with '\')
+    let mut buf: Vec<u8> = vec![0u8; 4 + 260 * 2];
+    let name_wide: Vec<u16> = loop {
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                h,
+                FILE_INFO_CLASS_FILE_NAME_INFO,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+            )
+        };
+        if ok == 0 {
+            if unsafe { GetLastError() } == ERROR_MORE_DATA {
+                // Long path: first u32 tells required name length in bytes
+                let need = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                buf.resize(4 + need, 0);
+                continue;
+            }
+            unsafe { CloseHandle(h); }
+            return None;
+        }
+        let name_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        if name_len % 2 != 0 || 4 + name_len > buf.len() {
+            unsafe { CloseHandle(h); }
+            return None;
+        }
+        let wide: Vec<u16> = buf[4..4 + name_len]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        break wide;
+    };
+    unsafe { CloseHandle(h); }
+
+    let rel = String::from_utf16_lossy(&name_wide);
+    let rel = rel.trim_start_matches('\\');
+    if rel.is_empty() {
+        Some(drive_root.to_string())
+    } else {
+        Some(format!("{}{}", drive_root, rel))
+    }
 }
 
 /// Binary search for the USN closest to (but before) cutoff_ft.
@@ -492,6 +689,8 @@ fn usn_query(
 
     let mut entries: Vec<Value> = Vec::new();
     let mut total_scanned: u64 = 0;
+    let mut paths_resolved: usize = 0;
+    let mut resolver = PathResolver::new(handle, volume);
     // Binary search to skip directly to the time window (O(log N) probes)
     let mut current_usn = seek_to_time(handle, &journal, cutoff_ft);
     let buf_size: u32 = 65536; // 64KB read buffer
@@ -556,17 +755,30 @@ fn usn_query(
                 String::from("?")
             };
 
-            // Path filter (Rust-side)
+            // Resolve full path via parent file ID (MFT lookup); fall back to bare name
+            let is_dir = rec.file_attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+            let full_path = match resolver.resolve(
+                rec.file_reference_number,
+                rec.parent_file_reference_number,
+                &filename,
+                is_dir,
+            ) {
+                Some(p) => { paths_resolved += 1; p }
+                None => filename.clone(),
+            };
+
+            // Path filter (Rust-side, matches against full path)
             if !path_filter.is_empty()
-                && !filename.to_lowercase().contains(&path_filter.to_lowercase())
+                && !full_path.to_lowercase().contains(&path_filter.to_lowercase())
             {
                 offset += rec.record_length as usize;
                 continue;
             }
 
             let ts_unix = filetime_to_unix(rec.time_stamp);
+            let display_path: String = full_path.chars().take(160).collect();
             entries.push(json!({
-                "file": if filename.len() > 80 { &filename[..80] } else { &filename },
+                "file": display_path,
                 "reason": reason_to_str(rec.reason),
                 "time": ts_unix,
                 "usn": rec.usn,
@@ -576,8 +788,8 @@ fn usn_query(
             if entries.len() >= max_entries { break; }
         }
 
+        if next_usn <= input.start_usn { break; } // safety: no progress
         current_usn = next_usn;
-        if next_usn <= current_usn && next_usn == input.start_usn { break; } // safety: no progress
     }
 
     unsafe { CloseHandle(handle); }
@@ -588,6 +800,7 @@ fn usn_query(
         "filter": { "reason": reason_filter, "hours_ago": hours_ago, "path": path_filter },
         "returned": entries.len(),
         "scanned": total_scanned,
+        "paths_resolved": paths_resolved,
         "entries": entries,
     }))
 }
@@ -608,4 +821,23 @@ fn usn_stats(volume: &str) -> Result<Value, String> {
         "allocation_delta_mb": j.allocation_delta / (1024 * 1024),
         "note": "Use 'query' action with reason_filter for filtered record reading.",
     }))
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    /// Live test: requires elevated privileges + active USN journal on C:.
+    /// Skips gracefully when unavailable.
+    #[test]
+    fn test_usn_query_live_with_path_resolution() {
+        match usn_query("C:", 1, "all", "", 10) {
+            Ok(v) => {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                assert_eq!(v["success"], json!(true));
+                assert!(v["entries"].is_array());
+            }
+            Err(e) => eprintln!("Skipping live USN test (needs elevation/journal): {}", e),
+        }
+    }
 }
