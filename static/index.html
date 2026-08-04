@@ -932,7 +932,7 @@ function handleMsg(msg){
     case 'auth_ok':connected=true;reconnectAttempts=0;updateStatus();addLog('Authenticated','info');loadModels();sendPerms();renderPerms();break;
     case 'auth_fail':addLog('Auth failed: '+(msg.message||'bad password'),'error');intentionalDisconnect=true;reconnectAttempts=0;break;
     case 'thinking':
-      hideTyping();
+      hideTyping();finalizeTextBlock();
       if(msg.content&&msg.content.trim()){
         if(!curThinkEl){curThinkEl=createThinkBlock();appendToConv(curThinkEl)}
         appendThinkText(curThinkEl,msg.content);
@@ -1024,6 +1024,7 @@ function appendTextContent(el,chunk){
     var html=renderMd(cleaned);
     html=renderToolCallPlaceholders(html);
     content.innerHTML=html;addCopyBtns(content);
+    extractBlocksFromContent(el);
   }
 }
 function finalizeTextBlock(){
@@ -1037,6 +1038,7 @@ function finalizeTextBlock(){
           html=renderToolCallPlaceholders(html);
           content.innerHTML=html;
           addCopyBtns(content);
+          extractBlocksFromContent(curTextEl);
         } else {
           content.innerHTML='<span style="color:var(--t3);font-style:italic">Thinking...</span>';
         }
@@ -1050,6 +1052,17 @@ function finalizeTextBlock(){
     }
   }
   curTextEl=null;textAccum='';
+}
+// Extract tool-blocks and think-blocks from msg-content and move them after the msg element
+function extractBlocksFromContent(msgEl){
+  var content=msgEl?msgEl.querySelector('.msg-content'):null;
+  if(!content)return;
+  var blocks=content.querySelectorAll('.tool-block,.think-block');
+  if(!blocks.length)return;
+  var ref=msgEl.nextSibling;
+  for(var i=0;i<blocks.length;i++){
+    msgEl.parentElement.insertBefore(blocks[i],ref);
+  }
 }
 function showTyping(){
   hideTyping();

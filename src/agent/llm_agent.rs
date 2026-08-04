@@ -804,8 +804,8 @@ impl Agent for LlmAgent {
                                 info!("[session:{}] Re-prompting model to emit tool call JSON (iter {}, attempt {}, reason: {})", session_id, iteration, reprompt_count, reason);
 
                                 // Notify the user that the system is retrying the tool call
-                                let _ = tx.send(Ok(AgentEvent::text(
-                                    "\n\n*[正在重新组织工具调用...]*",
+                                let _ = tx.send(Ok(AgentEvent::thinking(
+                                    "[正在重新组织工具调用...]",
                                     &invocation_id, &author
                                 ))).await;
 
