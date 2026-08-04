@@ -150,6 +150,9 @@ pub struct InvocationContext {
     pub checkpoint_id: Option<String>,
     /// Checkpointer for persisting task state.
     pub checkpointer: Option<ATaskCheckpointer>,
+    /// Path to the JSONL event log file for this run.
+    /// When set, the agent logs all state changes to this file for crash recovery.
+    pub event_log_path: Option<std::path::PathBuf>,
     ended: Arc<AtomicBool>,
 }
 
@@ -181,6 +184,7 @@ impl InvocationContext {
             resume_iteration: None,
             checkpoint_id: None,
             checkpointer: None,
+            event_log_path: None,
             ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -255,6 +259,12 @@ impl InvocationContext {
     /// Set the checkpointer for persisting task state.
     pub fn with_checkpointer(mut self, cp: ATaskCheckpointer) -> Self {
         self.checkpointer = Some(cp);
+        self
+    }
+
+    /// Set the path for the JSONL event log.
+    pub fn with_event_log_path(mut self, path: std::path::PathBuf) -> Self {
+        self.event_log_path = Some(path);
         self
     }
 

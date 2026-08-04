@@ -3154,6 +3154,7 @@ dependencies = [
  "sha1",
  "sha2",
  "ssh-key",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "toml 0.8.23",

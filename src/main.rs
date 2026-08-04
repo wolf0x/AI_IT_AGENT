@@ -12,6 +12,7 @@ mod forensics;
 mod context;
 #[allow(dead_code)]
 mod error;
+mod event_log;
 mod external_tools;
 mod heartbeat;
 mod log;

@@ -8,6 +8,7 @@ use crate::callbacks::AgentCallbacks;
 use crate::config::ModelConfig;
 use crate::context::{InvocationContext, ToolContext};
 use crate::error::{AgentError, AgentResult};
+use crate::event_log::{EventLog, LogEvent};
 use crate::model::openai::OpenAiProvider;
 use crate::model::ChatMessage;
 use crate::permission::{PermissionChecker, PendingMap};
@@ -608,8 +609,34 @@ impl Agent for LlmAgent {
         let checkpoint_id = ctx.checkpoint_id.clone();
         let resume_history = ctx.resume_history.clone();
         let resume_iteration = ctx.resume_iteration;
+        let event_log_path = ctx.event_log_path.clone();
 
         tokio::spawn(async move {
+            // ── Initialize event log for crash recovery ──
+            let mut event_log = event_log_path.as_ref().and_then(|p| {
+                match EventLog::open(p) {
+                    Ok(log) => {
+                        info!("[session:{}] Event log opened at {:?}", session_id, p);
+                        Some(log)
+                    }
+                    Err(e) => {
+                        warn!("[session:{}] Failed to open event log at {:?}: {}", session_id, p, e);
+                        None
+                    }
+                }
+            });
+
+            // Log run started
+            if let Some(ref mut log) = event_log {
+                let _ = log.append(&LogEvent::RunStarted {
+                    run_id: session_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    instruction: user_message.clone(),
+                    model: model.clone(),
+                    session_id: session_id.clone(),
+                });
+            }
+
             let mut effective_system_prompt = system_prompt.clone();
             let mut history: Vec<ChatMessage> = prev_history;
 
@@ -676,6 +703,15 @@ impl Agent for LlmAgent {
             let start_iter = resume_iteration.unwrap_or(0);
             for iteration in start_iter..max_iter {
                 info!("[session:{}] Agent loop iteration {} (model: {})", session_id, iteration + 1, active_model);
+
+                // Log turn started
+                if let Some(ref mut log) = event_log {
+                    let _ = log.append(&LogEvent::TurnStarted {
+                        run_id: session_id.clone(),
+                        timestamp: chrono::Utc::now(),
+                        turn_number: iteration as u32,
+                    });
+                }
 
                 // If the consumer (WebSocket client) dropped the event stream —
                 // e.g. user clicked Stop or the connection closed — abort the
@@ -877,6 +913,16 @@ impl Agent for LlmAgent {
                                     info!("[session:{}] Checkpoint deleted (task completed)", session_id);
                                 }
                             }
+                            // Log run completed
+                            if let Some(ref mut log) = event_log {
+                                let _ = log.append(&LogEvent::RunCompleted {
+                                    run_id: session_id.clone(),
+                                    timestamp: chrono::Utc::now(),
+                                    total_turns: iteration as u32 + 1,
+                                    total_tokens: 0, // Token tracking can be added later
+                                    duration_ms: 0,
+                                });
+                            }
                             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
                             return;
                         }
@@ -934,7 +980,7 @@ impl Agent for LlmAgent {
                                     // Standard sequential execution
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                            &tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -980,7 +1026,7 @@ impl Agent for LlmAgent {
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &*tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                            &*tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1017,6 +1063,15 @@ impl Agent for LlmAgent {
                                 continue; // Retry with fallback model
                             }
                         }
+                        // Log run failed
+                        if let Some(ref mut log) = event_log {
+                            let _ = log.append(&LogEvent::RunFailed {
+                                run_id: session_id.clone(),
+                                timestamp: chrono::Utc::now(),
+                                total_turns: iteration as u32 + 1,
+                                error: e.to_string(),
+                            });
+                        }
                         let _ = tx.send(Ok(AgentEvent::error(&e, &invocation_id, &author))).await;
                         let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
                         return;
@@ -1051,6 +1106,16 @@ impl Agent for LlmAgent {
                     let fallback = generate_static_summary(&history, max_iter);
                     let _ = tx.send(Ok(AgentEvent::text(&fallback, &invocation_id, &author))).await;
                 }
+            }
+            // Log run completed (max iterations reached)
+            if let Some(ref mut log) = event_log {
+                let _ = log.append(&LogEvent::RunCompleted {
+                    run_id: session_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    total_turns: max_iter as u32,
+                    total_tokens: 0,
+                    duration_ms: 0,
+                });
             }
             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
         });
@@ -1320,6 +1385,7 @@ async fn execute_tool_call(
     permission: &PermissionChecker,
     tool_timeout_secs: u64,
     max_retries: usize,
+    mut event_log: Option<&mut EventLog>,
 ) -> ChatMessage {
     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
@@ -1341,6 +1407,18 @@ async fn execute_tool_call(
             return result_msg;
         }
     };
+
+    // Log tool call started
+    if let Some(ref mut log) = event_log {
+        let _ = log.append(&LogEvent::ToolCallStarted {
+            run_id: invocation_id.to_string(),
+            timestamp: chrono::Utc::now(),
+            turn_number: 0, // Will be filled by caller context if needed
+            call_id: tc.id.clone(),
+            tool_name: tool_name.to_string(),
+            args: args.clone(),
+        });
+    }
 
     // Emit tool_call event
     let call_event = AgentEvent::tool_call(tool_name, &tc.id, args.clone(), invocation_id, author);
@@ -1523,6 +1601,21 @@ async fn execute_tool_call(
         }
     };
 
+    // Log tool call completed
+    let success = !result.get("error").is_some();
+    if let Some(ref mut log) = event_log {
+        let _ = log.append(&LogEvent::ToolCallCompleted {
+            run_id: invocation_id.to_string(),
+            timestamp: chrono::Utc::now(),
+            turn_number: 0, // Will be filled by caller context if needed
+            call_id: tc.id.clone(),
+            tool_name: tool_name.to_string(),
+            result: result.clone(),
+            success,
+            duration_ms: 0, // Duration tracking can be added later if needed
+        });
+    }
+
     // Emit tool_result event (full result to UI)
     let result_event = AgentEvent::tool_result(tool_name, &tc.id, result.clone(), invocation_id, author);
     let _ = tx.send(Ok(result_event)).await;
@@ -1540,6 +1633,8 @@ async fn execute_tool_call(
 
 /// Run a batch of tool calls concurrently and return their result messages in
 /// the original (input) order. Only safe for read-only / concurrency-safe tools.
+/// Note: Event logging is not supported in concurrent execution mode to avoid
+/// mutable reference conflicts. Use sequential execution for full event logging.
 async fn execute_tools_concurrent<'a>(
     tools: &'a tokio::sync::RwLock<ToolRegistry>,
     tool_calls: &'a [crate::model::ToolCallDelta],
@@ -1554,7 +1649,7 @@ async fn execute_tools_concurrent<'a>(
 ) -> Vec<ChatMessage> {
     use futures::future::join_all;
     let futs = tool_calls.iter().map(|tc| {
-        execute_tool_call(tools, tc, working_dir, workspace_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries)
+        execute_tool_call(tools, tc, working_dir, workspace_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries, None)
     });
     join_all(futs).await
 }
