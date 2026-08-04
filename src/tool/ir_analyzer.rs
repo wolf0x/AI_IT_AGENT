@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 
 use super::Tool;
 use crate::context::ToolContext;
@@ -529,6 +530,32 @@ impl Tool for IrAnalyzerTool {
             }
         }
 
+        // ── Causal Chain Correlation ──
+        // Extract indicators from each finding for cross-referencing
+        let mut finding_indicators: Vec<HashSet<String>> = Vec::new();
+        for f in &findings {
+            let indicators = extract_indicators(&f.evidence, &f.category, &f.rule_id);
+            finding_indicators.push(indicators);
+        }
+
+        // Build correlation map: finding index -> set of correlated finding indices
+        let mut correlation_map: HashMap<usize, HashSet<usize>> = HashMap::new();
+        for i in 0..findings.len() {
+            for j in (i + 1)..findings.len() {
+                let shared: HashSet<_> = finding_indicators[i]
+                    .intersection(&finding_indicators[j])
+                    .cloned()
+                    .collect();
+                if !shared.is_empty() {
+                    correlation_map.entry(i).or_default().insert(j);
+                    correlation_map.entry(j).or_default().insert(i);
+                }
+            }
+        }
+
+        // Detect known attack chain patterns
+        let attack_chains = detect_attack_chains(&findings);
+
         // ── Summary ──
         let critical = findings.iter().filter(|f| f.severity == "critical").count();
         let high = findings.iter().filter(|f| f.severity == "high").count();
@@ -549,7 +576,7 @@ impl Tool for IrAnalyzerTool {
             });
         }
 
-        let findings_json: Vec<Value> = findings.iter().map(|f| {
+        let findings_json: Vec<Value> = findings.iter().enumerate().map(|(idx, f)| {
             let techniques: Vec<Value> = mitre_mapping(&f.rule_id).iter().map(|t| {
                 json!({
                     "id": t.id,
@@ -557,6 +584,10 @@ impl Tool for IrAnalyzerTool {
                     "tactic": t.tactic,
                 })
             }).collect();
+            // Add correlated finding IDs
+            let correlated: Vec<String> = correlation_map.get(&idx)
+                .map(|set| set.iter().map(|&j| findings[j].id.clone()).collect())
+                .unwrap_or_default();
             json!({
                 "id": f.id,
                 "rule_id": f.rule_id,
@@ -567,6 +598,21 @@ impl Tool for IrAnalyzerTool {
                 "recommendation": f.recommendation,
                 "source": f.source,
                 "mitre_techniques": techniques,
+                "correlated_with": correlated,
+            })
+        }).collect();
+
+        // Build correlation chains JSON
+        let chains_json: Vec<Value> = attack_chains.iter().map(|chain| {
+            let finding_ids: Vec<String> = chain.finding_indices.iter()
+                .map(|&i| findings[i].id.clone()).collect();
+            json!({
+                "chain_id": chain.chain_id,
+                "name": chain.name,
+                "description": chain.description,
+                "kill_chain_phase": chain.kill_chain_phase,
+                "confidence": chain.confidence,
+                "finding_ids": finding_ids,
             })
         }).collect();
 
@@ -580,6 +626,11 @@ impl Tool for IrAnalyzerTool {
                 "low": low,
             },
             "findings": findings_json,
+            "correlation_chains": chains_json,
+            "correlation_summary": {
+                "total_correlations": correlation_map.values().map(|s| s.len()).sum::<usize>() / 2,
+                "chains_detected": attack_chains.len(),
+            },
         }))
     }
 }
@@ -590,4 +641,201 @@ fn truncate(s: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &s[..max_len])
     }
+}
+
+/// Extract correlation indicators from a finding's evidence and metadata.
+fn extract_indicators(evidence: &str, category: &str, rule_id: &str) -> HashSet<String> {
+    let mut indicators = HashSet::new();
+    let lower = evidence.to_lowercase();
+
+    // Extract IP addresses
+    let ip_re = regex::Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").unwrap();
+    for cap in ip_re.captures_iter(evidence) {
+        let ip = &cap[1];
+        if !ip.starts_with("127.") && !ip.starts_with("0.0.") {
+            indicators.insert(format!("ip:{}", ip));
+        }
+    }
+
+    // Extract process/service names from evidence
+    let proc_patterns = ["psexesvc", "cobalt", "meterpreter", "beacon",
+                         "mshta", "rundll32", "regsvr32", "certutil", "bitsadmin",
+                         "wmic", "powershell", "cmd.exe", "wscript", "cscript"];
+    for p in &proc_patterns {
+        if lower.contains(p) {
+            indicators.insert(format!("proc:{}", p));
+        }
+    }
+
+    // Extract file paths (normalize to lowercase)
+    let path_re = regex::Regex::new(r"([A-Za-z]:\\[^\s,;)]+)").unwrap();
+    for cap in path_re.captures_iter(evidence) {
+        indicators.insert(format!("path:{}", cap[1].to_lowercase()));
+    }
+
+    // Extract account names from relevant categories
+    if category == "accounts" || category == "eventlogs" {
+        let acct_re = regex::Regex::new(r"(?i)(?:user|account|target)[:\s=]+([A-Za-z0-9_.$]{2,30})").unwrap();
+        for cap in acct_re.captures_iter(evidence) {
+            let acct = cap[1].to_lowercase();
+            if !matches!(acct.as_str(), "system" | "local" | "service") {
+                indicators.insert(format!("account:{}", acct));
+            }
+        }
+    }
+
+    // Add rule-based category indicator for chain detection
+    indicators.insert(format!("rule:{}", rule_id));
+
+    indicators
+}
+
+/// A detected attack chain.
+struct AttackChain {
+    chain_id: String,
+    name: String,
+    description: String,
+    kill_chain_phase: String,
+    confidence: String,
+    finding_indices: Vec<usize>,
+}
+
+/// Detect known attack chain patterns from findings.
+fn detect_attack_chains(findings: &[Finding]) -> Vec<AttackChain> {
+    let mut chains = Vec::new();
+    let mut chain_counter = 0u32;
+
+    // Build rule_id -> indices map
+    let mut rule_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, f) in findings.iter().enumerate() {
+        rule_indices.entry(f.rule_id.as_str()).or_default().push(i);
+    }
+
+    // Chain 1: Credential Attack → Persistence → Lateral Movement
+    let has_bruteforce = rule_indices.contains_key("win.bruteforce_many")
+        || rule_indices.contains_key("win.bruteforce_some");
+    let has_account_change = rule_indices.contains_key("win.account_change");
+    let has_hidden = rule_indices.contains_key("win.hidden_account");
+    let has_psexec = rule_indices.contains_key("win.psexec_service");
+
+    if (has_bruteforce || has_account_change) && (has_hidden || has_psexec) {
+        chain_counter += 1;
+        let mut indices = Vec::new();
+        for key in &["win.bruteforce_many", "win.bruteforce_some", "win.account_change", "win.hidden_account", "win.psexec_service"] {
+            if let Some(idxs) = rule_indices.get(*key) {
+                indices.extend(idxs);
+            }
+        }
+        chains.push(AttackChain {
+            chain_id: format!("CH-{:03}", chain_counter),
+            name: "Credential Attack → Persistence → Lateral Movement".into(),
+            description: "Evidence of brute force or account manipulation combined with persistence mechanisms and lateral movement tools. This pattern suggests an attacker compromised credentials, created backdoor access, and is moving laterally.".into(),
+            kill_chain_phase: "Credential Access → Persistence → Lateral Movement".into(),
+            confidence: if has_bruteforce && has_psexec { "high".into() } else { "medium".into() },
+            finding_indices: indices,
+        });
+    }
+
+    // Chain 2: Defense Evasion → Execution → C2
+    let has_defender_disabled = rule_indices.contains_key("win.defender_disabled");
+    let has_defender_exclusion = rule_indices.contains_key("win.defender_exclusion");
+    let has_encoded_ps = rule_indices.contains_key("win.encoded_powershell");
+    let has_lolbin = rule_indices.contains_key("win.lolbin_exec");
+    let has_external = rule_indices.contains_key("win.external_established");
+    let has_dns_suspicious = rule_indices.contains_key("win.dns_suspicious_cache");
+    let has_log_cleared = rule_indices.contains_key("win.eventlog_cleared");
+
+    if (has_defender_disabled || has_defender_exclusion || has_log_cleared)
+        && (has_encoded_ps || has_lolbin)
+        && (has_external || has_dns_suspicious)
+    {
+        chain_counter += 1;
+        let mut indices = Vec::new();
+        for key in &["win.defender_disabled", "win.defender_exclusion", "win.eventlog_cleared",
+                     "win.encoded_powershell", "win.lolbin_exec",
+                     "win.external_established", "win.dns_suspicious_cache"] {
+            if let Some(idxs) = rule_indices.get(*key) {
+                indices.extend(idxs);
+            }
+        }
+        chains.push(AttackChain {
+            chain_id: format!("CH-{:03}", chain_counter),
+            name: "Defense Evasion → Execution → Command & Control".into(),
+            description: "Attacker disabled security tools, executed obfuscated code, and established external communications. This is a classic post-exploitation pattern indicating an active compromise with anti-detection measures.".into(),
+            kill_chain_phase: "Defense Evasion → Execution → Command and Control".into(),
+            confidence: "high".into(),
+            finding_indices: indices,
+        });
+    }
+
+    // Chain 3: Initial Access → Persistence → Privilege Escalation
+    let has_service_install = rule_indices.contains_key("win.service_install");
+    let has_suspicious_path = rule_indices.contains_key("win.suspicious_path");
+    let has_webshell = rule_indices.contains_key("web.suspicious_request");
+
+    if has_webshell && (has_service_install || has_suspicious_path) {
+        chain_counter += 1;
+        let mut indices = Vec::new();
+        for key in &["web.suspicious_request", "win.service_install", "win.suspicious_path",
+                     "win.unsigned_driver", "win.unquoted_service_path"] {
+            if let Some(idxs) = rule_indices.get(*key) {
+                indices.extend(idxs);
+            }
+        }
+        chains.push(AttackChain {
+            chain_id: format!("CH-{:03}", chain_counter),
+            name: "Web Exploitation → Persistence → Privilege Escalation".into(),
+            description: "Web shell activity combined with service installation or suspicious executables suggests the attacker gained initial access via a web vulnerability, established persistence, and is escalating privileges.".into(),
+            kill_chain_phase: "Initial Access → Persistence → Privilege Escalation".into(),
+            confidence: "high".into(),
+            finding_indices: indices,
+        });
+    }
+
+    // Chain 4: Suspicious path + service install (potential malware deployment)
+    if has_suspicious_path && has_service_install && !has_webshell {
+        chain_counter += 1;
+        let mut indices = Vec::new();
+        if let Some(idxs) = rule_indices.get("win.suspicious_path") {
+            indices.extend(idxs);
+        }
+        if let Some(idxs) = rule_indices.get("win.service_install") {
+            indices.extend(idxs);
+        }
+        chains.push(AttackChain {
+            chain_id: format!("CH-{:03}", chain_counter),
+            name: "Malware Deployment via Service Installation".into(),
+            description: "Executables in suspicious directories combined with service installation events suggest malware was deployed as a Windows service for persistence.".into(),
+            kill_chain_phase: "Execution → Persistence".into(),
+            confidence: "medium".into(),
+            finding_indices: indices,
+        });
+    }
+
+    // Chain 5: Log cleared + any other findings (evidence tampering)
+    if has_log_cleared && findings.len() > 1 {
+        chain_counter += 1;
+        let mut indices = rule_indices.get("win.eventlog_cleared").cloned().unwrap_or_default();
+        // Add all critical/high findings as potentially related
+        for (i, f) in findings.iter().enumerate() {
+            if (f.severity == "critical" || f.severity == "high")
+                && f.rule_id != "win.eventlog_cleared"
+                && !indices.contains(&i)
+            {
+                indices.push(i);
+            }
+        }
+        if indices.len() > 1 {
+            chains.push(AttackChain {
+                chain_id: format!("CH-{:03}", chain_counter),
+                name: "Evidence Tampering with Active Findings".into(),
+                description: "Event logs were cleared while other high-severity findings exist. This strongly suggests an attacker (or insider) attempted to cover their tracks while other malicious activity is present.".into(),
+                kill_chain_phase: "Defense Evasion".into(),
+                confidence: "high".into(),
+                finding_indices: indices,
+            });
+        }
+    }
+
+    chains
 }

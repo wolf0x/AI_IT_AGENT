@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::fs;
+use std::collections::BTreeSet;
 use chrono::Utc;
 
 use super::Tool;
@@ -74,6 +75,10 @@ impl Tool for IrReportTool {
                 "findings": {
                     "type": "object",
                     "description": "Findings JSON from ir_analyzer (with 'findings' array and 'summary')"
+                },
+                "timeline": {
+                    "type": "object",
+                    "description": "Timeline JSON from ir_timeline (with 'events' array). Renders a chronological event table in the report."
                 },
                 "output_path": {
                     "type": "string",
@@ -158,6 +163,132 @@ impl Tool for IrReportTool {
             ));
         }
 
+        // ── Build timeline rows ──
+        let timeline_data = &args["timeline"];
+        let mut timeline_rows = String::new();
+        let mut timeline_event_count = 0u64;
+        if let Some(events_arr) = timeline_data["events"].as_array() {
+            timeline_event_count = events_arr.len() as u64;
+            for ev in events_arr {
+                let ts = ev["timestamp"].as_str().unwrap_or("-");
+                let evt_type = ev["event_type"].as_str().unwrap_or("-");
+                let source = ev["source"].as_str().unwrap_or("-");
+                let desc = ev["description"].as_str().unwrap_or("-");
+                let risk = ev["risk_score"].as_u64().unwrap_or(0);
+                let risk_label = match risk {
+                    80..=100 => "critical",
+                    50..=79 => "high",
+                    20..=49 => "medium",
+                    _ => "low",
+                };
+                let risk_badge = format!("<span class=\"badge sev-{}\">{}</span>", risk_label, risk);
+                // Shorten timestamp for display (keep date + HH:MM:SS)
+                let short_ts = if ts.len() > 19 { &ts[..19] } else { ts };
+                timeline_rows.push_str(&format!(
+                    r#"<tr class="timeline-row" data-risk="{}">
+<td class="ts">{}</td>
+<td>{}</td>
+<td>{}</td>
+<td class="evidence"><pre>{}</pre></td>
+<td>{}</td>
+</tr>"#,
+                    risk_label,
+                    html_escape(short_ts),
+                    html_escape(evt_type),
+                    html_escape(source),
+                    html_escape(desc),
+                    risk_badge,
+                ));
+            }
+        }
+
+        // ── Extract IOCs from findings evidence ──
+        let mut ioc_ips: BTreeSet<String> = BTreeSet::new();
+        let mut ioc_hashes: BTreeSet<String> = BTreeSet::new();
+        let mut ioc_domains: BTreeSet<String> = BTreeSet::new();
+        let mut ioc_accounts: BTreeSet<String> = BTreeSet::new();
+        let mut ioc_files: BTreeSet<String> = BTreeSet::new();
+        let mut ioc_services: BTreeSet<String> = BTreeSet::new();
+
+        // IP regex pattern
+        let ip_re = regex::Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").unwrap();
+        // Hash patterns (MD5=32, SHA1=40, SHA256=64 hex chars)
+        let hash_re = regex::Regex::new(r"\b([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})\b").unwrap();
+        // Domain-like patterns
+        let domain_re = regex::Regex::new(r"\b([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.(com|net|org|io|ru|cn|tk|top|xyz|info|biz|cc|pw))\b").unwrap();
+        // Windows file paths
+        let path_pattern = "([A-Z]:\\\\[^\\s;)]+)";
+        let path_re = regex::Regex::new(path_pattern).unwrap();
+
+        for f in findings_arr {
+            let evidence = f["evidence"].as_str().unwrap_or("");
+            let category = f["category"].as_str().unwrap_or("");
+
+            // Extract IPs (skip private/loopback)
+            for cap in ip_re.captures_iter(evidence) {
+                let ip = &cap[1];
+                if !ip.starts_with("10.") && !ip.starts_with("192.168.")
+                    && !ip.starts_with("172.16.") && !ip.starts_with("172.17.")
+                    && !ip.starts_with("172.18.") && !ip.starts_with("172.19.")
+                    && !ip.starts_with("172.2") && !ip.starts_with("172.3")
+                    && !ip.starts_with("127.") && ip != "0.0.0.0"
+                {
+                    ioc_ips.insert(ip.to_string());
+                }
+            }
+            // Extract hashes
+            for cap in hash_re.captures_iter(evidence) {
+                ioc_hashes.insert(cap[1].to_string());
+            }
+            // Extract domains
+            for cap in domain_re.captures_iter(evidence) {
+                ioc_domains.insert(cap[1].to_string());
+            }
+            // Extract file paths from relevant categories
+            if ["processes", "services", "autoruns", "tasks", "drivers"].contains(&category) {
+                for cap in path_re.captures_iter(evidence) {
+                    ioc_files.insert(cap[1].to_string());
+                }
+            }
+            // Extract account names from account/eventlog findings
+            if category == "accounts" || category == "eventlogs" {
+                // Look for user/account patterns
+                let account_re = regex::Regex::new(r"(?i)(?:user|account|username|target)[:\s=]+([A-Za-z0-9_.$-]+)").unwrap();
+                for cap in account_re.captures_iter(evidence) {
+                    let acct = &cap[1];
+                    if !acct.eq_ignore_ascii_case("system") && !acct.eq_ignore_ascii_case("local")
+                        && acct.len() > 1
+                    {
+                        ioc_accounts.insert(acct.to_string());
+                    }
+                }
+            }
+            // Extract service names
+            if category == "services" {
+                let svc_re = regex::Regex::new(r"(?i)(?:service|svc)[:\s]+([A-Za-z0-9_ .-]{2,50})").unwrap();
+                for cap in svc_re.captures_iter(evidence) {
+                    ioc_services.insert(cap[1].trim().to_string());
+                }
+            }
+        }
+
+        // Also scan network findings for IPs
+        if let Some(net_text) = findings_data["data"]["network"].as_str() {
+            for cap in ip_re.captures_iter(net_text) {
+                let ip = &cap[1];
+                if !ip.starts_with("10.") && !ip.starts_with("192.168.")
+                    && !ip.starts_with("172.16.") && !ip.starts_with("127.")
+                    && ip != "0.0.0.0"
+                {
+                    ioc_ips.insert(ip.to_string());
+                }
+            }
+        }
+
+        // Build IOC HTML section
+        let ioc_sections = build_ioc_sections(&ioc_ips, &ioc_hashes, &ioc_domains,
+            &ioc_accounts, &ioc_files, &ioc_services);
+
         // Build priority advice
         let mut advice = Vec::new();
         if critical > 0 {
@@ -223,6 +354,14 @@ tr:hover {{ background: #f8f9fa; }}
 .rule-id {{ font-family: monospace; font-size: 0.85em; color: var(--text2); }}
 .advice-list {{ padding-left: 20px; }}
 .advice-list li {{ margin-bottom: 8px; }}
+.timeline-table {{ font-size: 0.85em; }}
+.timeline-table .ts {{ font-family: monospace; white-space: nowrap; font-size: 0.85em; color: var(--text2); }}
+.ioc-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }}
+.ioc-box {{ background: #f8f9fa; border-radius: 8px; padding: 14px; }}
+.ioc-box h3 {{ font-size: 0.95em; margin-bottom: 8px; color: var(--text2); }}
+.ioc-box ul {{ list-style: none; padding: 0; }}
+.ioc-box li {{ font-family: monospace; font-size: 0.85em; padding: 2px 0; word-break: break-all; }}
+.ioc-count {{ display: inline-block; background: var(--critical); color: #fff; border-radius: 10px; padding: 0 8px; font-size: 0.8em; margin-left: 6px; }}
 footer {{ text-align: center; padding: 20px; color: var(--text2); font-size: 0.85em; }}
 @media print {{ body {{ background: #fff; }} .section {{ box-shadow: none; border: 1px solid #ddd; }} }}
 </style>
@@ -252,6 +391,16 @@ footer {{ text-align: center; padding: 20px; color: var(--text2); font-size: 0.8
     <h2>Priority Actions</h2>
     <ol class="advice-list">{advice_html}</ol>
   </div>
+</div>
+
+{ioc_sections}
+
+<div class="section" id="timeline">
+  <h2>Event Timeline <span style="font-weight:normal;font-size:0.8em;color:var(--text2)">({timeline_event_count} events)</span></h2>
+  <table class="timeline-table">
+    <thead><tr><th>Timestamp</th><th>Event Type</th><th>Source</th><th>Description</th><th>Risk</th></tr></thead>
+    <tbody>{timeline_rows}</tbody>
+  </table>
 </div>
 
 <div class="section" id="findings">
@@ -300,6 +449,9 @@ function filterFindings() {{
             medium = medium,
             findings_rows = findings_rows,
             advice_html = advice_html,
+            timeline_rows = timeline_rows,
+            timeline_event_count = timeline_event_count,
+            ioc_sections = ioc_sections,
         );
 
         // Write HTML file (always needed for PDF generation too)
@@ -369,4 +521,67 @@ fn html_escape(s: &str) -> String {
      .replace('>', "&gt;")
      .replace('"', "&quot;")
      .replace('\'', "&#39;")
+}
+
+/// Build IOC section HTML from extracted indicators.
+fn build_ioc_sections(ips: &BTreeSet<String>, hashes: &BTreeSet<String>,
+    domains: &BTreeSet<String>, accounts: &BTreeSet<String>,
+    files: &BTreeSet<String>, services: &BTreeSet<String>) -> String
+{
+    let total = ips.len() + hashes.len() + domains.len() + accounts.len() + files.len() + services.len();
+    if total == 0 {
+        return String::new();
+    }
+
+    let mut sections = String::new();
+    sections.push_str(&format!(
+        r#"<div class="section" id="iocs">
+  <h2>Indicators of Compromise <span class="ioc-count">{}</span></h2>
+  <div class="ioc-grid">"#, total));
+
+    if !ips.is_empty() {
+        sections.push_str(r#"<div class="ioc-box"><h3>IP Addresses</h3><ul>"#);
+        for ip in ips {
+            sections.push_str(&format!("<li>{}</li>", html_escape(ip)));
+        }
+        sections.push_str("</ul></div>");
+    }
+    if !hashes.is_empty() {
+        sections.push_str(r#"<div class="ioc-box"><h3>File Hashes</h3><ul>"#);
+        for h in hashes {
+            sections.push_str(&format!("<li>{}</li>", html_escape(h)));
+        }
+        sections.push_str("</ul></div>");
+    }
+    if !domains.is_empty() {
+        sections.push_str(r#"<div class="ioc-box"><h3>Domains</h3><ul>"#);
+        for d in domains {
+            sections.push_str(&format!("<li>{}</li>", html_escape(d)));
+        }
+        sections.push_str("</ul></div>");
+    }
+    if !accounts.is_empty() {
+        sections.push_str(r#"<div class="ioc-box"><h3>Accounts</h3><ul>"#);
+        for a in accounts {
+            sections.push_str(&format!("<li>{}</li>", html_escape(a)));
+        }
+        sections.push_str("</ul></div>");
+    }
+    if !files.is_empty() {
+        sections.push_str(r#"<div class="ioc-box"><h3>File Paths</h3><ul>"#);
+        for f in files {
+            sections.push_str(&format!("<li>{}</li>", html_escape(f)));
+        }
+        sections.push_str("</ul></div>");
+    }
+    if !services.is_empty() {
+        sections.push_str(r#"<div class="ioc-box"><h3>Services</h3><ul>"#);
+        for s in services {
+            sections.push_str(&format!("<li>{}</li>", html_escape(s)));
+        }
+        sections.push_str("</ul></div>");
+    }
+
+    sections.push_str("</div></div>");
+    sections
 }

@@ -54,6 +54,9 @@ pub mod ir_linux;
 pub mod ir_vss;
 pub mod ir_usn;
 pub mod ir_memdump;
+pub mod ir_case;
+pub mod ir_attackpath;
+pub mod ir_eml;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -300,6 +303,11 @@ impl ToolRegistry {
         registry.register(Arc::new(ir_driver::IrDriverTool));
         registry.register(Arc::new(ir_analyzer::IrAnalyzerTool));
         registry.register(Arc::new(ir_report::IrReportTool));
+        // Investigation case tracker and attack path modeling
+        registry.register(Arc::new(ir_case::IrCaseTool));
+        registry.register(Arc::new(ir_attackpath::IrAttackPathTool));
+        // EML email parser for phishing analysis
+        registry.register(Arc::new(ir_eml::IrEmlTool));
         // Malware analysis tools — ported from hacksguard
         registry.register(Arc::new(malware_scan::MalwareScanTool));
         registry.register(Arc::new(malware_deep::MalwareDeepTool));
