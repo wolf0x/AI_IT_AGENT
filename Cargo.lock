@@ -3116,7 +3116,7 @@ dependencies = [
 
 [[package]]
 name = "rust-agent"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "aes-gcm",
  "async-stream",
