@@ -60,6 +60,10 @@ pub struct AgentConfig {
     /// Tool permissions: category -> allowed (true) or denied (false)
     #[serde(default)]
     pub tool_permissions: HashMap<String, bool>,
+    /// User's given name (auto-detected from Windows at startup).
+    /// Used by the agent to address the user personally.
+    #[serde(default)]
+    pub user_given_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -144,6 +148,7 @@ impl Default for Config {
                 fallback_model: None,
                 timezone_offset: default_timezone_offset(),
                 tool_permissions: HashMap::new(),
+                user_given_name: None,
             },
         }
     }
@@ -169,6 +174,93 @@ fn default_parallel_ir_tools() -> bool { true }
 fn default_max_tokens() -> u32 { 16384 }
 fn default_temperature() -> f64 { 0.7 }
 fn default_timezone_offset() -> i8 { 8 }
+
+/// Detect the user's Given Name from Windows.
+/// 
+/// Strategy:
+/// 1. Use `whoami::realname()` to get the user's display name (cross-platform, no PowerShell)
+/// 2. Parse the name to extract Given Name:
+///    - "Last, First" format → take part after comma
+///    - "First Last" format → take first word
+///    - CJK names (no spaces) → use as-is
+/// 3. If running as built-in Administrator → return "Admin"
+/// 4. Fallback to `whoami::username()`
+pub fn detect_user_given_name() -> String {
+    // Use whoami crate to get the user's real/display name (cross-platform)
+    let full_name = whoami::realname();
+    
+    if !full_name.is_empty() {
+        return extract_given_name(&full_name);
+    }
+
+    // Fallback: check if running as Administrator
+    let username = whoami::username();
+    if username.eq_ignore_ascii_case("Administrator") {
+        return "Admin".to_string();
+    }
+
+    // Final fallback: use username itself
+    if !username.is_empty() {
+        return username;
+    }
+
+    "User".to_string()
+}
+
+/// Extract Given Name from a FullName string.
+/// 
+/// Handles common formats:
+/// - "Smith, John" → "John"
+/// - "John Smith" → "John"  
+/// - "张三" (CJK, no spaces) → "张三"
+/// - "John" → "John"
+fn extract_given_name(full_name: &str) -> String {
+    let name = full_name.trim();
+    if name.is_empty() {
+        return "User".to_string();
+    }
+
+    // Check for "Last, First" format (common in enterprise/AD environments)
+    if let Some((_last, first)) = name.split_once(',') {
+        let given = first.trim();
+        if !given.is_empty() {
+            return given.to_string();
+        }
+    }
+
+    // Check if it's likely a CJK name (no spaces, contains CJK characters)
+    let has_cjk = name.chars().any(is_cjk_char);
+    let has_spaces = name.contains(' ');
+    
+    if has_cjk && !has_spaces {
+        // CJK name without spaces — return as-is (typically the full name is used)
+        return name.to_string();
+    }
+
+    // "First Last" format — take the first word
+    if let Some(first_word) = name.split_whitespace().next() {
+        let given = first_word.trim();
+        if !given.is_empty() {
+            return given.to_string();
+        }
+    }
+
+    name.to_string()
+}
+
+/// Check if a character is a CJK (Chinese/Japanese/Korean) character.
+fn is_cjk_char(c: char) -> bool {
+    matches!(c,
+        '\u{4e00}'..='\u{9fff}'
+        | '\u{3400}'..='\u{4dbf}'
+        | '\u{f900}'..='\u{faff}'
+        | '\u{2e80}'..='\u{2eff}'
+        | '\u{3000}'..='\u{303f}'
+        | '\u{3040}'..='\u{309f}'
+        | '\u{30a0}'..='\u{30ff}'
+        | '\u{ac00}'..='\u{d7af}'
+    )
+}
 
 impl Config {
     /// Load config from the workspace directory. If no config exists, check the

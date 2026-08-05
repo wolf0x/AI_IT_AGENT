@@ -172,6 +172,8 @@ pub struct LlmAgent {
     /// Enable parallel execution for IR collection tools.
     /// When true, batches of IR collection tools run concurrently.
     parallel_ir_tools: bool,
+    /// User's given name (auto-detected from Windows at startup).
+    user_given_name: String,
 }
 
 /// Builder for LlmAgent (modeled after ADK-RUST's LlmAgentBuilder).
@@ -188,6 +190,7 @@ pub struct LlmAgentBuilder {
     callbacks: AgentCallbacks,
     tool_execution_strategy: ToolExecutionStrategy,
     parallel_ir_tools: bool,
+    user_given_name: String,
 }
 
 impl LlmAgentBuilder {
@@ -205,6 +208,7 @@ impl LlmAgentBuilder {
             callbacks: AgentCallbacks::new(),
             tool_execution_strategy: ToolExecutionStrategy::Sequential,
             parallel_ir_tools: true,
+            user_given_name: "User".to_string(),
         }
     }
 
@@ -224,6 +228,10 @@ impl LlmAgentBuilder {
     /// Enable or disable parallel execution for IR collection tools.
     pub fn parallel_ir_tools(mut self, enabled: bool) -> Self {
         self.parallel_ir_tools = enabled; self
+    }
+    /// Set the user's given name (auto-detected from Windows).
+    pub fn user_given_name(mut self, name: &str) -> Self {
+        self.user_given_name = name.to_string(); self
     }
 
     pub fn build(self) -> AgentResult<LlmAgent> {
@@ -245,6 +253,7 @@ impl LlmAgentBuilder {
             callbacks: self.callbacks,
             tool_execution_strategy: self.tool_execution_strategy,
             parallel_ir_tools: self.parallel_ir_tools,
+            user_given_name: self.user_given_name,
         })
     }
 }
@@ -256,10 +265,14 @@ impl LlmAgent {
 
     fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage]) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
+        let user_name = &self.user_given_name;
         let mut prompt = format!(
             "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
 You have FULL ACCESS to the user's system via built-in tools.\n\
 **Current date: {today}**\n\n\
+## CRITICAL: User Identity\n\
+The user's name is **{user_name}**. You MUST always address the user by their given name \"{user_name}\" \
+when speaking to them directly. Never use generic terms like \"user\", \"hey\", or \"there\" — always use \"{user_name}\".\n\n\
 ## CRITICAL: Tool Usage Rules\n\
 - When the user asks about their system (IP address, processes, services, files, disk space, etc.), \
   you **MUST** use the appropriate tool to get REAL data. Do NOT guess or provide hypothetical answers.\n\
