@@ -202,7 +202,7 @@ impl Config {
 
     /// Generate a minimal config.toml in the workspace with essential fields only.
     fn generate_default(workspace_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let config_content = r#"# RustAgent Configuration (minimal)
+        let config_content = r#"# RustAgent Configuration
 # Models are managed via models.json, MCP servers via mcp_servers.json.
 # Settings can also be changed via the Web UI Settings page.
 
@@ -221,6 +221,19 @@ max_tool_retries = 2
 # Enable parallel execution for IR collection tools (ir_scan, ir_process, etc.)
 # Set to false to force sequential execution for debugging or compatibility
 parallel_ir_tools = true
+# Enable Computer Use (GUI control) tools
+computer_use = false
+# Primary and fallback model names (set via Settings UI)
+# primary_model = "gpt-4o"
+# fallback_model = ""
+# Timezone offset in hours (e.g., 8 = UTC+8)
+timezone_offset = 8
+# Tool permissions (category -> allowed/denied)
+# [agent.tool_permissions]
+# read = true
+# write = true
+# delete = false
+# execute = true
 "#;
         let config_path = std::path::Path::new(workspace_dir).join("config.toml");
         std::fs::write(&config_path, config_content)?;
