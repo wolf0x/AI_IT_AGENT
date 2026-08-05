@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -47,6 +48,18 @@ pub struct AgentConfig {
     /// Default: false (disabled). Can be toggled at runtime via Settings UI.
     #[serde(default)]
     pub computer_use: bool,
+    /// Primary model name (selected in Settings UI)
+    #[serde(default)]
+    pub primary_model: Option<String>,
+    /// Fallback model name (used if primary fails)
+    #[serde(default)]
+    pub fallback_model: Option<String>,
+    /// Timezone offset in hours (e.g., 8 = UTC+8)
+    #[serde(default = "default_timezone_offset")]
+    pub timezone_offset: i8,
+    /// Tool permissions: category -> allowed (true) or denied (false)
+    #[serde(default)]
+    pub tool_permissions: HashMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -127,6 +140,10 @@ impl Default for Config {
                 max_tool_retries: default_max_tool_retries(),
                 parallel_ir_tools: default_parallel_ir_tools(),
                 computer_use: false,
+                primary_model: None,
+                fallback_model: None,
+                timezone_offset: default_timezone_offset(),
+                tool_permissions: HashMap::new(),
             },
         }
     }
@@ -151,6 +168,7 @@ fn default_max_tool_retries() -> usize { 2 }
 fn default_parallel_ir_tools() -> bool { true }
 fn default_max_tokens() -> u32 { 16384 }
 fn default_temperature() -> f64 { 0.7 }
+fn default_timezone_offset() -> i8 { 8 }
 
 impl Config {
     /// Load config from the workspace directory. If no config exists, check the
@@ -242,6 +260,24 @@ parallel_ir_tools = true
         config.agent.max_tool_retries = max_tool_retries;
 
         // Save back to file
+        config.save(workspace_dir)
+    }
+
+    /// Save extended agent settings (model selection, timezone, permissions) to config.toml.
+    pub fn save_extended_settings(
+        workspace_dir: &str,
+        primary_model: Option<String>,
+        fallback_model: Option<String>,
+        timezone_offset: i8,
+        tool_permissions: HashMap<String, bool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = Self::load(workspace_dir).unwrap_or_default();
+
+        config.agent.primary_model = primary_model;
+        config.agent.fallback_model = fallback_model;
+        config.agent.timezone_offset = timezone_offset;
+        config.agent.tool_permissions = tool_permissions;
+
         config.save(workspace_dir)
     }
 }

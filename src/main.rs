@@ -404,6 +404,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_dir,
         provider: provider_for_state,
         computer_use_enabled,
+        primary_model: config.agent.primary_model.clone(),
+        fallback_model: config.agent.fallback_model.clone(),
+        timezone_offset: config.agent.timezone_offset,
     });
 
     // Create router and start server

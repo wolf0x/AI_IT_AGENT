@@ -484,11 +484,11 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           <h3>&#129302; Model</h3>
           <div class="form-group">
             <label>Primary Model</label>
-            <select id="modelSel"><option>Connect first...</option></select>
+            <select id="modelSel" onchange="saveExtendedSettings()"><option>Connect first...</option></select>
           </div>
           <div class="form-group">
             <label>Fallback Model (used if primary fails)</label>
-            <select id="fallbackSel"><option>None</option></select>
+            <select id="fallbackSel" onchange="saveExtendedSettings()"><option>None</option></select>
           </div>
         </div>
         <div class="settings-section">
@@ -537,7 +537,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           </div>
           <div class="form-group">
             <label>Timezone Offset (UTC)</label>
-            <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1">
+            <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1" onchange="saveExtendedSettings()">
             <small style="color:var(--t3)">Chat message timestamps will be displayed in this timezone (default: UTC+8)</small>
           </div>
           <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
@@ -1442,8 +1442,9 @@ async function loadModels(){
   try{const r=await fetch('/api/models');const d=await r.json();
     const sel=document.getElementById('modelSel');
     const fbSel=document.getElementById('fallbackSel');
-    const prevModel=localStorage.getItem(MODEL_KEY)||sel.value;
-    const prevFallback=localStorage.getItem(FALLBACK_MODEL_KEY)||fbSel.value;
+    // Load from config.toml first, fall back to localStorage
+    const configPrimary=d.primary_model||localStorage.getItem(MODEL_KEY)||'';
+    const configFallback=d.fallback_model||localStorage.getItem(FALLBACK_MODEL_KEY)||'';
     sel.innerHTML='';
     fbSel.innerHTML='<option value="">None</option>';
     modelVisionMap={};
@@ -1455,8 +1456,10 @@ async function loadModels(){
       const o=document.createElement('option');o.value=name;o.textContent=name+ctx;sel.appendChild(o);
       const o2=document.createElement('option');o2.value=name;o2.textContent=name+ctx;fbSel.appendChild(o2);
     });
-    if(prevModel&&Array.from(sel.options).some(o=>o.value===prevModel))sel.value=prevModel;
-    if(prevFallback!==null&&Array.from(fbSel.options).some(o=>o.value===prevFallback))fbSel.value=prevFallback;
+    // Set model selections from config
+    if(configPrimary&&Array.from(sel.options).some(o=>o.value===configPrimary))sel.value=configPrimary;
+    if(configFallback&&Array.from(fbSel.options).some(o=>o.value===configFallback))fbSel.value=configFallback;
+    // Also update localStorage for backward compatibility
     if(sel.value)localStorage.setItem(MODEL_KEY,sel.value);
     localStorage.setItem(FALLBACK_MODEL_KEY,fbSel.value||'');
     if(d.context_window_threshold) document.getElementById('ctxWindowThreshold').value = d.context_window_threshold;
@@ -1464,6 +1467,16 @@ async function loadModels(){
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
     if(d.tool_timeout_secs) document.getElementById('toolTimeoutInput').value = d.tool_timeout_secs;
     if(d.max_tool_retries !== undefined) document.getElementById('toolMaxRetriesInput').value = d.max_tool_retries;
+    // Load timezone offset from config
+    if(d.timezone_offset !== undefined) document.getElementById('tzOffsetInput').value = d.timezone_offset;
+    // Load tool permissions from config
+    if(d.tool_permissions && typeof d.tool_permissions === 'object'){
+      Object.entries(d.tool_permissions).forEach(([cat, allowed]) => {
+        const checkbox = document.querySelector(`input[data-perm-cat="${cat}"]`);
+        if(checkbox) checkbox.checked = allowed;
+        if(typeof permissions !== 'undefined') permissions[cat] = allowed;
+      });
+    }
     updateImgBtnState();
   }catch(e){addLog('Load models failed','error')}
 }
@@ -2026,7 +2039,7 @@ function renderPerms(){
       </div>
       <span class="perm-status ${allowed?'allowed':'endorse'}">${allowed?'Allowed':'Endorsement'}</span>
       <label class="perm-toggle">
-        <input type="checkbox" ${allowed?'checked':''} onchange="togglePerm('${c.id}',this.checked)">
+        <input type="checkbox" data-perm-cat="${c.id}" ${allowed?'checked':''} onchange="togglePerm('${c.id}',this.checked)">
         <span class="slider"></span>
       </label>
     </div>`;
@@ -2037,7 +2050,8 @@ function togglePerm(id,val){
   localStorage.setItem('rustagent_perms',JSON.stringify(permissions));
   renderPerms();
   sendPerms();
-  addLog('Permission '+id+': '+(val?'allowed':'endorsement'),'info');
+  saveExtendedSettings();  // Also persist to config.toml
+  addLog('Permission '+id+': '+(val?'allowed':'denied'),'info');
 }
 function toggleComputerUse(enabled){
   fetch('/api/settings/computer_use',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enabled})})
@@ -2063,6 +2077,28 @@ function saveAgentSettings(){
     .then(r=>r.json())
     .then(d=>{if(d.success){addLog('Agent settings saved','info');}else{addLog('Settings save failed: '+(d.error||'unknown'),'error');}})
     .catch(e=>addLog('Settings save error: '+e,'error'));
+}
+
+// Save extended settings (model selection, timezone, permissions) to config.toml
+function saveExtendedSettings(){
+  const primaryModel=document.getElementById('modelSel').value||'';
+  const fallbackModel=document.getElementById('fallbackSel').value||'';
+  const tzOffset=parseInt(document.getElementById('tzOffsetInput').value)||8;
+  // Collect tool permissions from checkboxes
+  const toolPerms={};
+  document.querySelectorAll('input[type="checkbox"][data-perm-cat]').forEach(cb=>{
+    const cat=cb.getAttribute('data-perm-cat');
+    if(cat) toolPerms[cat]=cb.checked;
+  });
+  fetch('/api/settings/agent/extended',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    primary_model:primaryModel||null,
+    fallback_model:fallbackModel||null,
+    timezone_offset:tzOffset,
+    tool_permissions:toolPerms
+  })})
+    .then(r=>r.json())
+    .then(d=>{if(d.success){addLog('Extended settings saved','info');}else{addLog('Extended settings save failed: '+(d.error||'unknown'),'error');}})
+    .catch(e=>addLog('Extended settings save error: '+e,'error'));
 }
 function sendPerms(){
   if(ws&&connected){

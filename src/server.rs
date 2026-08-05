@@ -73,6 +73,12 @@ pub struct AppState {
     pub provider: Arc<OpenAiProvider>,
     /// Whether Computer Use (GUI control) tools are enabled
     pub computer_use_enabled: Arc<AtomicBool>,
+    /// Primary model name (from config.toml)
+    pub primary_model: Option<String>,
+    /// Fallback model name (from config.toml)
+    pub fallback_model: Option<String>,
+    /// Timezone offset in hours (from config.toml)
+    pub timezone_offset: i8,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -120,6 +126,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
         .route("/api/settings/computer_use", post(computer_use_toggle_handler))
         .route("/api/settings/agent", post(agent_settings_save_handler))
+        .route("/api/settings/agent/extended", post(agent_settings_extended_save_handler))
         .route("/api/output/list", get(output_list_handler))
         .route("/api/output/download/{filename}", get(output_download_handler))
         .route("/api/output/open", post(output_open_handler))
@@ -272,6 +279,13 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let list: Vec<Value> = models.iter().map(|m| {
         json!({ "name": &m.name, "context_window": m.context_window, "supports_vision": m.supports_vision })
     }).collect();
+
+    // Load config to get persisted settings
+    let config = crate::config::Config::load(&state.workspace_dir).ok();
+    let tool_permissions = config.as_ref()
+        .map(|c| serde_json::to_value(&c.agent.tool_permissions).unwrap_or(json!({})))
+        .unwrap_or(json!({}));
+
     Json(json!({
         "models": list,
         "context_window_threshold": state.context_window_threshold,
@@ -279,6 +293,10 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "rabbit_hole_threshold": state.rabbit_hole_threshold,
         "tool_timeout_secs": state.tool_timeout_secs,
         "max_tool_retries": state.max_tool_retries,
+        "primary_model": state.primary_model,
+        "fallback_model": state.fallback_model,
+        "timezone_offset": state.timezone_offset,
+        "tool_permissions": tool_permissions,
     }))
 }
 
@@ -1478,6 +1496,56 @@ async fn agent_settings_save_handler(
         }
         Err(e) => {
             error!("Failed to save agent settings: {}", e);
+            Json(json!({ "success": false, "error": format!("Failed to save: {}", e) }))
+        }
+    }
+}
+
+/// Save extended agent settings (model selection, timezone, permissions) to config.toml.
+async fn agent_settings_extended_save_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let primary_model = body.get("primary_model")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let fallback_model = body.get("fallback_model")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let timezone_offset = body.get("timezone_offset")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i8)
+        .unwrap_or(8);
+
+    // Parse tool_permissions from the request
+    let tool_permissions: std::collections::HashMap<String, bool> = body.get("tool_permissions")
+        .and_then(|v| v.as_object())
+        .map(|obj| obj.iter().filter_map(|(k, v)| v.as_bool().map(|b| (k.clone(), b))).collect())
+        .unwrap_or_default();
+
+    let workspace_dir = &state.workspace_dir;
+    match crate::config::Config::save_extended_settings(
+        workspace_dir,
+        primary_model.clone(),
+        fallback_model.clone(),
+        timezone_offset,
+        tool_permissions.clone(),
+    ) {
+        Ok(()) => {
+            info!("Extended settings saved: primary_model={:?}, fallback_model={:?}, timezone={}, permissions={:?}",
+                primary_model, fallback_model, timezone_offset, tool_permissions);
+            Json(json!({
+                "success": true,
+                "primary_model": primary_model,
+                "fallback_model": fallback_model,
+                "timezone_offset": timezone_offset,
+                "tool_permissions": tool_permissions,
+            }))
+        }
+        Err(e) => {
+            error!("Failed to save extended settings: {}", e);
             Json(json!({ "success": false, "error": format!("Failed to save: {}", e) }))
         }
     }
