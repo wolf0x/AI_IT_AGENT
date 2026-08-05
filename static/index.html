@@ -514,25 +514,25 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           <h3>&#9881; Agent</h3>
           <div class="form-group">
             <label>Max Iterations</label>
-            <input type="number" id="maxIterInput" value="100" min="1" max="1000">
+            <input type="number" id="maxIterInput" value="100" min="1" max="1000" onchange="saveAgentSettings()">
           </div>
           <div class="form-group">
             <label>Rabbit Hole Threshold</label>
-            <input type="number" id="rabbitHoleInput" value="5" min="1" max="50">
+            <input type="number" id="rabbitHoleInput" value="5" min="1" max="50" onchange="saveAgentSettings()">
           </div>
           <div class="form-group">
             <label>Context Window Threshold (%)</label>
-            <input type="number" id="ctxWindowThreshold" value="80" min="10" max="99">
+            <input type="number" id="ctxWindowThreshold" value="80" min="10" max="99" onchange="saveAgentSettings()">
             <small style="color:var(--t3)">Trim history when usage reaches this % of model's context window</small>
           </div>
           <div class="form-group">
             <label>Tool Timeout (seconds)</label>
-            <input type="number" id="toolTimeoutInput" value="300" min="10" max="3600">
+            <input type="number" id="toolTimeoutInput" value="300" min="10" max="3600" onchange="saveAgentSettings()">
             <small style="color:var(--t3)">Max time allowed for a single tool execution</small>
           </div>
           <div class="form-group">
             <label>Tool Max Retries</label>
-            <input type="number" id="toolMaxRetriesInput" value="2" min="0" max="10">
+            <input type="number" id="toolMaxRetriesInput" value="2" min="0" max="10" onchange="saveAgentSettings()">
             <small style="color:var(--t3)">Auto-retry count for transient tool failures (timeouts, network errors)</small>
           </div>
           <div class="form-group">
@@ -2044,6 +2044,25 @@ function toggleComputerUse(enabled){
     .then(r=>r.json())
     .then(d=>{if(d.success)addLog('Computer Use '+(enabled?'ENABLED':'DISABLED'),'info');else addLog('Computer Use toggle failed','error');})
     .catch(e=>addLog('Computer Use toggle error: '+e,'error'));
+}
+
+// Save agent settings to config.toml
+function saveAgentSettings(){
+  const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
+  const rabbitHole=parseInt(document.getElementById('rabbitHoleInput').value)||5;
+  const ctxThreshold=parseInt(document.getElementById('ctxWindowThreshold').value)||80;
+  const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
+  const toolMaxRetries=parseInt(document.getElementById('toolMaxRetriesInput').value)||2;
+  fetch('/api/settings/agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    max_iterations:maxIter,
+    rabbit_hole_threshold:rabbitHole,
+    context_window_threshold:ctxThreshold,
+    tool_timeout_secs:toolTimeout,
+    max_tool_retries:toolMaxRetries
+  })})
+    .then(r=>r.json())
+    .then(d=>{if(d.success){addLog('Agent settings saved','info');}else{addLog('Settings save failed: '+(d.error||'unknown'),'error');}})
+    .catch(e=>addLog('Settings save error: '+e,'error'));
 }
 function sendPerms(){
   if(ws&&connected){

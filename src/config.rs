@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub agent: AgentConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
@@ -14,7 +14,7 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
     #[serde(default = "default_working_dir")]
     pub working_dir: String,
@@ -208,5 +208,40 @@ parallel_ir_tools = true
         std::fs::write(&config_path, config_content)?;
         tracing::info!("Generated default config.toml in workspace: {}", config_path.display());
         Ok(())
+    }
+
+    /// Save the current config to config.toml in the workspace directory.
+    /// This persists agent settings (max_iterations, rabbit_hole_threshold, etc.)
+    /// so they survive restarts.
+    pub fn save(&self, workspace_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = std::path::Path::new(workspace_dir).join("config.toml");
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(&config_path, content)?;
+        tracing::info!("Saved config.toml to workspace: {}", config_path.display());
+        Ok(())
+    }
+
+    /// Save only agent settings to config.toml, preserving existing server settings.
+    /// Reads the current config, updates agent fields, and writes back.
+    pub fn save_agent_settings(
+        workspace_dir: &str,
+        max_iterations: usize,
+        rabbit_hole_threshold: usize,
+        context_window_threshold: usize,
+        tool_timeout_secs: usize,
+        max_tool_retries: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Load existing config (or create default if none exists)
+        let mut config = Self::load(workspace_dir).unwrap_or_default();
+
+        // Update agent settings
+        config.agent.max_iterations = max_iterations;
+        config.agent.rabbit_hole_threshold = rabbit_hole_threshold;
+        config.agent.context_window_threshold = context_window_threshold;
+        config.agent.tool_timeout_secs = tool_timeout_secs;
+        config.agent.max_tool_retries = max_tool_retries;
+
+        // Save back to file
+        config.save(workspace_dir)
     }
 }
