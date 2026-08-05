@@ -154,9 +154,9 @@ fn default_port() -> u16 { 7788 }
 fn default_working_dir() -> String { ".".to_string() }
 fn default_workspace_dir() -> String {
     if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        format!("{}\\.RustAgent\\workspace", userprofile)
+        format!("{}\\.RustAgent\\Workspace", userprofile)
     } else {
-        ".workspace".to_string()
+        ".Workspace".to_string()
     }
 }
 fn default_max_iterations() -> usize { 100 }
@@ -211,7 +211,7 @@ host = "127.0.0.1"
 port = 7788
 
 [agent]
-workspace_dir = "."
+workspace_dir = "%USERPROFILE%\\.RustAgent\\Workspace"
 working_dir = "."
 max_iterations = 100
 rabbit_hole_threshold = 5

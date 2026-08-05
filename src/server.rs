@@ -130,6 +130,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/output/list", get(output_list_handler))
         .route("/api/output/download/{filename}", get(output_download_handler))
         .route("/api/output/open", post(output_open_handler))
+        .route("/api/todos", get(todos_handler))
         .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
 }
@@ -267,6 +268,34 @@ async fn output_open_handler(State(state): State<Arc<AppState>>) -> Json<Value> 
     match result {
         Ok(_) => Json(json!({ "success": true, "dir": output_dir.to_string_lossy() })),
         Err(e) => Json(json!({ "success": false, "error": format!("Failed to open folder: {}", e) })),
+    }
+}
+
+/// GET /api/todos — return current TODO list from workspace/todos.json
+async fn todos_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let todos_path = std::path::Path::new(&state.workspace_dir).join("todos.json");
+    if !todos_path.exists() {
+        return Json(json!({ "items": [], "count": 0 }));
+    }
+    match tokio::fs::read_to_string(&todos_path).await {
+        Ok(content) => {
+            match serde_json::from_str::<Value>(&content) {
+                Ok(data) => {
+                    // Return the items array and count
+                    let items = data.get("items").cloned().unwrap_or(json!([]));
+                    let count = items.as_array().map(|a| a.len()).unwrap_or(0);
+                    Json(json!({ "items": items, "count": count }))
+                }
+                Err(e) => {
+                    warn!("Failed to parse todos.json: {}", e);
+                    Json(json!({ "items": [], "count": 0, "error": format!("Parse error: {}", e) }))
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to read todos.json: {}", e);
+            Json(json!({ "items": [], "count": 0, "error": format!("Read error: {}", e) }))
+        }
     }
 }
 
