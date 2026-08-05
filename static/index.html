@@ -442,6 +442,15 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .lb-cap{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#94a3b8;font-size:12px;font-family:var(--mono);max-width:80vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @keyframes lbFadeIn{from{opacity:0}to{opacity:1}}
 @keyframes lbZoomIn{from{transform:scale(.92);opacity:0}to{transform:scale(1);opacity:1}}
+/* Slash command popup */
+.slash-popup{position:absolute;bottom:100%;left:20px;right:20px;max-height:260px;overflow-y:auto;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);box-shadow:0 -4px 20px rgba(0,0,0,.12);z-index:100;display:none}
+.slash-popup.show{display:block}
+.slash-popup-item{padding:10px 16px;cursor:pointer;border-bottom:1px solid #f0f0f0;display:flex;flex-direction:column;gap:2px}
+.slash-popup-item:last-child{border-bottom:none}
+.slash-popup-item:hover,.slash-popup-item.active{background:#e8f4fd}
+.slash-popup-name{font-weight:600;font-size:13px;color:var(--t1)}
+.slash-popup-desc{font-size:12px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slash-popup-empty{padding:14px 16px;color:var(--t3);font-size:13px;text-align:center}
 </style>
 </head>
 <body>
@@ -801,12 +810,15 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             <button class="btn btn-s" onclick="exportSelectedHtml()">&#128196; Export HTML</button>
             <button class="btn btn-d" onclick="clearSelection()">Clear selection</button>
           </div>
+          <div style="position:relative">
+          <div class="slash-popup" id="slashPopup"></div>
           <div class="input-bar">
             <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
             <button class="btn-img disabled" id="imgBtn" onclick="document.getElementById('imgFileInput').click()" title="Attach image (vision models only)" disabled>&#128247;</button>
-            <textarea id="msgInput" rows="1" placeholder="Type a message... (Shift+Enter for newline)" disabled onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
+            <textarea id="msgInput" rows="1" placeholder="Type a message... (/ for skills, Shift+Enter for newline)" disabled onkeydown="handleInputKeydown(event)" oninput="handleInput(event)"></textarea>
             <button class="btn btn-p btn-send" id="sendBtn" onclick="sendMsg()" disabled>Send</button>
             <button class="btn btn-stop" id="stopBtn" onclick="stopAgent()">Stop</button>
+          </div>
           </div>
         </div>
         <div class="log-panel">
@@ -1607,13 +1619,14 @@ async function loadSkills(){
       }).join('')+'</div>';
     } else el.innerHTML='<span style="color:var(--t3)">No skills installed</span>';
   }catch(e){document.getElementById('skillList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
+  loadSlashSkills(); // refresh slash popup cache
 }
 async function toggleSkill(name){
-  try{await fetch('/api/skills/'+encodeURIComponent(name)+'/toggle',{method:'POST'});loadSkills()}catch(e){alert('Failed')}
+  try{await fetch('/api/skills/'+encodeURIComponent(name)+'/toggle',{method:'POST'});loadSkills();loadSlashSkills()}catch(e){alert('Failed')}
 }
 async function deleteSkill(name){
   if(!confirm('Delete skill "'+name+'"?'))return;
-  try{await fetch('/api/skills/'+encodeURIComponent(name),{method:'DELETE'});loadSkills()}catch(e){alert('Failed')}
+  try{await fetch('/api/skills/'+encodeURIComponent(name),{method:'DELETE'});loadSkills();loadSlashSkills()}catch(e){alert('Failed')}
 }
 async function loadMcp(){
   try{const r=await fetch('/api/mcp');const d=await r.json();
@@ -2452,5 +2465,113 @@ function fmtNum(n){
   if(n>=1e3)return(n/1e3).toFixed(1)+'K';
   return String(n);
 }
+
+// ── Slash Command (/) Skill Popup ──
+let slashSkills=[], slashIdx=-1, slashOpen=false;
+
+async function loadSlashSkills(){
+  try{const r=await fetch('/api/skills');const d=await r.json();
+    slashSkills=(d.skills||[]).filter(s=>s.enabled);
+  }catch(e){slashSkills=[];}
+}
+// Pre-load skills on page load
+loadSlashSkills();
+
+function showSlashPopup(filter){
+  const popup=document.getElementById('slashPopup');
+  const f=filter.toLowerCase();
+  const filtered=f?slashSkills.filter(s=>s.name.toLowerCase().includes(f)||(s.description||'').toLowerCase().includes(f)):slashSkills;
+  if(!filtered.length){popup.innerHTML='<div class="slash-popup-empty">No matching skills</div>';popup.classList.add('show');slashOpen=true;slashIdx=-1;return;}
+  popup.innerHTML=filtered.map((s,i)=>{
+    const desc=s.description||'';
+    const brief=desc.length>80?desc.slice(0,80)+'...':desc;
+    return '<div class="slash-popup-item'+(i===slashIdx?' active':'')+'" data-idx="'+i+'" data-name="'+esc(s.name)+'" onmousedown="selectSlashItem(\''+esc(s.name)+'\')">' +
+      '<span class="slash-popup-name">/'+esc(s.name)+'</span>' +
+      (brief?'<span class="slash-popup-desc">'+esc(brief)+'</span>':'') +
+    '</div>';
+  }).join('');
+  popup.classList.add('show');slashOpen=true;
+  // Store filtered list for keyboard nav
+  popup._filtered=filtered;
+}
+
+function hideSlashPopup(){
+  document.getElementById('slashPopup').classList.remove('show');
+  document.getElementById('slashPopup').innerHTML='';
+  slashOpen=false;slashIdx=-1;
+}
+
+function selectSlashItem(name){
+  const inp=document.getElementById('msgInput');
+  inp.value='/'+name+' ';
+  hideSlashPopup();
+  inp.focus();
+}
+
+function highlightSlashItem(idx){
+  const popup=document.getElementById('slashPopup');
+  const items=popup.querySelectorAll('.slash-popup-item');
+  items.forEach((el,i)=>{el.classList.toggle('active',i===idx);});
+  if(items[idx])items[idx].scrollIntoView({block:'nearest'});
+  slashIdx=idx;
+}
+
+function handleInput(e){
+  const inp=e.target;
+  // Auto-resize textarea
+  inp.style.height='auto';
+  inp.style.height=Math.min(inp.scrollHeight,120)+'px';
+  // Slash detection
+  const val=inp.value;
+  if(val.startsWith('/')&&val.indexOf(' ')===-1){
+    // User is typing a slash command (no space yet = still typing the name)
+    const filter=val.slice(1);
+    showSlashPopup(filter);
+  } else {
+    hideSlashPopup();
+  }
+}
+
+function handleInputKeydown(e){
+  if(slashOpen){
+    const popup=document.getElementById('slashPopup');
+    const items=popup._filtered||[];
+    if(e.key==='ArrowDown'){
+      e.preventDefault();
+      slashIdx=Math.min(slashIdx+1,items.length-1);
+      highlightSlashItem(slashIdx);
+      return;
+    }
+    if(e.key==='ArrowUp'){
+      e.preventDefault();
+      slashIdx=Math.max(slashIdx-1,0);
+      highlightSlashItem(slashIdx);
+      return;
+    }
+    if(e.key==='Enter'||e.key==='Tab'){
+      e.preventDefault();
+      if(slashIdx>=0&&slashIdx<items.length){
+        selectSlashItem(items[slashIdx].name);
+      }
+      return;
+    }
+    if(e.key==='Escape'){
+      e.preventDefault();
+      hideSlashPopup();
+      return;
+    }
+  }
+  // Normal send behavior
+  if(e.key==='Enter'&&!e.shiftKey){
+    e.preventDefault();
+    sendMsg();
+  }
+}
+// Close popup when clicking outside
+document.addEventListener('click',function(e){
+  if(slashOpen&&!e.target.closest('.slash-popup')&&e.target.id!=='msgInput'){
+    hideSlashPopup();
+  }
+});
 </script>
 </html>

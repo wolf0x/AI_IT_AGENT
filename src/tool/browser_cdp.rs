@@ -20,9 +20,10 @@ use chromiumoxide::cdp::browser_protocol::page::{
 use chromiumoxide::page::Page;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::info;
+use tokio::sync::{Mutex, MutexGuard};
+use tracing::{info, warn};
 
 use super::Tool;
 use crate::context::ToolContext;
@@ -37,10 +38,16 @@ struct BrowserInner {
     page: Page,
 }
 
-/// Shared browser session with lazy initialization.
+/// Shared browser session with lazy initialization and auto-recovery.
 pub struct BrowserSession {
     inner: Mutex<Option<BrowserInner>>,
     workspace_dir: String,
+    /// Set to false when the handler event stream ends (browser closed/crashed).
+    browser_alive: Arc<AtomicBool>,
+    /// Generation counter: incremented on every launch/close. A handler task only
+    /// marks the session dead if its generation still matches — this prevents a
+    /// stale handler (from a crashed browser) from killing a freshly re-launched one.
+    generation: Arc<AtomicU64>,
 }
 
 impl BrowserSession {
@@ -48,20 +55,71 @@ impl BrowserSession {
         Arc::new(Self {
             inner: Mutex::new(None),
             workspace_dir,
+            browser_alive: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
         })
     }
 
-    /// Get or initialize the browser session. Returns a cloneable Page.
+    /// Check if the browser process is still alive.
+    fn is_alive(&self) -> bool {
+        self.browser_alive.load(Ordering::Relaxed)
+    }
+
+    /// Clear stale browser state, invalidate the generation, and mark as dead.
+    async fn clear_state(&self) {
+        let mut guard = self.inner.lock().await;
+        guard.take(); // drop BrowserInner (kill_on_drop kills Chrome if still running)
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.browser_alive.store(false, Ordering::Relaxed);
+    }
+
+    /// Remove Chrome Singleton* files from a profile dir.
+    /// After a hard process kill these stale files can block Chrome re-launch.
+    fn clean_profile_locks(profile_dir: &PathBuf) {
+        for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+            let p = profile_dir.join(name);
+            if p.exists() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+
+    /// Get a live page, auto-recovering if the browser died.
+    /// The lock is held across the whole check+launch sequence so that
+    /// concurrent callers cannot spawn two Chrome processes.
     async fn get_or_init(&self) -> Result<Page, String> {
         let mut guard = self.inner.lock().await;
-        if let Some(inner) = guard.as_ref() {
-            return Ok(inner.page.clone());
+
+        // Fast path: browser is alive and we have a page
+        if self.is_alive() {
+            if let Some(inner) = guard.as_ref() {
+                return Ok(inner.page.clone());
+            }
         }
 
-        info!("Browser CDP: launching Chrome (with window)...");
+        // Slow path: clear stale state and (re-)launch while holding the lock
+        guard.take();
+        let page = self.launch_locked(&mut guard).await?;
+        Ok(page)
+    }
+
+    /// Launch a fresh browser instance. Caller MUST hold the inner lock.
+    async fn launch_locked(
+        &self,
+        guard: &mut MutexGuard<'_, Option<BrowserInner>>,
+    ) -> Result<Page, String> {
+        info!("Browser CDP: launching Chrome (headless)...");
+
+        // Headless mode: no visible window, immune to user accidentally closing it.
+        // no_sandbox: prevents exit code 21 (sandbox init failure on some Windows configs).
+        // user_data_dir: isolated profile in workspace to avoid conflicts with user's Chrome.
+        let chrome_data_dir = PathBuf::from(&self.workspace_dir).join(".chrome_cdp");
+        let _ = std::fs::create_dir_all(&chrome_data_dir);
+        Self::clean_profile_locks(&chrome_data_dir);
 
         let config = BrowserConfig::builder()
-            .with_head()
+            .no_sandbox()
+            .user_data_dir(&chrome_data_dir)
             .viewport(chromiumoxide::handler::viewport::Viewport {
                 width: 1920,
                 height: 1080,
@@ -77,11 +135,26 @@ impl BrowserSession {
             .await
             .map_err(|e| format!("Failed to launch browser: {}", e))?;
 
-        // Spawn the handler task in the background
+        // New generation for this launch
+        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.browser_alive.store(true, Ordering::Relaxed);
+
+        // Spawn the handler task — when the stream ends, mark browser as dead,
+        // but ONLY if this is still the current generation (prevents a stale
+        // handler from a crashed browser killing a freshly re-launched one).
+        let alive = self.browser_alive.clone();
+        let gens = self.generation.clone();
         tokio::spawn(async move {
             use futures::StreamExt;
             while let Some(_event) = handler.next().await {
                 // Events are processed internally by the handler
+            }
+            // Stream ended => browser process exited or was closed by user
+            if gens.load(Ordering::SeqCst) == gen {
+                warn!("Browser CDP: handler stream ended (gen {}) — browser closed or crashed", gen);
+                alive.store(false, Ordering::Relaxed);
+            } else {
+                info!("Browser CDP: stale handler (gen {}) ended, current gen newer — ignored", gen);
             }
         });
 
@@ -90,9 +163,9 @@ impl BrowserSession {
             .await
             .map_err(|e| format!("Failed to create page: {}", e))?;
 
-        info!("Browser CDP: Chrome launched successfully");
+        info!("Browser CDP: Chrome launched successfully (gen {})", gen);
 
-        *guard = Some(BrowserInner {
+        **guard = Some(BrowserInner {
             browser,
             page: page.clone(),
         });
@@ -107,6 +180,8 @@ impl BrowserSession {
             info!("Browser CDP: closing Chrome");
             let _ = inner.browser.close().await;
         }
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.browser_alive.store(false, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -133,7 +208,10 @@ impl Tool for BrowserCdpTool {
     fn name(&self) -> &str { "browser_cdp" }
 
     fn description(&self) -> &str {
-        "Control a Chrome browser via CDP (Chrome DevTools Protocol). \
+        "Headless browser automation via CDP (Chrome DevTools Protocol). \
+         Runs in headless mode (no visible window) — fast and reliable for automated tasks. \
+         Use this for: screenshots, web scraping, checking URLs, extracting page content. \
+         For tasks requiring the user's login sessions or interactive browsing, use 'browser_skill' instead.\n\
          Actions:\n\
          - 'navigate': Go to a URL. Provide 'url'.\n\
          - 'get_text': Get page text or element text. Optional 'selector' (CSS).\n\
@@ -200,7 +278,45 @@ impl Tool for BrowserCdpTool {
             }));
         }
 
-        // All other actions need the browser initialized
+        // Execute with auto-recovery: if the action fails due to a dead browser,
+        // clear state and recover with a freshly launched browser.
+        let result = self.execute_action(action, &args).await;
+
+        match result {
+            Err(ref e) if Self::is_connection_lost(&e.to_string()) => {
+                warn!("Browser CDP: connection lost during '{}', attempting auto-recovery", action);
+                self.session.clear_state().await;
+                // Only 'navigate' is meaningful to retry — other actions operate on page
+                // state that is lost when the browser restarts (fresh page = about:blank).
+                if action == "navigate" {
+                    self.execute_action(action, &args).await
+                } else {
+                    Err(format!(
+                        "Browser session was lost and has been restarted with a blank page. \
+                         The '{}' action cannot be retried without page state. \
+                         Call 'navigate' with the URL first, then retry '{}'.",
+                        action, action
+                    ).into())
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+impl BrowserCdpTool {
+    /// Check if an error message indicates the browser connection was lost.
+    fn is_connection_lost(err: &str) -> bool {
+        err.contains("receiver is gone")
+            || err.contains("send failed")
+            || err.contains("connection closed")
+            || err.contains("broken pipe")
+            || err.contains("Not connected")
+    }
+
+    /// Execute a single browser action (called by execute, may be retried).
+    async fn execute_action(&self, action: &str, args: &Value) -> AgentResult<Value> {
+        // All actions need the browser initialized
         let page = self.session.get_or_init().await
             .map_err(|e| -> crate::error::AgentError { e.into() })?;
 
@@ -216,7 +332,16 @@ impl Tool for BrowserCdpTool {
                     referrer_policy: None,
                 }).await
                     .map_err(|e| format!("Navigate failed: {}", e))?;
-                let _ = page.wait_for_navigation().await;
+                // Wait for the page load event with a 30s cap — stalled pages must not
+                // hang the tool until the global tool timeout.
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    page.wait_for_navigation(),
+                ).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(format!("Navigation wait failed: {}", e).into()),
+                    Err(_) => warn!("Browser CDP: navigation wait timed out after 30s, continuing"),
+                }
                 let title = page.get_title().await
                     .map_err(|e| format!("Get title failed: {}", e))?
                     .unwrap_or_default();

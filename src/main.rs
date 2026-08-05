@@ -290,6 +290,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wrap registry in Arc<RwLock> for dynamic MCP tool registration
     let shared_tools = Arc::new(tokio::sync::RwLock::new(registry));
 
+    // Create browser session early so it can be shared between agent (cleanup) and tool (use)
+    let browser_session = crate::tool::browser_cdp::BrowserSession::new(workspace_dir.clone());
+
     // Build agent using builder pattern (ADK-RUST style)
     let agent = LlmAgent::builder()
         .name("RustAgent")
@@ -302,6 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .workspace_dir(&workspace_dir)
         .parallel_ir_tools(config.agent.parallel_ir_tools)
         .user_given_name(&user_given_name)
+        .cleanup_session(browser_session.clone())
         .build()
         .map_err(|e| format!("Failed to build agent: {}", e))?;
     let agent: Arc<dyn agent::Agent> = Arc::new(agent);
@@ -364,8 +368,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register CRON management tool (needs scheduler, which depends on runner)
     // Register memory_md tool (file-based daily logs + long-term memory)
     // Register todo_update tool (lightweight task planning/tracking)
-    // Register browser_cdp tool (CDP browser automation via chromiumoxide)
-    let browser_session = crate::tool::browser_cdp::BrowserSession::new(workspace_dir.clone());
+    // Register browser_cdp tool (uses same session as agent cleanup)
     {
         let mut reg = shared_tools.write().await;
         reg.register(Arc::new(crate::tool::cron_manage::CronManageTool::new(scheduler.clone())));

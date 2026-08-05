@@ -174,6 +174,8 @@ pub struct LlmAgent {
     parallel_ir_tools: bool,
     /// User's given name (auto-detected from Windows at startup).
     user_given_name: String,
+    /// Sessions to clean up after the agent loop completes.
+    cleanup_sessions: Vec<Arc<crate::tool::browser_cdp::BrowserSession>>,
 }
 
 /// Builder for LlmAgent (modeled after ADK-RUST's LlmAgentBuilder).
@@ -191,6 +193,7 @@ pub struct LlmAgentBuilder {
     tool_execution_strategy: ToolExecutionStrategy,
     parallel_ir_tools: bool,
     user_given_name: String,
+    cleanup_sessions: Vec<Arc<crate::tool::browser_cdp::BrowserSession>>,
 }
 
 impl LlmAgentBuilder {
@@ -209,6 +212,7 @@ impl LlmAgentBuilder {
             tool_execution_strategy: ToolExecutionStrategy::Sequential,
             parallel_ir_tools: true,
             user_given_name: "User".to_string(),
+            cleanup_sessions: Vec::new(),
         }
     }
 
@@ -233,6 +237,10 @@ impl LlmAgentBuilder {
     pub fn user_given_name(mut self, name: &str) -> Self {
         self.user_given_name = name.to_string(); self
     }
+    /// Register a browser session to be closed after the agent loop completes.
+    pub fn cleanup_session(mut self, session: Arc<crate::tool::browser_cdp::BrowserSession>) -> Self {
+        self.cleanup_sessions.push(session); self
+    }
 
     pub fn build(self) -> AgentResult<LlmAgent> {
         let provider = self.provider.ok_or_else(|| AgentError::config("LlmAgent requires a provider"))?;
@@ -254,6 +262,7 @@ impl LlmAgentBuilder {
             tool_execution_strategy: self.tool_execution_strategy,
             parallel_ir_tools: self.parallel_ir_tools,
             user_given_name: self.user_given_name,
+            cleanup_sessions: self.cleanup_sessions,
         })
     }
 }
@@ -291,11 +300,13 @@ when speaking to them directly. Never use generic terms like \"user\", \"hey\", 
   - `remove_skill` — Delete a skill\n\
   - `memory_md` — Manage long-term curated memory: read/write MEMORY.md\n\
   - `todo_update` — Track multi-step task progress with a TODO list\n\
-  - `browser_cdp` — Control Chrome browser: navigate, click, type, screenshot, get text/HTML, execute JS. \
-    For screenshots: use the returned `url` field (e.g. `/workspace/output/xxx.png`) in markdown image syntax `![desc](url)` to display. NEVER use local file paths.\n\
-  - `browser_skill` — Browser automation via BrowserSkill (bsk CLI). Uses the user's existing browser sessions with login state. \
+  - `browser_cdp` — Headless browser automation: navigate, screenshot, get text/HTML, execute JS. \
+    Runs headless (no visible window). Use for quick automated tasks: screenshots, web scraping, checking URLs. \
+    For screenshots: use the returned `url` field (e.g. `/workspace/output/xxx.png`) in markdown image syntax `![desc](url)` to display. NEVER use local file paths. \
+    For tasks requiring the user's login sessions, use `browser_skill` instead.\n\
+  - `browser_skill` — Interactive browser automation via BrowserSkill (bsk CLI). Uses the user's existing browser with login state. \
     Actions: navigate, snapshot (accessibility tree), screenshot, click, fill, press, select, evaluate JS, tab management. \
-    Session is auto-managed. Use this when you need the user's logged-in browser context.\n\
+    Use this when you need the user's authenticated sessions (dashboards, portals, SSO-protected pages).\n\
 - If the user asks 'what is my IP' or similar, call `shell_exec` with `ipconfig` or `Get-NetIPAddress`.\n\
 - Always call tools FIRST, then explain the results to the user.\n\
 - Never say 'I can't check' or 'I don't have access' — you DO have access via tools!\n\n\
@@ -623,6 +634,7 @@ impl Agent for LlmAgent {
         let resume_history = ctx.resume_history.clone();
         let resume_iteration = ctx.resume_iteration;
         let event_log_path = ctx.event_log_path.clone();
+        let cleanup_sessions = self.cleanup_sessions.clone();
 
         tokio::spawn(async move {
             // ── Initialize event log for crash recovery ──
@@ -937,6 +949,8 @@ impl Agent for LlmAgent {
                                 });
                             }
                             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
+                            // Cleanup: close browser sessions after agent completes
+                            for s in &cleanup_sessions { let _ = s.close().await; }
                             return;
                         }
 
@@ -1087,6 +1101,8 @@ impl Agent for LlmAgent {
                         }
                         let _ = tx.send(Ok(AgentEvent::error(&e, &invocation_id, &author))).await;
                         let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
+                        // Cleanup: close browser sessions after agent error
+                        for s in &cleanup_sessions { let _ = s.close().await; }
                         return;
                     }
                 }
@@ -1131,6 +1147,8 @@ impl Agent for LlmAgent {
                 });
             }
             let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
+            // Cleanup: close browser sessions after max iterations
+            for s in &cleanup_sessions { let _ = s.close().await; }
         });
 
         // Convert mpsc Receiver into a Stream
