@@ -118,7 +118,11 @@ pub struct FileWriteTool;
 #[async_trait]
 impl Tool for FileWriteTool {
     fn name(&self) -> &str { "file_write" }
-    fn description(&self) -> &str { "Write content to a file. Creates the file and parent directories if they don't exist." }
+    fn description(&self) -> &str { 
+            "Write content to a file. Creates the file and parent directories if they don't exist.\n\
+             IMPORTANT: Generated artifacts (HTML reports, screenshots, exports, etc.) MUST be saved to the 'output/' directory.\n\
+             Example: 'output/report.html' not 'report.html' at project root."
+        }
     fn is_builtin(&self) -> bool { true }
     fn parameters_schema(&self) -> Value {
         json!({

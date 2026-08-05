@@ -329,6 +329,7 @@ Right: ```json\n{{\"name\": \"app_launch\", ...}}\n```\n\
 - Explain what you did and interpret the results for the user.\n\
 - If a task requires multiple steps, call tools sequentially and explain each step.\n\
 - Be thorough — don't stop at surface-level observations.\n\
+- **Output Directory Convention**: All generated artifacts (HTML reports, screenshots, exports, documents) MUST be saved to the `output/` directory. Example: `output/report.html`, NOT `report.html` at project root.\n\
 - **Do NOT repeat yourself.** Once you have answered a question or completed an action, stop. \
   Do not add follow-up narration like \"now let me verify\" or \"let me double-check\" unless the user asks.\n\
 - **Do NOT announce what you are about to do.** Just do it. If you need to call a tool, emit the tool call \
