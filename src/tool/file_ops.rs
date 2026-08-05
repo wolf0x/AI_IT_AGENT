@@ -22,6 +22,26 @@ fn resolve_path(ctx: &ToolContext, path: &str) -> PathBuf {
     }
 }
 
+/// Resolve path for file WRITE operations.
+/// - Absolute path → use as-is (user explicitly specified)
+/// - Relative path with directory component (contains / or \) → resolve against working_dir
+/// - Relative path, filename only → default to workspace/output/ (artifact convention)
+fn resolve_write_path(ctx: &ToolContext, path: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        return p;
+    }
+    // Check if path has a directory component (contains separator)
+    let has_dir_component = path.contains('/') || path.contains('\\');
+    if has_dir_component {
+        // User specified a relative path with directory — respect it
+        PathBuf::from(&ctx.working_dir).join(p)
+    } else {
+        // Just a filename — default to workspace/output/
+        PathBuf::from(&ctx.workspace_dir).join("output").join(p)
+    }
+}
+
 // --- file_read ---
 pub struct FileReadTool;
 
@@ -119,16 +139,17 @@ pub struct FileWriteTool;
 impl Tool for FileWriteTool {
     fn name(&self) -> &str { "file_write" }
     fn description(&self) -> &str { 
-            "Write content to a file. Creates the file and parent directories if they don't exist.\n\
-             IMPORTANT: Generated artifacts (HTML reports, screenshots, exports, etc.) MUST be saved to the 'output/' directory.\n\
-             Example: 'output/report.html' not 'report.html' at project root."
-        }
+        "Write content to a file. Creates the file and parent directories if they don't exist.\n\
+         PATH RESOLUTION: If 'path' is just a filename (e.g. 'report.html'), it will be saved to \
+         workspace/output/ by default. To write to a specific location, use an absolute path \
+         (e.g. 'C:\\temp\\file.txt') or a relative path with directory (e.g. './file.txt' or 'subdir/file.txt')."
+    }
     fn is_builtin(&self) -> bool { true }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "File path to write" },
+                "path": { "type": "string", "description": "File path to write. Bare filename → workspace/output/. Include directory for other locations." },
                 "content": { "type": "string", "description": "Content to write" }
             },
             "required": ["path", "content"]
@@ -137,7 +158,7 @@ impl Tool for FileWriteTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let path = args["path"].as_str().ok_or_else(|| "Missing 'path'".to_string())?;
         let content = args["content"].as_str().ok_or_else(|| "Missing 'content'".to_string())?;
-        let resolved = resolve_path(ctx, path);
+        let resolved = resolve_write_path(ctx, path);
         if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {}", e))?;
         }
