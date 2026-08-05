@@ -60,10 +60,6 @@ pub struct AgentConfig {
     /// Tool permissions: category -> allowed (true) or denied (false)
     #[serde(default)]
     pub tool_permissions: HashMap<String, bool>,
-    /// User's given name (auto-detected from Windows at startup).
-    /// Used by the agent to address the user personally.
-    #[serde(default)]
-    pub user_given_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -148,7 +144,6 @@ impl Default for Config {
                 fallback_model: None,
                 timezone_offset: default_timezone_offset(),
                 tool_permissions: HashMap::new(),
-                user_given_name: None,
             },
         }
     }
@@ -188,13 +183,13 @@ fn default_timezone_offset() -> i8 { 8 }
 pub fn detect_user_given_name() -> String {
     // Use whoami crate to get the user's real/display name (cross-platform)
     let full_name = whoami::realname();
+    let username = whoami::username();
     
     if !full_name.is_empty() {
         return extract_given_name(&full_name);
     }
 
     // Fallback: check if running as Administrator
-    let username = whoami::username();
     if username.eq_ignore_ascii_case("Administrator") {
         return "Admin".to_string();
     }

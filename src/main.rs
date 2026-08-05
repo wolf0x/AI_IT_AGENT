@@ -100,30 +100,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load config from workspace (generates default config.toml on first run)
-    let mut config = Config::load(&workspace_dir)?;
+    let config = Config::load(&workspace_dir)?;
     info!("Config loaded from workspace");
 
     // ── Detect user's Given Name from Windows ──
-    // Auto-detect on every startup. If config already has a name, keep it;
-    // otherwise detect from Windows and save to config.
-    let user_given_name = if let Some(ref name) = config.agent.user_given_name {
-        if !name.is_empty() {
-            info!("Using configured user_given_name: {}", name);
-            name.clone()
-        } else {
-            let name = crate::config::detect_user_given_name();
-            info!("Auto-detected user_given_name: {}", name);
-            config.agent.user_given_name = Some(name.clone());
-            let _ = config.save(&workspace_dir);
-            name
-        }
-    } else {
-        let name = crate::config::detect_user_given_name();
-        info!("Auto-detected user_given_name: {}", name);
-        config.agent.user_given_name = Some(name.clone());
-        let _ = config.save(&workspace_dir);
-        name
-    };
+    // Detect on every startup using whoami crate (no persistence to config).
+    let user_given_name = crate::config::detect_user_given_name();
+    info!("Detected user_given_name: {}", user_given_name);
 
     // Build tool registry (built-in tools)
     // The notification broadcast channel is created early so tools that need to
