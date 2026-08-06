@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 
-use super::Tool;
+use super::{TimeoutStage, Tool};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
@@ -713,6 +713,10 @@ impl Tool for IrPcapAnalyzeTool {
          Returns structured JSON summary for AI-assisted triage and analysis."
     }
 
+    fn is_builtin(&self) -> bool { true }
+    fn is_read_only(&self) -> bool { true }
+    fn timeout_stage(&self) -> TimeoutStage { TimeoutStage::Long }
+
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -817,10 +821,6 @@ impl Tool for IrPcapAnalyzeTool {
         );
 
         Ok(analysis.to_json(file_path))
-    }
-
-    fn is_read_only(&self) -> bool {
-        true
     }
 }
 

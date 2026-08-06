@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
-use super::Tool;
+use super::{TimeoutStage, Tool};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
@@ -108,6 +108,7 @@ impl Tool for IrAnalyzerTool {
     }
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { true }
+    fn timeout_stage(&self) -> TimeoutStage { TimeoutStage::Long }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",

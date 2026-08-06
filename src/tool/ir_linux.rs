@@ -11,7 +11,7 @@ use tracing::info;
 
 use super::linux_ir_common::{Finding, LinuxIrCategory, Severity};
 use super::linux_ssh::{parse_target, SshAuth, SshClient, SshConfig};
-use super::Tool;
+use super::{TimeoutStage, Tool};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
@@ -96,6 +96,10 @@ impl Tool for LinuxIrCategoryTool {
 
     fn is_read_only(&self) -> bool {
         true
+    }
+
+    fn timeout_stage(&self) -> TimeoutStage {
+        TimeoutStage::Long
     }
 
     fn parameters_schema(&self) -> Value {
@@ -353,6 +357,10 @@ impl Tool for IrLinuxTool {
 
     fn is_long_running(&self) -> bool {
         true
+    }
+
+    fn timeout_stage(&self) -> TimeoutStage {
+        TimeoutStage::Long
     }
 
     fn parameters_schema(&self) -> Value {

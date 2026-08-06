@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use super::Tool;
+use super::{TimeoutStage, Tool};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
@@ -18,6 +18,7 @@ impl Tool for IrEventLogTool {
     }
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { true }
+    fn timeout_stage(&self) -> TimeoutStage { TimeoutStage::Long }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -379,6 +380,7 @@ async fn run_ps_raw(cmd: &str) -> AgentResult<String> {
     let mut c = Command::new("powershell");
     c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", cmd]);
     c.creation_flags(0x08000000);
+    c.kill_on_drop(true);
     match c.output().await {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();

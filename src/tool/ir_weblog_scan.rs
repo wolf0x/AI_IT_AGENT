@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::fs::File;
 use regex::Regex;
 
-use super::Tool;
+use super::{TimeoutStage, Tool};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
@@ -204,6 +204,7 @@ impl Tool for IrWeblogScanTool {
 
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { true }
+    fn timeout_stage(&self) -> TimeoutStage { TimeoutStage::Long }
 
     fn parameters_schema(&self) -> Value {
         json!({

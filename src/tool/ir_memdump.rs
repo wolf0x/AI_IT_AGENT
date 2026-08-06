@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use super::Tool;
+use super::{TimeoutStage, Tool};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
@@ -32,6 +32,7 @@ impl Tool for IrMemdumpTool {
     }
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { false }
+    fn timeout_stage(&self) -> TimeoutStage { TimeoutStage::Watchdog }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",

@@ -1479,6 +1479,10 @@ async fn execute_tool_call(
             let tool = tools.read().await.get(tool_name);
             let tool_result = match tool {
                 Some(tool) => {
+                    // Get tool-level timeout (Phase 1: graded timeout policy)
+                    let effective_timeout_secs = tool.timeout_secs().unwrap_or(tool_timeout_secs);
+                    let watchdog_silence_secs = tool.timeout_stage().watchdog_silence_secs();
+                    
                     // Create progress channel for long-running tools
                     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<String>(32);
                     let ctx = ToolContext::simple(working_dir.to_string(), workspace_dir.to_string())
@@ -1491,11 +1495,15 @@ async fn execute_tool_call(
                     });
 
                     // Race: tool execution vs heartbeat vs timeout vs consumer disconnect
-                    let timeout_duration = std::time::Duration::from_secs(tool_timeout_secs);
+                    let timeout_duration = std::time::Duration::from_secs(effective_timeout_secs);
                     let heartbeat_interval = std::time::Duration::from_secs(5);
                     let start = std::time::Instant::now();
                     let mut interval = tokio::time::interval(heartbeat_interval);
                     interval.tick().await; // consume the immediate first tick
+
+                    // Phase 1.4: Liveness watchdog — track last real progress time.
+                    // If no progress_rx message for watchdog_silence_secs, abort.
+                    let mut last_progress_time = start;
 
                     // Pin timeout future BEFORE the loop so it accumulates across iterations.
                     // Without pinning, the sleep is recreated every heartbeat tick and never fires.
@@ -1522,6 +1530,8 @@ async fn execute_tool_call(
                             // Progress message from tool (meaningful status updates)
                             Some(msg) = progress_rx.recv() => {
                                 let elapsed = start.elapsed().as_secs();
+                                // Phase 1.4: Reset watchdog timer on real progress
+                                last_progress_time = std::time::Instant::now();
                                 let progress = AgentEvent::progress(
                                     tool_name,
                                     &msg,
@@ -1539,6 +1549,18 @@ async fn execute_tool_call(
                             // Heartbeat: send progress event every 5 seconds (fallback if tool doesn't report)
                             _ = interval.tick() => {
                                 let elapsed = start.elapsed().as_secs();
+                                // Phase 1.4: Check liveness watchdog — abort if no real progress
+                                let silence = last_progress_time.elapsed().as_secs();
+                                if silence > watchdog_silence_secs {
+                                    warn!("Tool '{}' watchdog triggered: no progress for {}s (threshold: {}s)", 
+                                          tool_name, silence, watchdog_silence_secs);
+                                    tool_handle.abort();
+                                    break Some(serde_json::json!({ 
+                                        "error": format!("Tool execution aborted: no progress for {}s (watchdog threshold: {}s). \
+                                         The tool may be stuck or waiting for input. Consider using a narrower scope or different approach.", 
+                                         silence, watchdog_silence_secs) 
+                                    }));
+                                }
                                 let progress = AgentEvent::progress(
                                     tool_name,
                                     &format!("Still running... ({}s)", elapsed),

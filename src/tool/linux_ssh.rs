@@ -322,7 +322,7 @@ use serde_json::{json, Value};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 use crate::policy::{LinuxIntentPolicy, LinuxIntentVerdict};
-use super::Tool;
+use super::{TimeoutStage, Tool};
 
 /// SSH command execution tool — connect to remote Linux hosts and run commands.
 /// Like `shell_exec` but for remote Linux/Unix systems via SSH.
@@ -357,6 +357,10 @@ impl Tool for SshExecTool {
 
     fn is_read_only(&self) -> bool {
         false // Commands may modify the remote system
+    }
+
+    fn timeout_stage(&self) -> TimeoutStage {
+        TimeoutStage::Long
     }
 
     fn parameters_schema(&self) -> Value {

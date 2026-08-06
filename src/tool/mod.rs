@@ -68,6 +68,60 @@ use crate::error::AgentResult;
 use crate::model::ToolDefinition;
 
 // ============================================================
+// Tool timeout stage classification — for long-horizon tasks
+// ============================================================
+
+/// Timeout stage for tools, controlling how long the executor waits
+/// before aborting. Modeled after LongHorizon-Harness graded timeout policy.
+///
+/// Tools that perform disk scans, remote SSH operations, or large data
+/// processing should override [`Tool::timeout_secs`] to return [`TimeoutStage::Long`]
+/// or [`TimeoutStage::Watchdog`] instead of the default [`TimeoutStage::Normal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutStage {
+    /// Fast operations: file reads, simple shell commands, sys_info (~30s).
+    Fast,
+    /// Normal operations: most tools, IR collection, web fetches (~300s).
+    Normal,
+    /// Long operations: full YARA scans, remote SSH scans, large eventlog
+    /// exports, PCAP analysis (~30min).
+    Long,
+    /// Watchdog operations: memory dumps, deep disassembly — no hard wall-clock
+    /// limit, only a liveness watchdog (abort if silent for 10min).
+    Watchdog,
+}
+
+impl TimeoutStage {
+    /// Convert stage to a wall-clock timeout in seconds.
+    /// `Watchdog` returns `None` (no hard limit; caller uses liveness watchdog).
+    pub fn as_secs(self) -> Option<u64> {
+        match self {
+            TimeoutStage::Fast => Some(30),
+            TimeoutStage::Normal => Some(300),
+            TimeoutStage::Long => Some(1800),
+            TimeoutStage::Watchdog => None,
+        }
+    }
+
+    /// Liveness watchdog threshold for this stage (seconds of silence before abort).
+    /// Used when the hard wall-clock is `None` (Watchdog) or as a secondary check.
+    pub fn watchdog_silence_secs(self) -> u64 {
+        match self {
+            TimeoutStage::Fast => 15,
+            TimeoutStage::Normal => 60,
+            TimeoutStage::Long => 300,
+            TimeoutStage::Watchdog => 600,
+        }
+    }
+}
+
+impl Default for TimeoutStage {
+    fn default() -> Self {
+        TimeoutStage::Normal
+    }
+}
+
+// ============================================================
 // Tool trait — enriched interface modeled after ADK-RUST
 // ============================================================
 
@@ -109,6 +163,24 @@ pub trait Tool: Send + Sync {
 
     /// Whether this tool is long-running (e.g., file downloads, installs).
     fn is_long_running(&self) -> bool { false }
+
+    /// Timeout stage for this tool. Determines the wall-clock limit and
+    /// liveness watchdog threshold used by the executor.
+    ///
+    /// Override this for tools that perform disk scans, remote operations,
+    /// or large data processing to return [`TimeoutStage::Long`] or
+    /// [`TimeoutStage::Watchdog`].
+    ///
+    /// Default: [`TimeoutStage::Normal`] (300s).
+    fn timeout_stage(&self) -> TimeoutStage {
+        TimeoutStage::Normal
+    }
+
+    /// Effective timeout in seconds for this tool, or `None` for watchdog-only.
+    /// Convenience wrapper around [`Tool::timeout_stage`].
+    fn timeout_secs(&self) -> Option<u64> {
+        self.timeout_stage().as_secs()
+    }
 
     /// JSON Schema for the tool's response (optional).
     fn response_schema(&self) -> Option<Value> { None }

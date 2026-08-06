@@ -25,7 +25,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::{info, warn};
 
-use super::Tool;
+use super::{TimeoutStage, Tool};
 use crate::context::ToolContext;
 use crate::error::AgentResult;
 
@@ -227,6 +227,7 @@ impl Tool for BrowserCdpTool {
 
     fn is_builtin(&self) -> bool { true }
     fn is_read_only(&self) -> bool { false }
+    fn timeout_stage(&self) -> TimeoutStage { TimeoutStage::Long }
     fn category(&self) -> &str { "write" }
 
     fn parameters_schema(&self) -> Value {
