@@ -16,6 +16,8 @@ mod event_log;
 mod external_tools;
 mod heartbeat;
 mod log;
+#[allow(dead_code)]
+mod managed;
 mod memory;
 mod model;
 mod model_store;

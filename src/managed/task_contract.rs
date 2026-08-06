@@ -1,0 +1,258 @@
+//! TaskContract — persistent state for managed (long-horizon) task execution.
+//!
+//! The TaskContract is the single source of truth for a managed task's progress.
+//! It survives across Executor rounds and is the only input to the Manager's
+//! planning decisions. This prevents context drift by keeping verified state
+//! separate from the Executor's growing (and eventually trimmed) history.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Incident Response phase lifecycle (NIST SP 800-61 aligned).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IrPhase {
+    /// Initial data collection (ir_* tools, YARA scans, etc.)
+    Collection,
+    /// Analysis and correlation of collected evidence
+    Analysis,
+    /// Attribution and attack path reconstruction
+    Attribution,
+    /// Containment actions (kill processes, isolate hosts)
+    Containment,
+    /// Eradication (remove persistence, clean artifacts)
+    Eradication,
+    /// Report generation and delivery
+    Reporting,
+    /// Task completed successfully
+    Completed,
+    /// Task blocked (waiting for human input or external dependency)
+    Blocked,
+}
+
+impl Default for IrPhase {
+    fn default() -> Self {
+        IrPhase::Collection
+    }
+}
+
+/// A verified finding — evidence that has passed Auditor verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedFinding {
+    /// Unique identifier for this finding.
+    pub id: String,
+    /// Short title (e.g., "XMRig mining process detected").
+    pub title: String,
+    /// Severity: critical, high, medium, low, info.
+    pub severity: String,
+    /// Evidence summary (not full content — reference files for details).
+    pub evidence_summary: String,
+    /// Path to evidence file in workspace (if applicable).
+    pub evidence_path: Option<String>,
+    /// MITRE ATT&CK technique ID (if applicable).
+    pub mitre_technique: Option<String>,
+    /// When this finding was verified.
+    pub verified_at: DateTime<Utc>,
+    /// Which Manager round verified this.
+    pub round_index: usize,
+}
+
+/// A verified action — containment/eradication step confirmed by Auditor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedAction {
+    /// Unique identifier.
+    pub id: String,
+    /// What action was taken (e.g., "Killed process xmrig.exe PID 1234").
+    pub description: String,
+    /// Verification result (e.g., "Process no longer in process list").
+    pub verification: String,
+    /// When this action was verified.
+    pub verified_at: DateTime<Utc>,
+    /// Which Manager round verified this.
+    pub round_index: usize,
+}
+
+/// An open lead being investigated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenLead {
+    /// Short description of the lead.
+    pub description: String,
+    /// Current status: investigating, waiting, abandoned.
+    pub status: String,
+    /// Evidence or context so far.
+    pub context: String,
+}
+
+/// The TaskContract — persistent state for a managed task.
+///
+/// This struct is serialized to JSON and stored in SQLite. It is the sole
+/// input to the Manager's planning decisions, ensuring that verified progress
+/// is never lost to context window trimming.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskContract {
+    /// Unique identifier for this managed task.
+    pub id: String,
+    /// Original task description from the user.
+    pub original_task: String,
+    /// Current IR phase.
+    pub phase: IrPhase,
+    /// Target host(s) or scope (e.g., "10.0.0.5", "this machine").
+    pub scope: String,
+    /// Event hypothesis (what we think happened, updated as evidence accumulates).
+    pub hypothesis: String,
+    /// Verified findings — only results confirmed by Auditor.
+    pub verified_findings: Vec<VerifiedFinding>,
+    /// Verified actions — containment/eradication confirmed by re-check.
+    pub verified_actions: Vec<VerifiedAction>,
+    /// Open leads being investigated.
+    pub open_leads: Vec<OpenLead>,
+    /// Current Manager round index (0-based).
+    pub current_round: usize,
+    /// Maximum rounds allowed.
+    pub max_rounds: usize,
+    /// When this task was created.
+    pub created_at: DateTime<Utc>,
+    /// When this task was last updated.
+    pub updated_at: DateTime<Utc>,
+    /// Free-form notes from the Manager (e.g., "Need to check lateral movement from host X").
+    pub manager_notes: Vec<String>,
+    /// Why the task is blocked (if phase == Blocked).
+    pub blocked_reason: Option<String>,
+}
+
+impl TaskContract {
+    /// Create a new TaskContract for a managed task.
+    pub fn new(id: String, original_task: String, scope: String, max_rounds: usize) -> Self {
+        let now = Utc::now();
+        Self {
+            id,
+            original_task,
+            phase: IrPhase::default(),
+            scope,
+            hypothesis: String::new(),
+            verified_findings: Vec::new(),
+            verified_actions: Vec::new(),
+            open_leads: Vec::new(),
+            current_round: 0,
+            max_rounds,
+            created_at: now,
+            updated_at: now,
+            manager_notes: Vec::new(),
+            blocked_reason: None,
+        }
+    }
+
+    /// Generate a condensed brief for the Executor.
+    ///
+    /// This brief replaces the full conversation history in managed mode.
+    /// It contains only verified state and the current subtask, keeping
+    /// the Executor's context small and focused.
+    pub fn executor_brief(&self, subtask: &str, success_criteria: &str) -> String {
+        let mut brief = String::new();
+
+        brief.push_str("# Task Brief\n\n");
+        brief.push_str(&format!("**Original Task**: {}\n", self.original_task));
+        brief.push_str(&format!("**Scope**: {}\n", self.scope));
+        brief.push_str(&format!("**Current Phase**: {:?}\n", self.phase));
+        brief.push_str(&format!("**Round**: {} / {}\n\n", self.current_round + 1, self.max_rounds));
+
+        if !self.hypothesis.is_empty() {
+            brief.push_str("## Hypothesis\n");
+            brief.push_str(&self.hypothesis);
+            brief.push_str("\n\n");
+        }
+
+        if !self.verified_findings.is_empty() {
+            brief.push_str("## Verified Findings\n");
+            for f in &self.verified_findings {
+                brief.push_str(&format!("- [{}] {} ({})\n", f.severity.to_uppercase(), f.title, f.evidence_summary));
+                if let Some(ref path) = f.evidence_path {
+                    brief.push_str(&format!("  Evidence file: `{}`\n", path));
+                }
+            }
+            brief.push('\n');
+        }
+
+        if !self.verified_actions.is_empty() {
+            brief.push_str("## Verified Actions Taken\n");
+            for a in &self.verified_actions {
+                brief.push_str(&format!("- {} → {}\n", a.description, a.verification));
+            }
+            brief.push('\n');
+        }
+
+        if !self.open_leads.is_empty() {
+            brief.push_str("## Open Leads\n");
+            for l in &self.open_leads {
+                brief.push_str(&format!("- [{}] {}: {}\n", l.status, l.description, l.context));
+            }
+            brief.push('\n');
+        }
+
+        if !self.manager_notes.is_empty() {
+            brief.push_str("## Manager Notes\n");
+            for note in &self.manager_notes {
+                brief.push_str(&format!("- {}\n", note));
+            }
+            brief.push('\n');
+        }
+
+        brief.push_str("## Current Subtask\n");
+        brief.push_str(subtask);
+        brief.push_str("\n\n");
+
+        brief.push_str("## Success Criteria\n");
+        brief.push_str(success_criteria);
+        brief.push_str("\n\n");
+
+        brief.push_str("## Instructions\n");
+        brief.push_str("- Execute this subtask using available tools.\n");
+        brief.push_str("- Save detailed evidence to files in workspace/output/ and reference paths in your response.\n");
+        brief.push_str("- Focus ONLY on this subtask. Do not repeat work from verified findings.\n");
+        brief.push_str("- If you encounter a timeout, use partial results and narrow scope.\n");
+
+        brief
+    }
+
+    /// Add a verified finding.
+    pub fn add_finding(&mut self, finding: VerifiedFinding) {
+        self.verified_findings.push(finding);
+        self.updated_at = Utc::now();
+    }
+
+    /// Add a verified action.
+    pub fn add_action(&mut self, action: VerifiedAction) {
+        self.verified_actions.push(action);
+        self.updated_at = Utc::now();
+    }
+
+    /// Advance to the next phase.
+    pub fn advance_phase(&mut self, phase: IrPhase) {
+        self.phase = phase;
+        self.updated_at = Utc::now();
+    }
+
+    /// Mark task as completed.
+    pub fn complete(&mut self) {
+        self.phase = IrPhase::Completed;
+        self.updated_at = Utc::now();
+    }
+
+    /// Mark task as blocked.
+    pub fn block(&mut self, reason: String) {
+        self.phase = IrPhase::Blocked;
+        self.blocked_reason = Some(reason);
+        self.updated_at = Utc::now();
+    }
+
+    /// Serialize to JSON for storage.
+    pub fn to_json(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize TaskContract: {}", e))
+    }
+
+    /// Deserialize from JSON.
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|e| format!("Failed to deserialize TaskContract: {}", e))
+    }
+}
