@@ -47,8 +47,7 @@ Thumbs.db
 config.toml
 
 # Local-only skills (not tracked in this repo)
-skills/VulnerabilityPrioritization/
-skills/huashu-design/
+skills/
 
 # Local-only documentation (not synced to GitHub)
 SPEC.md
