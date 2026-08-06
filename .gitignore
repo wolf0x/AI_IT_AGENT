@@ -26,9 +26,10 @@ logs/
 .env
 .env.local
 
-# IDE
+# IDE / Agent tools
 .vscode/
 .idea/
+.qoder/
 
 # OS
 .DS_Store
