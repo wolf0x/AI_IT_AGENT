@@ -93,10 +93,13 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .nav-tab{padding:12px 16px;background:0;border:0;color:#bdc3c7;text-align:left;cursor:pointer;border-radius:var(--rs);font-size:14px;font-weight:500;transition:.2s}
 .nav-tab:hover{background:#34495e;color:white}
 .nav-tab.active{background:#3498db;color:#fff}
-.sidebar-ftr{padding:12px 16px;border-top:1px solid #34495e;margin-top:auto;font-size:12px;color:#95a5a6}
-.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:6px;animation:pulse 2s infinite}
+.sidebar-ftr{padding:12px 16px;border-top:1px solid #34495e;margin-top:auto;font-size:12px;color:#95a5a6;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.managed-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:.3px;background:#34495e;color:#95a5a6;transition:all .2s}
+.managed-badge.active{background:#8e44ad;color:#fff;animation:managedPulse 3s infinite}
+@keyframes managedPulse{0%,100%{box-shadow:0 0 0 0 rgba(142,68,173,.3)}50%{box-shadow:0 0 0 4px rgba(142,68,173,0)}}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:6px;animation:pulse 3s ease-in-out infinite}
 .status-dot.ok{background:var(--green);animation:none}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.9)}}
 
 /* Pages */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
@@ -308,6 +311,17 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .perm-request .perm-resolved-msg.allowed{color:#27ae60;background:#e8f8f0;border-top:1px solid #c8e6d5}
 .perm-request .perm-resolved-msg.denied{color:#e74c3c;background:#fdf0ed;border-top:1px solid #f5c6c0}
 
+/* Mode selector bar (Demo B) */
+.mode-bar{display:flex;align-items:center;gap:12px;padding:6px 20px;background:#f8f9fa;border-top:1px solid #ecf0f1;flex-shrink:0}
+.mode-seg{display:flex;background:#e8ecf0;border-radius:8px;padding:3px;gap:2px}
+.mode-seg button{padding:5px 14px;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;background:transparent;color:var(--t2);transition:all .2s;display:flex;align-items:center;gap:5px}
+.mode-seg button:hover{color:var(--t1)}
+.mode-seg button.active{background:#fff;color:var(--t1);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.mode-seg button .seg-icon{font-size:13px}
+.mode-hint{font-size:11px;color:var(--t3);margin-left:auto;transition:color .2s}
+.mode-hint.active{color:#8e44ad;font-weight:600}
+.managed-banner{padding:6px 20px;background:linear-gradient(135deg,#f5eef8,#fdf2e9);border-top:1px solid #e8d5f0;display:flex;align-items:center;gap:8px;font-size:11px;color:#8e44ad;font-weight:500;flex-shrink:0}
+
 /* Input bar */
 .input-bar{display:flex;align-items:flex-end;gap:10px;padding:16px 20px;background:#f8f9fa;border-top:1px solid #ecf0f1;flex-shrink:0}
 .input-bar input,.input-bar textarea{flex:1;padding:12px 16px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);color:var(--t1);font-size:14px;outline:0;font-family:inherit;height:44px}
@@ -480,6 +494,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
     <div class="sidebar-ftr">
       <span class="status-dot" id="statusDot"></span>
       <span id="statusText">Disconnected</span>
+      <span class="managed-badge" id="managedBadge">INSTANT</span>
     </div>
   </div>
 
@@ -495,7 +510,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           </div>
           <div class="form-group">
             <label>Password</label>
-            <input type="password" id="wsPwd" value="123">
+            <input type="password" id="wsPwd" value="123" onkeydown="if(event.key==='Enter')connectWs()">
           </div>
           <div class="btn-row">
             <button class="btn btn-p" onclick="connectWs()">Connect</button>
@@ -571,6 +586,36 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
               <input type="checkbox" id="cuToggle" onchange="toggleComputerUse(this.checked)">
               <span class="slider"></span>
             </label>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <label style="margin-bottom:0">&#128736; Expert Mode (Long Tasks)</label>
+              <small style="color:var(--t3)">Global default for Manager-Executor-Auditor loop on long-horizon tasks</small>
+            </div>
+            <label class="perm-toggle">
+              <input type="checkbox" id="globalManagedToggle" onchange="toggleGlobalManaged(this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <!-- Expert Mode Settings (shown when Expert mode is enabled) -->
+          <div id="expertSettingsSection" style="display:none;margin-top:12px;padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e2e8f0">
+            <label style="font-size:12px;font-weight:600;color:#8e44ad;margin-bottom:8px;display:block">&#9889; Expert Mode Settings</label>
+            <div class="form-group" style="margin-bottom:8px">
+              <label style="font-size:11px">Max Iterations</label>
+              <input type="number" id="expertMaxIterInput" value="200" min="1" max="1000" onchange="saveExpertSettings()">
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label style="font-size:11px">Tool Timeout (seconds)</label>
+              <input type="number" id="expertToolTimeoutInput" value="600" min="10" max="7200" onchange="saveExpertSettings()">
+            </div>
+            <div class="form-group" style="margin-bottom:8px">
+              <label style="font-size:11px">Tool Max Retries</label>
+              <input type="number" id="expertToolMaxRetriesInput" value="3" min="0" max="10" onchange="saveExpertSettings()">
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label style="font-size:11px">Max Managed Rounds</label>
+              <input type="number" id="expertMaxManagedRoundsInput" value="50" min="1" max="200" onchange="saveExpertSettings()">
+            </div>
           </div>
         </div>
         <div class="settings-section">
@@ -812,6 +857,18 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           </div>
           <div style="position:relative">
           <div class="slash-popup" id="slashPopup"></div>
+          <!-- Mode selector bar (Demo B) -->
+          <div class="mode-bar" id="modeBar">
+            <div class="mode-seg" id="modeSeg">
+              <button class="active" data-mode="normal" onclick="setManagedMode(false)">
+                <span class="seg-icon">&#9889;</span> Instant
+              </button>
+              <button data-mode="managed" onclick="setManagedMode(true)">
+                <span class="seg-icon">&#128736;</span> Expert
+              </button>
+            </div>
+            <span class="mode-hint" id="modeHint">Instant mode active — single turn execution</span>
+          </div>
           <div class="input-bar">
             <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
             <button class="btn-img disabled" id="imgBtn" onclick="document.getElementById('imgFileInput').click()" title="Attach image (vision models only)" disabled>&#128247;</button>
@@ -848,6 +905,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 let ws=null,connected=false,msgHist=[],logHist=[];
 let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
 let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0;
+let managedMode=false; // Managed (long-task) mode state
 const MAX_RECONNECT_DELAY=30000;
 const MAX_RECONNECT_ATTEMPTS=5;
 const MODEL_KEY='ra_model';
@@ -1405,7 +1463,7 @@ function doSend(txt,imgs){
   const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
   const toolMaxRetries=parseInt(document.getElementById('toolMaxRetriesInput').value)||2;
   sendPerms();
-  const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout,max_tool_retries:toolMaxRetries};
+  const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout,max_tool_retries:toolMaxRetries,managed:managedMode,managed_scope:''};
   if(imgs&&imgs.length)msg.images=imgs;
   ws.send(JSON.stringify(msg));
   showTyping();
@@ -2092,6 +2150,32 @@ function toggleComputerUse(enabled){
     .catch(e=>addLog('Computer Use toggle error: '+e,'error'));
 }
 
+// ── Managed Mode (Long Tasks) ──
+function setManagedMode(on){
+  managedMode=on;
+  // Update segmented control
+  document.querySelectorAll('#modeSeg button').forEach(b=>{
+    b.classList.toggle('active',(on&&b.dataset.mode==='managed')||(!on&&b.dataset.mode==='normal'));
+  });
+  // Update hint text
+  const hint=document.getElementById('modeHint');
+  if(hint){hint.textContent=on?'Expert mode active — Loop for long-horizon tasks':'Instant mode active — single turn execution';hint.classList.toggle('active',on);}
+  // Show/hide managed banner (removed — using hint text only)
+  // Update sidebar badge
+  const badge=document.getElementById('managedBadge');
+  if(badge){badge.textContent=on?'EXPERT':'INSTANT';badge.classList.toggle('active',on);}
+  // Sync Settings toggle
+  const globalToggle=document.getElementById('globalManagedToggle');
+  if(globalToggle)globalToggle.checked=on;
+  // Show/hide Expert settings section
+  const expertSection=document.getElementById('expertSettingsSection');
+  if(expertSection)expertSection.style.display=on?'block':'none';
+}
+function toggleGlobalManaged(checked){
+  setManagedMode(checked);
+  addLog('Expert Mode '+(checked?'ENABLED':'DISABLED')+' (global)','info');
+}
+
 // Save agent settings to config.toml
 function saveAgentSettings(){
   const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
@@ -2109,6 +2193,23 @@ function saveAgentSettings(){
     .then(r=>r.json())
     .then(d=>{if(d.success){addLog('Agent settings saved','info');}else{addLog('Settings save failed: '+(d.error||'unknown'),'error');}})
     .catch(e=>addLog('Settings save error: '+e,'error'));
+}
+
+// Save Expert mode settings to config.toml
+function saveExpertSettings(){
+  const expertMaxIter=parseInt(document.getElementById('expertMaxIterInput').value)||200;
+  const expertToolTimeout=parseInt(document.getElementById('expertToolTimeoutInput').value)||600;
+  const expertToolMaxRetries=parseInt(document.getElementById('expertToolMaxRetriesInput').value)||3;
+  const expertMaxManagedRounds=parseInt(document.getElementById('expertMaxManagedRoundsInput').value)||50;
+  fetch('/api/settings/agent/expert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    expert_max_iterations:expertMaxIter,
+    expert_tool_timeout_secs:expertToolTimeout,
+    expert_max_tool_retries:expertToolMaxRetries,
+    expert_max_managed_rounds:expertMaxManagedRounds
+  })})
+    .then(r=>r.json())
+    .then(d=>{if(d.success){addLog('Expert settings saved','info');}else{addLog('Expert settings save failed: '+(d.error||'unknown'),'error');}})
+    .catch(e=>addLog('Expert settings save error: '+e,'error'));
 }
 
 // Save extended settings (model selection, timezone, permissions) to config.toml

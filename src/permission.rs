@@ -84,6 +84,9 @@ pub struct PermissionChecker {
     permissions: Arc<Mutex<HashMap<String, bool>>>,
     invocation_id: String,
     author: String,
+    /// Pre-authorization profile for managed tasks (Phase 6).
+    /// Matching tool calls bypass the permission gate entirely.
+    preauth_profile: Option<Arc<crate::managed::permission_profile::PermissionProfile>>,
 }
 
 impl PermissionChecker {
@@ -93,6 +96,7 @@ impl PermissionChecker {
         permissions: Arc<Mutex<HashMap<String, bool>>>,
         invocation_id: String,
         author: String,
+        preauth_profile: Option<Arc<crate::managed::permission_profile::PermissionProfile>>,
     ) -> Self {
         Self {
             pending,
@@ -100,16 +104,26 @@ impl PermissionChecker {
             permissions,
             invocation_id,
             author,
+            preauth_profile,
         }
     }
 
     /// Check if a tool call is allowed.
+    /// - If the action is pre-authorized by the managed-task profile: returns `true` immediately.
     /// - If the category is allowed: returns `true` immediately.
     /// - If the category requires endorsement: emits permission_request, waits for user response.
     /// - Cross-category bypass detection: if shell_exec is auto-allowed but the command
     ///   intent maps to a DENIED category (e.g., delete), still requires confirmation.
     /// Returns `true` if allowed, `false` if denied.
     pub async fn check(&self, tool_name: &str, args: &Value) -> bool {
+        // Phase 6: pre-authorized actions (managed mode) bypass the permission gate.
+        // Intent-level matching keeps the bypass narrow (e.g., shell_exec taskkill only).
+        if let Some(profile) = &self.preauth_profile {
+            if crate::managed::permission_profile::check_preauthorization(profile, tool_name, args) {
+                return true;
+            }
+        }
+
         let category = tool_category(tool_name);
 
         // Check if category is auto-allowed

@@ -60,6 +60,18 @@ pub struct AgentConfig {
     /// Tool permissions: category -> allowed (true) or denied (false)
     #[serde(default)]
     pub tool_permissions: HashMap<String, bool>,
+    /// Expert mode: max iterations per Executor round (default: 200)
+    #[serde(default = "default_expert_max_iterations")]
+    pub expert_max_iterations: usize,
+    /// Expert mode: tool timeout in seconds (default: 600)
+    #[serde(default = "default_expert_tool_timeout_secs")]
+    pub expert_tool_timeout_secs: usize,
+    /// Expert mode: max tool retries (default: 3)
+    #[serde(default = "default_expert_max_tool_retries")]
+    pub expert_max_tool_retries: usize,
+    /// Expert mode: max managed rounds (default: 50)
+    #[serde(default = "default_expert_max_managed_rounds")]
+    pub expert_max_managed_rounds: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -144,6 +156,10 @@ impl Default for Config {
                 fallback_model: None,
                 timezone_offset: default_timezone_offset(),
                 tool_permissions: HashMap::new(),
+                expert_max_iterations: default_expert_max_iterations(),
+                expert_tool_timeout_secs: default_expert_tool_timeout_secs(),
+                expert_max_tool_retries: default_expert_max_tool_retries(),
+                expert_max_managed_rounds: default_expert_max_managed_rounds(),
             },
         }
     }
@@ -169,6 +185,10 @@ fn default_parallel_ir_tools() -> bool { true }
 fn default_max_tokens() -> u32 { 16384 }
 fn default_temperature() -> f64 { 0.7 }
 fn default_timezone_offset() -> i8 { 8 }
+fn default_expert_max_iterations() -> usize { 200 }
+fn default_expert_tool_timeout_secs() -> usize { 600 }
+fn default_expert_max_tool_retries() -> usize { 3 }
+fn default_expert_max_managed_rounds() -> usize { 50 }
 
 /// Detect the user's Given Name from Windows.
 /// 
@@ -377,6 +397,24 @@ timezone_offset = 8
         config.agent.fallback_model = fallback_model;
         config.agent.timezone_offset = timezone_offset;
         config.agent.tool_permissions = tool_permissions;
+
+        config.save(workspace_dir)
+    }
+
+    /// Save Expert mode settings to config.toml.
+    pub fn save_expert_settings(
+        workspace_dir: &str,
+        expert_max_iterations: usize,
+        expert_tool_timeout_secs: usize,
+        expert_max_tool_retries: usize,
+        expert_max_managed_rounds: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = Self::load(workspace_dir).unwrap_or_default();
+
+        config.agent.expert_max_iterations = expert_max_iterations;
+        config.agent.expert_tool_timeout_secs = expert_tool_timeout_secs;
+        config.agent.expert_max_tool_retries = expert_max_tool_retries;
+        config.agent.expert_max_managed_rounds = expert_max_managed_rounds;
 
         config.save(workspace_dir)
     }

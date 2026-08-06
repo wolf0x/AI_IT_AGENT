@@ -55,6 +55,11 @@ pub struct AppState {
     pub context_window_threshold: usize,
     pub tool_timeout_secs: usize,
     pub max_tool_retries: usize,
+    /// Expert mode settings (used when managed=true)
+    pub expert_max_iterations: usize,
+    pub expert_tool_timeout_secs: usize,
+    pub expert_max_tool_retries: usize,
+    pub expert_max_managed_rounds: usize,
     /// Per-session conversation history for multi-turn context
     pub sessions: Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>,
     /// Permission settings (category -> allowed), shared across connections
@@ -127,6 +132,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/settings/computer_use", post(computer_use_toggle_handler))
         .route("/api/settings/agent", post(agent_settings_save_handler))
         .route("/api/settings/agent/extended", post(agent_settings_extended_save_handler))
+        .route("/api/settings/agent/expert", post(agent_settings_expert_save_handler))
         .route("/api/output/list", get(output_list_handler))
         .route("/api/output/download/{filename}", get(output_download_handler))
         .route("/api/output/open", post(output_open_handler))
@@ -916,16 +922,21 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             let managed = parsed["managed"].as_bool().unwrap_or(false);
                             let managed_scope = parsed["managed_scope"].as_str().unwrap_or("").to_string();
                             let run_result = if managed {
-                                info!("Managed mode requested for session {}", session_id);
+                                info!("Expert mode requested for session {}", session_id);
                                 let managed_runner = crate::managed::ManagedRunner::new(
                                     state.runner.clone(),
                                     state.provider.clone(),
                                     model.clone(),
-                                    30, // max managed rounds
+                                    state.expert_max_managed_rounds, // max managed rounds (Expert mode)
                                     state.memory_store.clone(),
                                     state.tools.clone(),
                                     ".".to_string(),
                                     state.workspace_dir.clone(),
+                                    state.expert_max_iterations,
+                                    state.rabbit_hole_threshold,
+                                    ctx_window,
+                                    state.expert_tool_timeout_secs as u64,
+                                    state.expert_max_tool_retries,
                                 );
                                 managed_runner.run(
                                     &content, &session_id, &model, &managed_scope,
@@ -935,6 +946,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 state.runner.run(
                                     &content, &session_id, &model, max_iter, history,
                                     state.permissions.clone(), state.permission_pending.clone(),
+                                    None, // no pre-authorization profile (normal chat)
                                     fallback_model, rabbit_hole,
                                     ctx_window, ctx_window_threshold,
                                     tool_timeout as u64,
@@ -1133,6 +1145,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 &cp.user_message, &session_id, &model, state.max_iterations,
                                 vec![],  // empty base history — resume_state provides it
                                 state.permissions.clone(), state.permission_pending.clone(),
+                                None, // no pre-authorization profile (checkpoint resume)
                                 None, state.rabbit_hole_threshold,
                                 ctx_window, state.context_window_threshold,
                                 state.tool_timeout_secs as u64,
@@ -1599,6 +1612,54 @@ async fn agent_settings_extended_save_handler(
         }
         Err(e) => {
             error!("Failed to save extended settings: {}", e);
+            Json(json!({ "success": false, "error": format!("Failed to save: {}", e) }))
+        }
+    }
+}
+
+/// Save Expert mode settings to config.toml.
+async fn agent_settings_expert_save_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let expert_max_iterations = body.get("expert_max_iterations")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(200);
+    let expert_tool_timeout_secs = body.get("expert_tool_timeout_secs")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(600);
+    let expert_max_tool_retries = body.get("expert_max_tool_retries")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(3);
+    let expert_max_managed_rounds = body.get("expert_max_managed_rounds")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(50);
+
+    let workspace_dir = &state.workspace_dir;
+    match crate::config::Config::save_expert_settings(
+        workspace_dir,
+        expert_max_iterations,
+        expert_tool_timeout_secs,
+        expert_max_tool_retries,
+        expert_max_managed_rounds,
+    ) {
+        Ok(()) => {
+            info!("Expert settings saved: max_iter={}, timeout={}, retries={}, rounds={}",
+                expert_max_iterations, expert_tool_timeout_secs, expert_max_tool_retries, expert_max_managed_rounds);
+            Json(json!({
+                "success": true,
+                "expert_max_iterations": expert_max_iterations,
+                "expert_tool_timeout_secs": expert_tool_timeout_secs,
+                "expert_max_tool_retries": expert_max_tool_retries,
+                "expert_max_managed_rounds": expert_max_managed_rounds,
+            }))
+        }
+        Err(e) => {
+            error!("Failed to save expert settings: {}", e);
             Json(json!({ "success": false, "error": format!("Failed to save: {}", e) }))
         }
     }

@@ -17,7 +17,7 @@ use tracing::{info, warn, error};
 use super::auditor::Auditor;
 use super::manager::{self, ManagerRoute};
 use super::permission_profile::PermissionProfile;
-use super::task_contract::TaskContract;
+use super::task_contract::{IrPhase, TaskContract, VerifiedFinding};
 use crate::agent::{AgentEvent, EventStream};
 use crate::error::AgentResult;
 use crate::memory::MemoryStore;
@@ -44,6 +44,16 @@ pub struct ManagedRunner {
     working_dir: String,
     /// Workspace directory for Auditor artifact checks.
     workspace_dir: String,
+    /// Max iterations per Executor subtask round.
+    max_executor_iterations: usize,
+    /// Rabbit-hole detection threshold for Executor rounds.
+    rabbit_hole_threshold: usize,
+    /// Model context window for Executor rounds.
+    context_window: usize,
+    /// Tool execution timeout for Executor rounds.
+    tool_timeout_secs: u64,
+    /// Max automatic tool retries for Executor rounds.
+    max_tool_retries: usize,
 }
 
 impl ManagedRunner {
@@ -57,6 +67,11 @@ impl ManagedRunner {
         tools: Arc<tokio::sync::RwLock<ToolRegistry>>,
         working_dir: String,
         workspace_dir: String,
+        max_executor_iterations: usize,
+        rabbit_hole_threshold: usize,
+        context_window: usize,
+        tool_timeout_secs: u64,
+        max_tool_retries: usize,
     ) -> Self {
         Self {
             inner,
@@ -67,6 +82,11 @@ impl ManagedRunner {
             tools,
             working_dir,
             workspace_dir,
+            max_executor_iterations,
+            rabbit_hole_threshold,
+            context_window,
+            tool_timeout_secs,
+            max_tool_retries,
         }
     }
 
@@ -77,8 +97,8 @@ impl ManagedRunner {
     /// 2. Loop:
     ///    a. Manager plans next subtask
     ///    b. Executor runs subtask with fresh context
-    ///    c. [Phase 4] Auditor verifies (not yet implemented)
-    ///    d. Update TaskContract
+    ///    c. [Phase 4] Auditor verifies artifacts
+    ///    d. TaskContract updated with verified findings + manager notes
     /// 3. Return final results
     pub async fn run(
         &self,
@@ -107,7 +127,7 @@ impl ManagedRunner {
         // Uses the IR containment profile so unattended containment actions can
         // proceed without blocking on human approval. Destructive actions are
         // never pre-authorized (safety interlock preserved).
-        let permission_profile = PermissionProfile::ir_containment(contract_id.clone());
+        let permission_profile = std::sync::Arc::new(PermissionProfile::ir_containment(contract_id.clone()));
 
         // ── Phase 4: Auditor for independent verification ──
         let auditor = Auditor::new(
@@ -133,8 +153,14 @@ impl ManagedRunner {
         let permissions = permissions.clone();
         let permission_pending = permission_pending.clone();
         let memory_store = self.memory_store.clone();
-        let _ = permission_profile; // profile consulted by permission layer (Phase 6 integration)
-        // Move auditor into the spawned task for post-Executor verification.
+        // Executor round configuration (from server settings — not hardcoded).
+        let max_executor_iterations = self.max_executor_iterations;
+        let rabbit_hole_threshold = self.rabbit_hole_threshold;
+        let context_window = self.context_window;
+        let tool_timeout_secs = self.tool_timeout_secs;
+        let max_tool_retries = self.max_tool_retries;
+        // Move auditor + permission profile into the spawned task for post-Executor
+        // verification and pre-authorization consultation (Phase 6).
 
         // Spawn the managed loop
         tokio::spawn(async move {
@@ -184,6 +210,9 @@ impl ManagedRunner {
                             &contract_id, "manager"
                         ))).await;
                         contract.complete();
+                        // Persist the final state, then clean up (task finished).
+                        persist_contract(&memory_store, &contract_id, &session, &contract);
+                        let _ = memory_store.delete_task_contract(&contract_id);
                         break;
                     }
                     ManagerRoute::Blocked(reason) => {
@@ -192,6 +221,8 @@ impl ManagedRunner {
                             &contract_id, "manager"
                         ))).await;
                         contract.block(reason.clone());
+                        // Persist the blocked state so it survives a restart for resume.
+                        persist_contract(&memory_store, &contract_id, &session, &contract);
                         break;
                     }
                     ManagerRoute::Invalid(reason) => {
@@ -203,6 +234,15 @@ impl ManagedRunner {
                 }
 
                 // ── Executor Round ──
+                // Advance phase (forward-only) before the Executor runs so the
+                // brief reflects the phase the subtask belongs to.
+                if let Some(p) = plan.phase {
+                    if phase_rank(p) > phase_rank(contract.phase) {
+                        info!("[managed:{}] Advancing phase: {:?} -> {:?}", session, contract.phase, p);
+                        contract.advance_phase(p);
+                    }
+                }
+
                 // Build the condensed brief for the Executor
                 let brief = contract.executor_brief(&plan.subtask, &plan.success_criteria);
 
@@ -214,25 +254,31 @@ impl ManagedRunner {
                     &brief,
                     &format!("{}-exec-{}", session, round),
                     &model,
-                    20, // max iterations per subtask
+                    max_executor_iterations,
                     vec![], // fresh history for each Executor round
                     permissions.clone(),
                     permission_pending.clone(),
+                    Some(permission_profile.clone()), // Phase 6 pre-authorization profile
                     None, // no fallback model
-                    5,    // rabbit hole threshold
-                    128000, // context window
+                    rabbit_hole_threshold,
+                    context_window,
                     80,   // context window threshold
-                    300,  // tool timeout
-                    2,    // max tool retries
+                    tool_timeout_secs,
+                    max_tool_retries,
                     vec![], // no images
                     None, None, // no checkpoint resume
                 ).await;
 
+                let mut executor_output = String::new();
                 match executor_result {
                     Ok(mut stream) => {
-                        // Forward Executor events to the main stream
+                        // Forward Executor events to the main stream and capture the
+                        // assistant's final text for the TaskContract.
                         use futures::StreamExt;
                         while let Some(result) = stream.next().await {
+                            if let Ok(AgentEvent::TextDelta { content, .. }) = &result {
+                                executor_output.push_str(content);
+                            }
                             let _ = tx.send(result).await;
                         }
                         info!("[managed:{}] Executor round {} completed", session, round + 1);
@@ -246,27 +292,63 @@ impl ManagedRunner {
                     }
                 }
 
-                // ── Phase 4: Auditor verification (artifact checks) ──
-                // After each Executor round, verify any artifacts the Manager expected.
-                // For now this is a lightweight pass — full action verification is wired
-                // in when containment/eradication phases are enabled.
-                if !plan.expected_evidence.is_empty() {
-                    let _audit = auditor.verify_artifact(&plan.expected_evidence, None).await;
-                    // Future: gate TaskContract.findings on audit.verified
-                }
-
-                // ── Persist TaskContract after each round (crash recovery) ──
-                if let Ok(json) = contract.to_json() {
-                    if let Err(e) = memory_store.save_task_contract(
-                        &contract_id, &session, &json,
-                        &format!("{:?}", contract.phase).to_lowercase(),
-                        contract.current_round,
-                    ) {
-                        warn!("[managed:{}] Failed to persist TaskContract: {}", session, e);
+                // ── Phase 4: Auditor verification + TaskContract update ──
+                // Verify each expected evidence path; verified artifacts become
+                // findings, failed ones become manager notes.
+                if !plan.expected_evidence.trim().is_empty() {
+                    for item in plan.expected_evidence.split(|c| c == ',' || c == '\n') {
+                        let mut path = item.trim();
+                        // Strip bullet markers if the Manager listed items with "- " / "* ".
+                        if let Some(stripped) = path.strip_prefix("- ").or_else(|| path.strip_prefix("* ")) {
+                            path = stripped.trim();
+                        }
+                        if path.is_empty() {
+                            continue;
+                        }
+                        let audit = auditor.verify_artifact(path, None).await;
+                        if audit.verified {
+                            contract.add_finding(VerifiedFinding {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                title: format!("Evidence collected: {}", path),
+                                severity: "info".to_string(),
+                                evidence_summary: audit.evidence,
+                                evidence_path: Some(path.to_string()),
+                                mitre_technique: None,
+                                verified_at: chrono::Utc::now(),
+                                round_index: round,
+                            });
+                        } else {
+                            let reason = audit.failure_reason
+                                .unwrap_or_else(|| "verification failed".to_string());
+                            contract.manager_notes.push(format!(
+                                "Round {}: evidence '{}' not verified: {}",
+                                round + 1, path, reason
+                            ));
+                        }
                     }
                 }
 
+                // Record a bounded summary of the Executor's output as a manager note
+                // so the next Manager round can see what happened.
+                let summary: String = executor_output.chars().take(800).collect();
+                if !summary.trim().is_empty() {
+                    contract.manager_notes.push(format!("Round {}: {}", round + 1, summary.trim()));
+                }
+                // Cap manager notes to the 20 most recent to bound contract size.
+                if contract.manager_notes.len() > 20 {
+                    let overflow = contract.manager_notes.len() - 20;
+                    contract.manager_notes.drain(0..overflow);
+                }
+
+                // ── Persist TaskContract after each round (crash recovery) ──
+                persist_contract(&memory_store, &contract_id, &session, &contract);
+
                 round += 1;
+            }
+
+            // Safety net: if the task completed, ensure the contract is cleaned up.
+            if contract.phase == IrPhase::Completed {
+                let _ = memory_store.delete_task_contract(&contract_id);
             }
 
             // Send done event
@@ -275,5 +357,32 @@ impl ManagedRunner {
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+}
+
+/// Persist the TaskContract to SQLite (best-effort crash recovery).
+fn persist_contract(memory_store: &MemoryStore, contract_id: &str, session: &str, contract: &TaskContract) {
+    if let Ok(json) = contract.to_json() {
+        if let Err(e) = memory_store.save_task_contract(
+            contract_id, session, &json,
+            &format!("{:?}", contract.phase).to_lowercase(),
+            contract.current_round,
+        ) {
+            warn!("[managed:{}] Failed to persist TaskContract: {}", session, e);
+        }
+    }
+}
+
+/// Rank IR phases in canonical progression order (forward-only advancement).
+fn phase_rank(p: IrPhase) -> usize {
+    match p {
+        IrPhase::Collection => 0,
+        IrPhase::Analysis => 1,
+        IrPhase::Attribution => 2,
+        IrPhase::Containment => 3,
+        IrPhase::Eradication => 4,
+        IrPhase::Reporting => 5,
+        IrPhase::Completed => 6,
+        IrPhase::Blocked => 7,
     }
 }

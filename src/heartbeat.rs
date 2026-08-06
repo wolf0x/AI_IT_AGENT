@@ -124,6 +124,7 @@ impl Heartbeat {
         match runner.run(
             &message, &session_id, &model, max_iter, vec![],
             permissions, permission_pending,
+            None, // no pre-authorization profile (heartbeat)
             None, rabbit_hole,
             ctx_window, ctx_window_threshold,
             tool_timeout,

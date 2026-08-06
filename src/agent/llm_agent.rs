@@ -626,6 +626,7 @@ impl Agent for LlmAgent {
         let prev_history = ctx.conversation_history.clone();
         let permissions = ctx.permissions.clone();
         let permission_pending: PendingMap = ctx.permission_pending.clone();
+        let preauth_profile = ctx.preauth_profile.clone();
         let fallback_model = ctx.fallback_model.clone();
         let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
         let tool_timeout_secs = ctx.tool_timeout_secs;
@@ -971,6 +972,7 @@ impl Agent for LlmAgent {
                             permissions.clone(),
                             invocation_id.clone(),
                             author.clone(),
+                            preauth_profile.clone(),
                         );
 
                         // Execute based on strategy

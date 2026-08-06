@@ -153,6 +153,9 @@ pub struct InvocationContext {
     /// Path to the JSONL event log file for this run.
     /// When set, the agent logs all state changes to this file for crash recovery.
     pub event_log_path: Option<std::path::PathBuf>,
+    /// Pre-authorization profile for managed (unattended) task execution.
+    /// When set, matching tool calls bypass the human permission gate (Phase 6).
+    pub preauth_profile: Option<std::sync::Arc<crate::managed::permission_profile::PermissionProfile>>,
     ended: Arc<AtomicBool>,
 }
 
@@ -185,6 +188,7 @@ impl InvocationContext {
             checkpoint_id: None,
             checkpointer: None,
             event_log_path: None,
+            preauth_profile: None,
             ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -265,6 +269,15 @@ impl InvocationContext {
     /// Set the path for the JSONL event log.
     pub fn with_event_log_path(mut self, path: std::path::PathBuf) -> Self {
         self.event_log_path = Some(path);
+        self
+    }
+
+    /// Set a pre-authorization profile for managed (unattended) task execution.
+    pub fn with_preauth_profile(
+        mut self,
+        profile: Option<std::sync::Arc<crate::managed::permission_profile::PermissionProfile>>,
+    ) -> Self {
+        self.preauth_profile = profile;
         self
     }
 

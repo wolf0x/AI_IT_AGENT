@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Demo B — Mode Selector Bar</title>
+<style>
+:root { --t1:#1e293b; --t2:#475569; --t3:#94a3b8; --border:#e2e8f0; --rs:8px; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f1f5f9; color:var(--t1); display:flex; align-items:center; justify-content:center; min-height:100vh; }
+
+.demo-wrap { width:720px; background:#fff; border-radius:16px; box-shadow:0 8px 32px rgba(0,0,0,.08); overflow:hidden; }
+.demo-header { padding:16px 20px; background:#f8f9fa; border-bottom:1px solid #ecf0f1; font-size:12px; color:var(--t3); font-weight:600; text-transform:uppercase; letter-spacing:.5px; }
+
+/* ── Input bar ── */
+.input-bar { display:flex; align-items:flex-end; gap:10px; padding:16px 20px; background:#f8f9fa; border-top:1px solid #ecf0f1; }
+.input-bar textarea { flex:1; padding:12px 16px; background:white; border:1px solid #bdc3c7; border-radius:var(--rs); color:var(--t1); font-size:14px; outline:0; font-family:inherit; height:44px; resize:none; line-height:1.4; }
+.input-bar textarea:focus { border-color:#3498db; box-shadow:0 0 0 3px rgba(52,152,219,.1); }
+.btn { height:44px; display:flex; align-items:center; padding:10px 24px; border:none; border-radius:var(--rs); font-size:14px; font-weight:600; cursor:pointer; transition:all .15s; }
+.btn-p { background:#3498db; color:#fff; }
+.btn-p:hover { background:#2980b9; }
+.btn-img { height:44px; width:44px; display:flex; align-items:center; justify-content:center; padding:0; background:#e8f4fd; border:1px solid #3498db; border-radius:var(--rs); cursor:pointer; font-size:20px; color:#3498db; flex-shrink:0; }
+
+/* ── Demo B: Mode selector bar above input ── */
+.mode-bar { display:flex; align-items:center; gap:12px; padding:8px 20px; background:#f8f9fa; border-top:1px solid #ecf0f1; }
+.mode-seg { display:flex; background:#e8ecf0; border-radius:8px; padding:3px; gap:2px; }
+.mode-seg button { padding:6px 16px; border:none; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; background:transparent; color:var(--t2); transition:all .2s; display:flex; align-items:center; gap:5px; }
+.mode-seg button:hover { color:var(--t1); }
+.mode-seg button.active { background:#fff; color:var(--t1); box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.mode-seg button .seg-icon { font-size:14px; }
+.mode-hint { font-size:11px; color:var(--t3); margin-left:auto; transition:color .2s; }
+.mode-hint.active { color:#8e44ad; font-weight:600; }
+
+/* ── Managed mode banner ── */
+.managed-banner { padding:8px 20px; background:linear-gradient(135deg,#f5eef8,#fdf2e9); border-top:1px solid #e8d5f0; display:flex; align-items:center; gap:8px; font-size:12px; color:#8e44ad; font-weight:500; animation:slideDown .2s ease; }
+.managed-banner .mb-icon { font-size:14px; }
+@keyframes slideDown { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+
+/* ── Status ── */
+.status-bar { padding:10px 20px; background:#fff; border-top:1px solid #ecf0f1; font-size:12px; color:var(--t3); display:flex; align-items:center; gap:8px; }
+.status-dot { width:8px; height:8px; border-radius:50%; background:#bdc3c7; }
+.status-dot.active { background:#8e44ad; animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+</style>
+</head>
+<body>
+<div class="demo-wrap">
+  <div class="demo-header">Demo B — Mode Selector Bar</div>
+
+  <div style="padding:40px 20px; text-align:center; color:var(--t2); font-size:14px;">
+    Chat messages area...
+  </div>
+
+  <!-- Demo B: Mode selector bar -->
+  <div class="mode-bar">
+    <div class="mode-seg" id="modeSeg">
+      <button class="active" data-mode="normal" onclick="setMode('normal')">
+        <span class="seg-icon">&#9889;</span> Normal
+      </button>
+      <button data-mode="managed" onclick="setMode('managed')">
+        <span class="seg-icon">&#128736;</span> Managed
+      </button>
+    </div>
+    <span class="mode-hint" id="modeHint">Standard single-turn execution</span>
+  </div>
+
+  <!-- Managed mode info banner (hidden by default) -->
+  <div class="managed-banner" id="managedBanner" style="display:none">
+    <span class="mb-icon">&#128736;</span>
+    Manager-Executor-Auditor loop enabled — for long-horizon IR tasks
+  </div>
+
+  <!-- Input bar -->
+  <div class="input-bar">
+    <button class="btn-img disabled" title="Attach image">&#128247;</button>
+    <textarea placeholder="Type a message... (/ for skills, Shift+Enter for newline)"></textarea>
+    <button class="btn btn-p">Send</button>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Mode: Normal</span>
+  </div>
+</div>
+
+<script>
+let currentMode = 'normal';
+function setMode(mode) {
+  currentMode = mode;
+  // Update segmented control
+  document.querySelectorAll('#modeSeg button').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+  // Update hint text
+  const hint = document.getElementById('modeHint');
+  hint.textContent = mode === 'managed' ? 'Manager-Executor-Auditor loop active' : 'Standard single-turn execution';
+  hint.classList.toggle('active', mode === 'managed');
+  // Show/hide managed banner
+  document.getElementById('managedBanner').style.display = mode === 'managed' ? 'flex' : 'none';
+  // Update status
+  document.getElementById('statusDot').classList.toggle('active', mode === 'managed');
+  document.getElementById('statusText').textContent = 'Mode: ' + (mode === 'managed' ? 'Managed' : 'Normal');
+}
+</script>
+</body>
+</html>

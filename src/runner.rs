@@ -14,6 +14,7 @@ use crate::error::{AgentError, AgentResult};
 use crate::log::ConversationLogger;
 use crate::model::ChatMessage;
 use crate::permission::PendingMap;
+use crate::managed::permission_profile::PermissionProfile;
 use crate::session::{InMemorySessionService, SessionService};
 
 /// State restored from a checkpoint for resuming an interrupted task.
@@ -111,6 +112,7 @@ impl Runner {
         history: Vec<ChatMessage>,
         permissions: Arc<Mutex<HashMap<String, bool>>>,
         permission_pending: PendingMap,
+        preauth_profile: Option<Arc<PermissionProfile>>,
         fallback_model: Option<String>,
         rabbit_hole_threshold: usize,
         context_window: usize,
@@ -138,6 +140,7 @@ impl Runner {
         ).with_history(history)
          .with_permissions(permissions)
          .with_permission_pending(permission_pending)
+         .with_preauth_profile(preauth_profile)
          .with_fallback_model(fallback_model)
          .with_rabbit_hole_threshold(rabbit_hole_threshold)
          .with_context_window(context_window)

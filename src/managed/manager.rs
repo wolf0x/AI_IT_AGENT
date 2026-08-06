@@ -8,7 +8,7 @@
 //! This fresh-context approach prevents the context drift that plagues long tasks
 //! when using a single accumulating conversation history.
 
-use super::task_contract::TaskContract;
+use super::task_contract::{IrPhase, TaskContract};
 use crate::model::openai::OpenAiProvider;
 use crate::model::ChatMessage;
 use std::sync::Arc;
@@ -24,6 +24,8 @@ pub struct ManagerPlan {
     pub expected_evidence: String,
     /// Route: what happens after this round.
     pub route: ManagerRoute,
+    /// The IR phase the NEXT subtask belongs to (forward-only progression).
+    pub phase: Option<IrPhase>,
 }
 
 /// What happens after the Executor completes a subtask.
@@ -55,7 +57,9 @@ Subtask: <clear, specific description of what the Executor should do next>
 
 Success Criteria: <how to know this subtask is complete>
 
-Expected Evidence: <what files or artifacts should be produced>
+Expected Evidence: <what files or artifacts should be produced; one file path per line>
+
+Phase: <collection | analysis | attribution | containment | eradication | reporting>
 
 Route: <continue | done | blocked:reason>
 ```
@@ -70,6 +74,7 @@ Rules:
 7. Base your plan on VERIFIED findings only — do not assume unverified results.
 8. If verified findings suggest a critical threat, prioritize containment in the next subtask.
 9. Keep the subtask focused — it should be completable in 5-15 tool calls.
+10. State the phase the NEXT subtask belongs to. Never regress — the phase must be the same as or later than the current phase.
 
 IR Phase Progression:
 - Collection → Analysis → Attribution → Containment → Eradication → Reporting → Done
@@ -133,6 +138,7 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
     let mut success_criteria = String::new();
     let mut expected_evidence = String::new();
     let mut route = ManagerRoute::Continue;
+    let mut phase: Option<IrPhase> = None;
 
     let mut current_section = "";
 
@@ -148,6 +154,10 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
         } else if trimmed.starts_with("Expected Evidence:") {
             expected_evidence = trimmed.trim_start_matches("Expected Evidence:").trim().to_string();
             current_section = "evidence";
+        } else if trimmed.starts_with("Phase:") {
+            let phase_str = trimmed.trim_start_matches("Phase:").trim().to_lowercase();
+            phase = parse_phase(&phase_str);
+            current_section = "";
         } else if trimmed.starts_with("Route:") {
             let route_str = trimmed.trim_start_matches("Route:").trim().to_lowercase();
             if route_str == "done" {
@@ -168,7 +178,8 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
             success_criteria.push(' ');
             success_criteria.push_str(trimmed);
         } else if !trimmed.is_empty() && current_section == "evidence" {
-            expected_evidence.push(' ');
+            // Preserve line breaks so multi-file evidence stays splittable in the runner.
+            expected_evidence.push('\n');
             expected_evidence.push_str(trimmed);
         }
     }
@@ -182,6 +193,21 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
         success_criteria,
         expected_evidence,
         route,
+        phase,
+    }
+}
+
+/// Map a Manager phase string to an IrPhase. Returns None for unknown values
+/// (callers then leave the current phase unchanged).
+fn parse_phase(s: &str) -> Option<IrPhase> {
+    match s {
+        "collection" => Some(IrPhase::Collection),
+        "analysis" => Some(IrPhase::Analysis),
+        "attribution" => Some(IrPhase::Attribution),
+        "containment" => Some(IrPhase::Containment),
+        "eradication" => Some(IrPhase::Eradication),
+        "reporting" => Some(IrPhase::Reporting),
+        _ => None,
     }
 }
 
