@@ -330,6 +330,10 @@ Right: ```json\n{{\"name\": \"app_launch\", ...}}\n```\n\
 - If a task requires multiple steps, call tools sequentially and explain each step.\n\
 - Be thorough — don't stop at surface-level observations.\n\
 - **Output Directory Convention**: `file_write` with a bare filename (e.g. `report.html`) automatically saves to `workspace/output/`. To write elsewhere, use an absolute path or include a directory component (e.g. `./file.txt` or `subdir/file.txt`).\n\
+- **Timeout Handling**: Long-running tools (YARA scans, remote SSH, large event logs) have extended timeouts (30min). If a tool times out:\n\
+  1. Analyze any partial results returned (status='partial')\n\
+  2. Consider narrowing the scope (e.g., scan specific directories instead of full disk)\n\
+  3. Do NOT blindly retry the same command — use the hint in the partial result to adjust your approach\n\
 - **Do NOT repeat yourself.** Once you have answered a question or completed an action, stop. \
   Do not add follow-up narration like \"now let me verify\" or \"let me double-check\" unless the user asks.\n\
 - **Do NOT announce what you are about to do.** Just do it. If you need to call a tool, emit the tool call \

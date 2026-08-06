@@ -57,6 +57,7 @@ pub mod ir_memdump;
 pub mod ir_case;
 pub mod ir_attackpath;
 pub mod ir_eml;
+pub mod partial_result;
 
 use async_trait::async_trait;
 use serde_json::Value;
