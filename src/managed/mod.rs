@@ -59,7 +59,10 @@
 pub mod task_contract;
 pub mod manager;
 pub mod runner;
+pub mod auditor;
 
 pub use task_contract::TaskContract;
 #[allow(unused_imports)]
 pub use runner::ManagedRunner;
+#[allow(unused_imports)]
+pub use auditor::Auditor;
