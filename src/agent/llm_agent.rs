@@ -1484,7 +1484,16 @@ async fn execute_tool_call(
             let tool_result = match tool {
                 Some(tool) => {
                     // Get tool-level timeout (Phase 1: graded timeout policy)
-                    let effective_timeout_secs = tool.timeout_secs().unwrap_or(tool_timeout_secs);
+                    // For Watchdog stage (timeout_secs() == None), use a very large hard
+                    // timeout so the wall-clock never fires — the liveness watchdog is the
+                    // sole abort mechanism for these tools (e.g., malware_deep, ir_memdump).
+                    let effective_timeout_secs = tool.timeout_secs().unwrap_or_else(|| {
+                        if tool.timeout_stage() == crate::tool::TimeoutStage::Watchdog {
+                            24 * 3600 // 24 hours — effectively unlimited, watchdog governs
+                        } else {
+                            tool_timeout_secs
+                        }
+                    });
                     let watchdog_silence_secs = tool.timeout_stage().watchdog_silence_secs();
                     
                     // Create progress channel for long-running tools

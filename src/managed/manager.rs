@@ -202,12 +202,17 @@ pub async fn plan_next(
         ChatMessage::user(&user_prompt),
     ];
 
-    // Manager uses no tools — pure planning
+    // Manager uses no tools — pure planning. We don't stream Manager output to the
+    // UI, so create a throwaway channel and spawn a drain task to swallow text deltas
+    // (same pattern as re-prompt mode in llm_agent.rs). Without the drain task the
+    // channel would block once its small buffer fills.
+    let (dummy_tx, mut dummy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        while dummy_rx.recv().await.is_some() {}
+    });
+
     let (content, _reasoning, _tool_calls, _usage) = provider
-        .chat_stream(model, &messages, &[], /* no streaming for manager */ {
-            let (tx, _rx) = tokio::sync::mpsc::channel(1);
-            tx
-        }, &contract.id, "manager")
+        .chat_stream(model, &messages, &[], dummy_tx, &contract.id, "manager")
         .await
         .map_err(|e| format!("Manager LLM call failed: {}", e))?;
 

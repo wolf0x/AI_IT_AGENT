@@ -7,7 +7,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// Incident Response phase lifecycle (NIST SP 800-61 aligned).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

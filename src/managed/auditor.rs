@@ -25,10 +25,8 @@
 //! when the verification requires interpretation of complex evidence.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tracing::{info, warn};
+use tracing::info;
 
-use super::task_contract::{TaskContract, VerifiedAction, VerifiedFinding};
 use crate::tool::ToolRegistry;
 use crate::context::ToolContext;
 

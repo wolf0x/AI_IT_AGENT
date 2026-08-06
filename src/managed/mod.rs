@@ -64,6 +64,8 @@ pub mod permission_profile;
 
 pub use task_contract::TaskContract;
 #[allow(unused_imports)]
+pub use task_contract::{VerifiedFinding, VerifiedAction, IrPhase};
+#[allow(unused_imports)]
 pub use runner::ManagedRunner;
 #[allow(unused_imports)]
 pub use auditor::Auditor;

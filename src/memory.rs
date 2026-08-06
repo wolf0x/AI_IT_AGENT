@@ -387,6 +387,27 @@ impl MemoryStore {
             info!("Schema v4 migration: usage_stats table created");
         }
 
+        // ── Schema v5: TaskContracts for managed (long-horizon) tasks ──
+        if version < 5 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS task_contracts (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    contract_json TEXT NOT NULL,
+                    phase TEXT NOT NULL DEFAULT 'collection',
+                    current_round INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_contracts_session ON task_contracts(session_id);"
+            ).map_err(|e| format!("Task contracts table creation failed: {}", e))?;
+
+            conn.execute("INSERT INTO schema_version(version) VALUES(5)", [])
+                .map_err(|e| format!("Version 5 insert failed: {}", e))?;
+
+            info!("Schema v5 migration: task_contracts table created");
+        }
+
         Ok(())
     }
 
@@ -925,6 +946,62 @@ impl MemoryStore {
             info!("Cleaned up {} stale checkpoint(s) (older than {}h)", deleted, max_age_hours);
         }
         Ok(deleted)
+    }
+
+    // ── TaskContract CRUD (managed long-horizon tasks) ────────────
+
+    /// Save or update a TaskContract (INSERT OR REPLACE).
+    /// The contract is serialized as JSON and stored alongside indexed metadata.
+    pub fn save_task_contract(
+        &self,
+        id: &str,
+        session_id: &str,
+        contract_json: &str,
+        phase: &str,
+        current_round: usize,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        // Preserve created_at if the contract already exists.
+        let created_at = conn.query_row(
+            "SELECT created_at FROM task_contracts WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        ).unwrap_or_else(|_| now.clone());
+
+        conn.execute(
+            "INSERT OR REPLACE INTO task_contracts \
+             (id, session_id, contract_json, phase, current_round, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id, session_id, contract_json, phase,
+                current_round as i64, created_at, now,
+            ],
+        ).map_err(|e| format!("Failed to save task contract: {}", e))?;
+        Ok(())
+    }
+
+    /// Load a TaskContract JSON by ID. Returns None if not found.
+    pub fn get_task_contract(&self, id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT contract_json FROM task_contracts WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(json) => Ok(Some(json)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("Task contract get failed: {}", e)),
+        }
+    }
+
+    /// Delete a TaskContract by ID (called when a managed task completes).
+    pub fn delete_task_contract(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM task_contracts WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to delete task contract: {}", e))?;
+        Ok(())
     }
 
     /// Record a token usage entry.

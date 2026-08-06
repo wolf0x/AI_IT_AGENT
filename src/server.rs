@@ -909,17 +909,41 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 }
                             }
 
-                            // Run via Runner
-                            match state.runner.run(
-                                &content, &session_id, &model, max_iter, history,
-                                state.permissions.clone(), state.permission_pending.clone(),
-                                fallback_model, rabbit_hole,
-                                ctx_window, ctx_window_threshold,
-                                tool_timeout as u64,
-                                max_retries,
-                                images,
-                                None, None,  // normal chat — no checkpoint resume
-                            ).await {
+                            // Run via Runner (managed mode dispatches to ManagedRunner)
+                            // Managed mode is activated PER-TASK via the 'managed' field —
+                            // NOT a global setting. When true, the task runs through the
+                            // Manager-Executor-Auditor loop for long-horizon IR tasks.
+                            let managed = parsed["managed"].as_bool().unwrap_or(false);
+                            let managed_scope = parsed["managed_scope"].as_str().unwrap_or("").to_string();
+                            let run_result = if managed {
+                                info!("Managed mode requested for session {}", session_id);
+                                let managed_runner = crate::managed::ManagedRunner::new(
+                                    state.runner.clone(),
+                                    state.provider.clone(),
+                                    model.clone(),
+                                    30, // max managed rounds
+                                    state.memory_store.clone(),
+                                    state.tools.clone(),
+                                    ".".to_string(),
+                                    state.workspace_dir.clone(),
+                                );
+                                managed_runner.run(
+                                    &content, &session_id, &model, &managed_scope,
+                                    state.permissions.clone(), state.permission_pending.clone(),
+                                ).await
+                            } else {
+                                state.runner.run(
+                                    &content, &session_id, &model, max_iter, history,
+                                    state.permissions.clone(), state.permission_pending.clone(),
+                                    fallback_model, rabbit_hole,
+                                    ctx_window, ctx_window_threshold,
+                                    tool_timeout as u64,
+                                    max_retries,
+                                    images,
+                                    None, None,  // normal chat — no checkpoint resume
+                                ).await
+                            };
+                            match run_result {
                                 Ok(mut event_stream) => {
                                     let mut assistant_text = String::new();
                                     loop {
