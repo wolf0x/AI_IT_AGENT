@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 mod agent;
 #[allow(dead_code)]
+mod blackboard;
+#[allow(dead_code)]
 mod callbacks;
 mod checkpoint;
 mod config;
@@ -267,6 +269,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clean up stale checkpoints (older than 24 hours) on startup
     let _ = memory_store.cleanup_stale_checkpoints(24);
+
+    // Clean up old blackboard entries (older than 7 days) on startup
+    let _ = memory_store.cleanup_old_blackboards(7);
 
     // Build task checkpointer for crash recovery (断点续跑)
     let checkpointer = Arc::new(TaskCheckpointer::new(memory_store.clone()));

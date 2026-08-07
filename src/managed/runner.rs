@@ -19,6 +19,7 @@ use super::manager::{self, ManagerRoute};
 use super::permission_profile::PermissionProfile;
 use super::task_contract::{IrPhase, TaskContract, VerifiedFinding};
 use crate::agent::{AgentEvent, EventStream};
+use crate::blackboard::{Blackboard, BlackboardEntry};
 use crate::error::AgentResult;
 use crate::memory::MemoryStore;
 use crate::model::openai::OpenAiProvider;
@@ -100,6 +101,11 @@ impl ManagedRunner {
     ///    c. [Phase 4] Auditor verifies artifacts
     ///    d. TaskContract updated with verified findings + manager notes
     /// 3. Return final results
+    ///
+    /// The ManagedRunner reads the Blackboard directly to seed the TaskContract
+    /// with Instant-mode context (original task + work summary). This replaces
+    /// the old seed_context parameter that required the caller to pre-process
+    /// session history.
     pub async fn run(
         &self,
         user_message: &str,
@@ -119,6 +125,29 @@ impl ManagedRunner {
             scope.to_string(),
             self.max_rounds,
         );
+
+        // ── Seed TaskContract from Blackboard (Instant-mode context) ──
+        // The ManagedRunner reads the Blackboard directly instead of receiving
+        // pre-processed context from the caller. This replaces the old
+        // seed_context parameter mechanism.
+        if let Ok(Some(json)) = self.memory_store.load_blackboard(session_id) {
+            if let Ok(bb) = crate::blackboard::Blackboard::from_json(&json) {
+                let entries = bb.get_entries_by_source("instant");
+                if !entries.is_empty() {
+                    let original_task = bb.get_original_task().unwrap_or(user_message);
+                    let context_summary = bb.to_context_string(Some("instant"));
+                    if !context_summary.trim().is_empty() {
+                        info!("[managed:{}] Seeded TaskContract from Blackboard ({} entries, {} chars)",
+                              session_id, entries.len(), context_summary.len());
+                        // Update contract with Blackboard context
+                        contract.original_task = original_task.to_string();
+                        contract.manager_notes.push(format!(
+                            "[Pre-Expert Mode Work Summary]\n{}", context_summary
+                        ));
+                    }
+                }
+            }
+        }
 
         // Create the event stream channel
         let (tx, rx) = tokio::sync::mpsc::channel::<AgentResult<AgentEvent>>(200);
@@ -276,6 +305,11 @@ impl ManagedRunner {
                         // assistant's final text for the TaskContract.
                         use futures::StreamExt;
                         while let Some(result) = stream.next().await {
+                            // Do NOT forward the Executor's Done event — it would
+                            // cause server.rs to break the event loop prematurely.
+                            if matches!(&result, Ok(AgentEvent::Done { .. })) {
+                                continue;
+                            }
                             if let Ok(AgentEvent::TextDelta { content, .. }) = &result {
                                 executor_output.push_str(content);
                             }
@@ -342,6 +376,57 @@ impl ManagedRunner {
 
                 // ── Persist TaskContract after each round (crash recovery) ──
                 persist_contract(&memory_store, &contract_id, &session, &contract);
+
+                // ── Write Expert mode findings to Blackboard ──
+                // This allows Instant mode to see what Expert mode discovered.
+                let mut blackboard = Blackboard::new(&session);
+                // Load existing blackboard from SQLite (if any)
+                if let Ok(Some(json)) = memory_store.load_blackboard(&session) {
+                    if let Ok(existing) = Blackboard::from_json(&json) {
+                        blackboard = existing;
+                    }
+                }
+                // Write verified findings
+                for f in &contract.verified_findings {
+                    let summary: String = f.title.chars().take(100).collect();
+                    let detail: String = f.evidence_summary.chars().take(200).collect();
+                    blackboard.add_entry(BlackboardEntry {
+                        source: "expert".to_string(),
+                        entry_type: "finding".to_string(),
+                        summary,
+                        detail: Some(detail),
+                        phase: Some(format!("{:?}", contract.phase).to_lowercase()),
+                        timestamp: chrono::Utc::now(),
+                    });
+                }
+                // Write latest manager notes (up to 3) as summary entries
+                let start = if contract.manager_notes.len() > 3 { contract.manager_notes.len() - 3 } else { 0 };
+                for note in contract.manager_notes.iter().skip(start) {
+                    let summary: String = note.chars().take(100).collect();
+                    blackboard.add_entry(BlackboardEntry {
+                        source: "expert".to_string(),
+                        entry_type: "summary".to_string(),
+                        summary,
+                        detail: None,
+                        phase: Some(format!("{:?}", contract.phase).to_lowercase()),
+                        timestamp: chrono::Utc::now(),
+                    });
+                }
+                // Write phase change if applicable
+                if let Some(p) = plan.phase {
+                    blackboard.add_entry(BlackboardEntry {
+                        source: "expert".to_string(),
+                        entry_type: "phase_change".to_string(),
+                        summary: format!("Phase: {:?}", p),
+                        detail: None,
+                        phase: Some(format!("{:?}", p).to_lowercase()),
+                        timestamp: chrono::Utc::now(),
+                    });
+                }
+                // Persist blackboard
+                if let Ok(json) = blackboard.to_json() {
+                    let _ = memory_store.save_blackboard(&session, &json);
+                }
 
                 round += 1;
             }

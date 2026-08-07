@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::agent::AgentEvent;
+use crate::blackboard::{Blackboard, BlackboardEntry};
 use crate::log::ConversationLogger;
 use crate::memory::MemoryStore;
 use crate::model::ChatMessage;
@@ -921,6 +922,24 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             // Manager-Executor-Auditor loop for long-horizon IR tasks.
                             let managed = parsed["managed"].as_bool().unwrap_or(false);
                             let managed_scope = parsed["managed_scope"].as_str().unwrap_or("").to_string();
+
+                            // ── Blackboard: inject Expert-mode findings into Instant mode ──
+                            // The ManagedRunner reads the Blackboard directly for Expert mode
+                            // startup context (no need to pre-process here).
+                            if !managed && !history.is_empty() {
+                                if let Ok(Some(json)) = state.memory_store.load_blackboard(&session_id) {
+                                    if let Ok(bb) = Blackboard::from_json(&json) {
+                                        let entries = bb.get_entries_by_source("expert");
+                                        if !entries.is_empty() {
+                                            let ctx = bb.to_context_string(Some("expert"));
+                                            info!("[instant:{}] Injecting Expert-mode Blackboard context ({} entries, {} chars)",
+                                                  session_id, entries.len(), ctx.len());
+                                            history.insert(0, ChatMessage::system(&ctx));
+                                        }
+                                    }
+                                }
+                            }
+
                             let run_result = if managed {
                                 info!("Expert mode requested for session {}", session_id);
                                 let managed_runner = crate::managed::ManagedRunner::new(
@@ -944,7 +963,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 ).await
                             } else {
                                 state.runner.run(
-                                    &content, &session_id, &model, max_iter, history,
+                                    &content, &session_id, &model, max_iter, history.clone(),
                                     state.permissions.clone(), state.permission_pending.clone(),
                                     None, // no pre-authorization profile (normal chat)
                                     fallback_model, rabbit_hole,
@@ -1063,6 +1082,69 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         // queries) can reference this exchange.
                                         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
                                         let _ = state.memory_store.auto_summarize_date(&today);
+
+                                        // ── Instant mode: write summary to Blackboard ──
+                                        // This allows Expert mode to see what Instant mode
+                                        // discovered when it starts.
+                                        // P0: Only write significant responses (≥200 chars) to avoid
+                                        // filling the blackboard with short replies like "你好".
+                                        // P1: Extract smart summary (first 200 + last 300 chars)
+                                        // instead of raw truncation, preserving both context
+                                        // and key findings.
+                                        if !managed && assistant_text.trim().len() >= 200 {
+                                            let mut blackboard = Blackboard::new(&session_id);
+                                            // Load existing blackboard from SQLite (if any)
+                                            if let Ok(Some(json)) = state.memory_store.load_blackboard(&session_id) {
+                                                if let Ok(existing) = Blackboard::from_json(&json) {
+                                                    blackboard = existing;
+                                                }
+                                            }
+                                            // Write original task entry (only once, from first user message)
+                                            if blackboard.get_original_task().is_none() {
+                                                let first_user = history.iter()
+                                                    .find(|m| m.role == "user")
+                                                    .and_then(|m| m.content_as_text())
+                                                    .unwrap_or_default();
+                                                if !first_user.trim().is_empty() {
+                                                    let summary: String = first_user.chars().take(100).collect();
+                                                    blackboard.add_entry(BlackboardEntry {
+                                                        source: "instant".to_string(),
+                                                        entry_type: "original_task".to_string(),
+                                                        summary,
+                                                        detail: None,
+                                                        phase: None,
+                                                        timestamp: chrono::Utc::now(),
+                                                    });
+                                                }
+                                            }
+                                            // Write assistant response summary
+                                            // P1: Extract first 200 chars (context) + last 300 chars (findings)
+                                            // to capture both the intent and the key results.
+                                            let text = assistant_text.trim();
+                                            let summary: String = if text.len() > 500 {
+                                                let first: String = text.chars().take(200).collect();
+                                                let last: String = text.chars().skip(text.len().saturating_sub(300)).collect();
+                                                format!("{}...{}[truncated]", first, last)
+                                            } else {
+                                                text.chars().take(500).collect()
+                                            };
+                                            if !summary.trim().is_empty() {
+                                                blackboard.add_entry(BlackboardEntry {
+                                                    source: "instant".to_string(),
+                                                    entry_type: "summary".to_string(),
+                                                    summary,
+                                                    detail: None,
+                                                    phase: None,
+                                                    timestamp: chrono::Utc::now(),
+                                                });
+                                            }
+                                            // Persist
+                                            if let Ok(json) = blackboard.to_json() {
+                                                let _ = state.memory_store.save_blackboard(&session_id, &json);
+                                                info!("[instant:{}] Wrote Blackboard ({} entries)",
+                                                      session_id, blackboard.entries.len());
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => {

@@ -962,6 +962,49 @@ impl Agent for LlmAgent {
 
                         // Tool calls - execute them
                         info!("[session:{}] Agent returned {} tool call(s)", session_id, tool_calls.len());
+
+                        // ── Rabbit hole detection: check BEFORE pushing to history or executing ──
+                        // If the same tool + args is called repeatedly, skip execution and force
+                        // the LLM to change approach via a correction message. This replaces the
+                        // old passive warning that still wasted tool calls.
+                        let mut rabbit_hole_fired = false;
+                        for tc in &tool_calls {
+                            let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
+                            let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
+                            let sig = format!("{}:{}", tool_name, args_str);
+                            if let Some((count, _warning_msg)) = rabbit_hole_check(
+                                &mut call_signatures, &sig, tool_name, rabbit_hole_threshold,
+                            ) {
+                                warn!("[session:{}] Rabbit hole: '{}' called with same args {} times: {}", session_id, tool_name, count, args_str);
+                                // Push a specific correction message — the LLM must see this
+                                // as the latest user message and respond to it.
+                                let correction = format!(
+                                    "You called `{}` with the same arguments {} times and the task is not progressing.\n\n\
+                                     You MUST stop and try a different approach. Options:\n\
+                                     1. Use different arguments for `{}`\n\
+                                     2. Use a completely different tool\n\
+                                     3. If you already have enough information, provide your analysis as text\n\n\
+                                     Do NOT repeat the same tool call with the same arguments.",
+                                    tool_name, count, tool_name
+                                );
+                                history.push(ChatMessage::user(&correction));
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("\n\n*[Rabbit hole: {} repeated {} times with same args — execution halted, LLM must change approach]*\n\n", tool_name, count),
+                                    &invocation_id, &author
+                                ))).await;
+                                rabbit_hole_fired = true;
+                                break; // One warning per iteration is enough
+                            }
+                        }
+
+                        if rabbit_hole_fired {
+                            // Skip tool execution and do NOT push tool calls to history.
+                            // The correction message is already in history as the latest user
+                            // message. The LLM will see it on the next iteration and must
+                            // change its approach.
+                            continue;
+                        }
+
                         has_executed_tools = true;
                         history.push(ChatMessage::assistant_with_tool_calls(tool_calls.clone()));
 
@@ -978,23 +1021,6 @@ impl Agent for LlmAgent {
                         // Execute based on strategy
                         match strategy {
                             ToolExecutionStrategy::Sequential => {
-                                // Rabbit-hole bookkeeping (always sequential, cheap)
-                                for tc in &tool_calls {
-                                    let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
-                                    let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
-                                    let sig = format!("{}:{}", tool_name, args_str);
-                                    if let Some((count, warning_msg)) = rabbit_hole_check(
-                                        &mut call_signatures, &sig, tool_name, rabbit_hole_threshold,
-                                    ) {
-                                        warn!("[session:{}] Rabbit hole: '{}' called with same args {} times: {}", session_id, tool_name, count, args_str);
-                                        history.push(ChatMessage::user(&warning_msg));
-                                        let _ = tx.send(Ok(AgentEvent::text(
-                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, count),
-                                            &invocation_id, &author
-                                        ))).await;
-                                    }
-                                }
-
                                 // IR collection parallel optimization:
                                 // When parallel_ir_tools is enabled and all tool calls are from
                                 // the IR collection set (ir_scan, ir_process, ir_account, etc.),
@@ -1021,23 +1047,6 @@ impl Agent for LlmAgent {
                                 }
                             }
                             ToolExecutionStrategy::Parallel | ToolExecutionStrategy::Auto => {
-                                // Rabbit-hole bookkeeping runs first (cheap, sequential).
-                                for tc in &tool_calls {
-                                    let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
-                                    let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
-                                    let sig = format!("{}:{}", tool_name, args_str);
-                                    if let Some((count, warning_msg)) = rabbit_hole_check(
-                                        &mut call_signatures, &sig, tool_name, rabbit_hole_threshold,
-                                    ) {
-                                        warn!("[session:{}] Rabbit hole: '{}' called with same args {} times: {}", session_id, tool_name, count, args_str);
-                                        history.push(ChatMessage::user(&warning_msg));
-                                        let _ = tx.send(Ok(AgentEvent::text(
-                                            &format!("\n\n*[Rabbit hole: {} repeated {} times with same args]*\n\n", tool_name, count),
-                                            &invocation_id, &author
-                                        ))).await;
-                                    }
-                                }
-
                                 // `Auto` only runs concurrently when every call in
                                 // the batch is read-only; otherwise it falls back to
                                 // sequential to avoid racing mutable operations.
