@@ -11,6 +11,7 @@
 //! the existing agent infrastructure.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use tracing::{info, warn, error};
 
@@ -114,36 +115,72 @@ impl ManagedRunner {
         scope: &str,
         permissions: Arc<Mutex<std::collections::HashMap<String, bool>>>,
         permission_pending: PendingMap,
+        cancelled: Arc<AtomicBool>,
     ) -> AgentResult<EventStream> {
         info!("[managed:{}] Starting managed task (max_rounds: {})", session_id, self.max_rounds);
 
-        // Create initial TaskContract
-        let contract_id = uuid::Uuid::new_v4().to_string();
-        let mut contract = TaskContract::new(
-            contract_id.clone(),
-            user_message.to_string(),
-            scope.to_string(),
-            self.max_rounds,
-        );
+        // ── Fix 1: Resume existing active TaskContract (if any) ──
+        // When the user clicks STOP and sends a new message, we resume the
+        // previous contract instead of creating a blank one. This preserves
+        // verified_findings, manager_notes, open_leads, and the round counter.
+        let (contract_id, mut contract, resumed) = match self.memory_store.get_latest_active_contract(session_id) {
+            Ok(Some((id, json))) => {
+                match TaskContract::from_json(&json) {
+                    Ok(mut c) => {
+                        let round = c.current_round;
+                        info!("[managed:{}] Resuming existing TaskContract {} from round {}",
+                              session_id, &id[..8.min(id.len())], round);
+                        // Clear the USER_STOPPED marker so normal lifecycle resumes.
+                        c.blocked_reason = None;
+                        // Also clear the SQL column so future persists don't carry the marker.
+                        self.memory_store.clear_contract_stopped(&id);
+                        // Append user's new message as a manager note so the Manager
+                        // sees the updated instruction (e.g., "一个一个的完成").
+                        c.manager_notes.push(format!("[User Resume] {}", user_message));
+                        // Cap manager notes
+                        if c.manager_notes.len() > 20 {
+                            let overflow = c.manager_notes.len() - 20;
+                            c.manager_notes.drain(0..overflow);
+                        }
+                        (id, c, true)
+                    }
+                    Err(e) => {
+                        warn!("[managed:{}] Failed to deserialize existing contract, creating new: {}", session_id, e);
+                        let new_id = uuid::Uuid::new_v4().to_string();
+                        (new_id.clone(), TaskContract::new(new_id, user_message.to_string(), scope.to_string(), self.max_rounds), false)
+                    }
+                }
+            }
+            _ => {
+                // No active contract — create a new one
+                let contract_id = uuid::Uuid::new_v4().to_string();
+                let contract = TaskContract::new(
+                    contract_id.clone(),
+                    user_message.to_string(),
+                    scope.to_string(),
+                    self.max_rounds,
+                );
+                (contract_id, contract, false)
+            }
+        };
 
         // ── Seed TaskContract from Blackboard (Instant-mode context) ──
-        // The ManagedRunner reads the Blackboard directly instead of receiving
-        // pre-processed context from the caller. This replaces the old
-        // seed_context parameter mechanism.
-        if let Ok(Some(json)) = self.memory_store.load_blackboard(session_id) {
-            if let Ok(bb) = crate::blackboard::Blackboard::from_json(&json) {
-                let entries = bb.get_entries_by_source("instant");
-                if !entries.is_empty() {
-                    let original_task = bb.get_original_task().unwrap_or(user_message);
-                    let context_summary = bb.to_context_string(Some("instant"));
-                    if !context_summary.trim().is_empty() {
-                        info!("[managed:{}] Seeded TaskContract from Blackboard ({} entries, {} chars)",
-                              session_id, entries.len(), context_summary.len());
-                        // Update contract with Blackboard context
-                        contract.original_task = original_task.to_string();
-                        contract.manager_notes.push(format!(
-                            "[Pre-Expert Mode Work Summary]\n{}", context_summary
-                        ));
+        // Only for NEW contracts — resumed contracts already have this context.
+        if !resumed {
+            if let Ok(Some(json)) = self.memory_store.load_blackboard(session_id) {
+                if let Ok(bb) = crate::blackboard::Blackboard::from_json(&json) {
+                    let entries = bb.get_entries_by_source("instant");
+                    if !entries.is_empty() {
+                        let original_task = bb.get_original_task().unwrap_or(user_message);
+                        let context_summary = bb.to_context_string(Some("instant"));
+                        if !context_summary.trim().is_empty() {
+                            info!("[managed:{}] Seeded TaskContract from Blackboard ({} entries, {} chars)",
+                                  session_id, entries.len(), context_summary.len());
+                            contract.original_task = original_task.to_string();
+                            contract.manager_notes.push(format!(
+                                "[Pre-Expert Mode Work Summary]\n{}", context_summary
+                            ));
+                        }
                     }
                 }
             }
@@ -192,10 +229,26 @@ impl ManagedRunner {
         // verification and pre-authorization consultation (Phase 6).
 
         // Spawn the managed loop
+        // Fix 3: cancelled flag is checked at every round start so STOP
+        // propagates from the WebSocket handler into the spawned task.
+        let cancelled_flag = cancelled.clone();
         tokio::spawn(async move {
-            let mut round = 0usize;
+            let mut round = if resumed { contract.current_round } else { 0usize };
 
             loop {
+                // ── Fix 3: Check cancellation before each round ──
+                if cancelled_flag.load(Ordering::SeqCst) {
+                    info!("[managed:{}] STOP detected at round {}, contract already persisted by server", session, round + 1);
+                    let _ = tx.send(Ok(AgentEvent::text(
+                        &format!("\n\n*[Expert mode stopped at round {} — progress saved, send a message to resume]*\n\n", round + 1),
+                        &contract_id, "manager"
+                    ))).await;
+                    // Do NOT persist here — the server already set the USER_STOPPED
+                    // marker and persisted the contract. Persisting here could
+                    // overwrite the marker with the old blocked_reason.
+                    break;
+                }
+
                 if round >= contract.max_rounds {
                     warn!("[managed:{}] Max rounds reached ({})", session, contract.max_rounds);
                     let _ = tx.send(Ok(AgentEvent::text(
@@ -239,9 +292,9 @@ impl ManagedRunner {
                             &contract_id, "manager"
                         ))).await;
                         contract.complete();
-                        // Persist the final state, then clean up (task finished).
+                        // Persist the final state but do NOT delete — the user may
+                        // want to resume or review the contract later.
                         persist_contract(&memory_store, &contract_id, &session, &contract);
-                        let _ = memory_store.delete_task_contract(&contract_id);
                         break;
                     }
                     ManagerRoute::Blocked(reason) => {
@@ -431,9 +484,10 @@ impl ManagedRunner {
                 round += 1;
             }
 
-            // Safety net: if the task completed, ensure the contract is cleaned up.
+            // Safety net: if the task completed, persist but do NOT delete.
+            // The contract remains in the DB for reference or manual cleanup.
             if contract.phase == IrPhase::Completed {
-                let _ = memory_store.delete_task_contract(&contract_id);
+                persist_contract(&memory_store, &contract_id, &session, &contract);
             }
 
             // Send done event

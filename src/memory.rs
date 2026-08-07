@@ -424,6 +424,20 @@ impl MemoryStore {
             info!("Schema v6 migration: blackboard table created");
         }
 
+        // ── Schema v7: blocked_reason column for task_contracts ──
+        // Used to mark contracts as user-stopped ('[USER_STOPPED]') so the resume
+        // query can find them even if they are in 'blocked' phase.
+        if version < 7 {
+            conn.execute_batch(
+                "ALTER TABLE task_contracts ADD COLUMN blocked_reason TEXT;"
+            ).map_err(|e| format!("v7 migration failed: {}", e))?;
+
+            conn.execute("INSERT INTO schema_version(version) VALUES(7)", [])
+                .map_err(|e| format!("Version 7 insert failed: {}", e))?;
+
+            info!("Schema v7 migration: blocked_reason column added to task_contracts");
+        }
+
         Ok(())
     }
 
@@ -987,8 +1001,9 @@ impl MemoryStore {
 
         conn.execute(
             "INSERT OR REPLACE INTO task_contracts \
-             (id, session_id, contract_json, phase, current_round, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (id, session_id, contract_json, phase, current_round, created_at, updated_at, blocked_reason) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
+               COALESCE((SELECT blocked_reason FROM task_contracts WHERE id = ?1), NULL))",
             params![
                 id, session_id, contract_json, phase,
                 current_round as i64, created_at, now,
@@ -1010,6 +1025,51 @@ impl MemoryStore {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(format!("Task contract get failed: {}", e)),
         }
+    }
+
+    /// Load the latest resumable TaskContract for a session.
+    /// A contract is resumable if it is NOT in 'completed' or 'blocked' phase,
+    /// OR if it was explicitly stopped by the user (blocked_reason = '[USER_STOPPED]').
+    /// Returns (contract_id, contract_json) or None.
+    pub fn get_latest_active_contract(&self, session_id: &str) -> Result<Option<(String, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT id, contract_json FROM task_contracts \
+             WHERE session_id = ?1 \
+               AND (phase NOT IN ('completed', 'blocked') \
+                    OR blocked_reason = '[USER_STOPPED]') \
+             ORDER BY updated_at DESC LIMIT 1",
+            params![session_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        );
+        match result {
+            Ok((id, json)) => Ok(Some((id, json))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("Task contract query failed: {}", e)),
+        }
+    }
+
+    /// Mark a contract as explicitly stopped by the user.
+    /// This allows the resume query to find it even if it would otherwise be excluded.
+    pub fn set_contract_stopped(&self, session_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        // Find the latest contract for this session and set blocked_reason = '[USER_STOPPED]'
+        let _ = conn.execute(
+            "UPDATE task_contracts SET blocked_reason = '[USER_STOPPED]', updated_at = ?2 \
+             WHERE id = (SELECT id FROM task_contracts WHERE session_id = ?1 \
+                         ORDER BY updated_at DESC LIMIT 1)",
+            params![session_id, now],
+        );
+    }
+
+    /// Clear the blocked_reason column for a contract (called on resume).
+    pub fn clear_contract_stopped(&self, contract_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE task_contracts SET blocked_reason = NULL WHERE id = ?1",
+            params![contract_id],
+        );
     }
 
     /// Delete a TaskContract by ID (called when a managed task completes).

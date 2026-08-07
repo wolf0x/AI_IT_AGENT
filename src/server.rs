@@ -960,6 +960,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 managed_runner.run(
                                     &content, &session_id, &model, &managed_scope,
                                     state.permissions.clone(), state.permission_pending.clone(),
+                                    cancelled.clone(),
                                 ).await
                             } else {
                                 state.runner.run(
@@ -1051,6 +1052,13 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         // Check if user sent stop
                                         if cancelled.load(Ordering::SeqCst) {
                                             info!("Agent execution stopped by user");
+                                            // For Expert mode: mark the contract as user-stopped so the
+                                            // resume query can find it. The spawned task will NOT persist
+                                            // (to avoid overwriting this marker).
+                                            if managed {
+                                                state.memory_store.set_contract_stopped(&session_id);
+                                                info!("[managed:{}] Set USER_STOPPED marker on TaskContract", session_id);
+                                            }
                                             let stop_event = AgentEvent::text("\n\n*[Stopped by user]*", &session_id, "system");
                                             let msg_str = stop_event.to_ws_message();
                                             let mut sink = ws_sink.lock().await;
@@ -1058,6 +1066,9 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                             let done_event = AgentEvent::done(&session_id, "system");
                                             let msg_str = done_event.to_ws_message();
                                             let _ = sink.send(Message::Text(msg_str.into())).await;
+                                            // Brief yield to let the spawned task detect cancellation
+                                            // and exit cleanly before the user can send a new message.
+                                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                             break;
                                         }
                                     }

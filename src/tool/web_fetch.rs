@@ -20,7 +20,8 @@ impl Tool for WebFetchTool {
 
     fn description(&self) -> &str {
         "Fetch content from a URL via HTTP GET or POST. Returns the response body as text. \
-         Useful for reading web pages, APIs, downloading data. Supports custom headers and method."
+         Useful for reading web pages, APIs, downloading data. Supports custom headers and method. \
+         SSRF protection blocks private IPs by default; set allow_private=true to bypass."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -48,6 +49,10 @@ impl Tool for WebFetchTool {
                 "max_length": {
                     "type": "integer",
                     "description": "Maximum response body length in characters (default: 50000)"
+                },
+                "allow_private": {
+                    "type": "boolean",
+                    "description": "Bypass SSRF protection and allow private IPs (default: false). Set to true for internal network investigation"
                 }
             },
             "required": ["url"]
@@ -75,15 +80,19 @@ impl Tool for WebFetchTool {
         }
 
         // SSRF protection: resolve host and reject non-public IPs
-        if let Some(host) = url.split("://").nth(1).and_then(|s| s.split('/').next()).and_then(|s| s.split(':').next()) {
-            if let Ok(addrs) = (host, 0).to_socket_addrs() {
-                for addr in addrs {
-                    let ip = addr.ip();
-                    if !is_public_ip(ip) {
-                        return Err(crate::error::AgentError::tool(
-                            "web_fetch",
-                            format!("SSRF protection: host '{}' resolves to non-public IP {}", host, ip),
-                        ));
+        // Can be bypassed by setting allow_private=true (for internal network investigation)
+        let allow_private = args["allow_private"].as_bool().unwrap_or(false);
+        if !allow_private {
+            if let Some(host) = url.split("://").nth(1).and_then(|s| s.split('/').next()).and_then(|s| s.split(':').next()) {
+                if let Ok(addrs) = (host, 0).to_socket_addrs() {
+                    for addr in addrs {
+                        let ip = addr.ip();
+                        if !is_public_ip(ip) {
+                            return Err(crate::error::AgentError::tool(
+                                "web_fetch",
+                                format!("SSRF protection: host '{}' resolves to non-public IP {}. Set allow_private=true to bypass", host, ip),
+                            ));
+                        }
                     }
                 }
             }

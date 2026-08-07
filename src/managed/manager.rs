@@ -66,7 +66,7 @@ Route: <continue | done | blocked:reason>
 
 Rules:
 1. Focus on ONE subtask at a time. Do not try to plan the entire remaining workflow.
-2. The subtask must be actionable with available tools (ir_scan, ir_process, ir_persistence, etc.).
+2. The subtask must be actionable with available tools. See the Tool Reference below for which tools to use for each task type.
 3. Success criteria must be objective and verifiable.
 4. Route = "continue" if more work remains after this subtask.
 5. Route = "done" if the original task is fully complete (all phases done, report generated).
@@ -75,6 +75,61 @@ Rules:
 8. If verified findings suggest a critical threat, prioritize containment in the next subtask.
 9. Keep the subtask focused — it should be completable in 5-15 tool calls.
 10. State the phase the NEXT subtask belongs to. Never regress — the phase must be the same as or later than the current phase.
+
+CRITICAL — Anti-Stagnation Rules:
+11. NEVER plan a subtask that is just "summarize findings", "review results", or "analyze what we have". Every subtask MUST require the Executor to run concrete tools and produce concrete artifacts.
+12. If Manager Notes show 3+ consecutive rounds with NO new verified findings, you MUST either:
+    a. Change strategy significantly (different tools, different targets, broader scope)
+    b. Set Route = "blocked:No progress after N rounds, need human guidance" 
+13. If the same evidence path failed verification, do NOT retry it — try a different approach or acknowledge the limitation.
+14. The Subtask description MUST name at least one concrete tool. Generic descriptions like "investigate further" are not acceptable.
+
+Tool Reference — Use this to pick the RIGHT tool for the job:
+
+  Windows Host Forensics (local machine):
+    ir_scan      — Full host collection: processes, network, autoruns, services, events, files, etc.
+    ir_process   — List/kill processes on this machine
+    ir_network   — Network connections, DNS, firewall, lateral traces
+    ir_file      — File forensics: temp dirs, ADS, hashes
+    ir_persistence — Autoruns, scheduled tasks, WMI, services, registry hooks
+    ir_eventlog  — Structured event log queries (logons, failures, PowerShell, Sysmon)
+    ir_driver    — Driver signature analysis
+    ir_artifacts — Prefetch, ShimCache, AmCache, UserAssist execution evidence
+    ir_account   — Local user/group enumeration
+    ir_vss       — Volume Shadow Copy operations
+    ir_memdump   — Process memory dumps
+    ir_usn       — NTFS USN Journal analysis
+
+  Web Investigation (NOT ir_scan — use these instead):
+    web_fetch      — Fetch content from a URL (HTTP GET/POST). Use allow_private=true for internal targets
+    ir_weblog_scan — Parse Nginx/Apache access logs for threats (SQLi, XSS, RCE)
+    ir_evtx_parse  — Parse EVTX event log files
+
+  File & Malware Analysis:
+    malware_scan   — YARA scan files/directories
+    malware_deep   — Deep static PE/ELF/Mach-O analysis
+    ir_eml         — Parse .eml email files for phishing analysis
+
+  Network & Log Analysis:
+    ir_pcap_analyze — Analyze pcap/pcapng captures
+    ir_log_parse    — Generic log parser (syslog, CSV, etc.)
+    ir_timeline     — Chronological event timeline reconstruction
+
+  Analysis & Reporting:
+    ir_analyzer    — Auto-analyze IR scan output for findings
+    ir_attackpath  — Build attack path / privilege escalation graph
+    ir_case        — Case file tracker
+    ir_report      — Generate HTML/PDF incident report
+
+  Linux Remote IR (SSH):
+    ir_linux       — 45 detection modules across 13 categories on remote Linux hosts
+
+  General:
+    shell_exec     — Execute PowerShell/CMD commands
+    sys_eventlog   — Raw Windows Event Log queries
+    sys_info       — System information
+    sys_process    — General process listing
+    sys_service    — Service management
 
 IR Phase Progression:
 - Collection → Analysis → Attribution → Containment → Eradication → Reporting → Done
@@ -126,8 +181,43 @@ fn manager_user_prompt(contract: &TaskContract) -> String {
         prompt.push('\n');
     }
 
+    // ── Anti-stagnation hint: show recent round summaries so the Manager
+    //    can see if it's been going in circles ──
+    let total_findings = contract.verified_findings.len();
+    let total_actions = contract.verified_actions.len();
+    if contract.current_round > 0 {
+        prompt.push_str(&format!(
+            "# Progress Summary\n\
+             After {} completed rounds: {} verified findings, {} verified actions.\n",
+            contract.current_round, total_findings, total_actions
+        ));
+        // If many rounds but few findings, explicitly warn the Manager
+        if contract.current_round >= 3 && total_findings == 0 {
+            prompt.push_str(
+                "\n⚠️ WARNING: Multiple rounds have completed with ZERO verified findings. \
+                 You MUST change strategy significantly in the next subtask — use different tools, \
+                 different targets, or broader scope. If the current approach is fundamentally blocked, \
+                 set Route = \"blocked:<reason>\".\n\n"
+            );
+        }
+        prompt.push('\n');
+    }
+
+    // If user sent a resume message, surface it prominently
+    let user_resume_notes: Vec<&String> = contract.manager_notes.iter()
+        .filter(|n| n.starts_with("[User Resume]"))
+        .collect();
+    if !user_resume_notes.is_empty() {
+        prompt.push_str("# User Instructions (Resume)\n");
+        for note in &user_resume_notes {
+            prompt.push_str(&format!("{}\n", note));
+        }
+        prompt.push_str("\nThe user has provided new instructions. Follow them while continuing the existing task.\n\n");
+    }
+
     prompt.push_str("# Your Task\n");
     prompt.push_str("Plan the NEXT subtask for the Executor. Output the structured plan as specified.\n");
+    prompt.push_str("Remember: the Subtask MUST name specific tools to use and produce concrete artifacts.\n");
 
     prompt
 }
