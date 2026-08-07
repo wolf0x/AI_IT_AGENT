@@ -419,6 +419,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         permissions,
         permission_resolver,
         permission_pending,
+        expert_tasks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         scheduler,
         notify_tx,
         workspace_dir,

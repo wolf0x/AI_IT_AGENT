@@ -992,21 +992,24 @@ impl MemoryStore {
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
-        // Preserve created_at if the contract already exists.
-        let created_at = conn.query_row(
-            "SELECT created_at FROM task_contracts WHERE id = ?1",
+        // Preserve created_at and blocked_reason if the contract already exists.
+        // blocked_reason is a server-managed column (e.g. the '[USER_STOPPED]'
+        // marker) that must survive contract re-persists from the spawned task.
+        // Pre-query (instead of a subquery in VALUES) so the result does not
+        // depend on INSERT OR REPLACE conflict-resolution timing.
+        let (created_at, blocked_reason) = conn.query_row(
+            "SELECT created_at, blocked_reason FROM task_contracts WHERE id = ?1",
             params![id],
-            |row| row.get::<_, String>(0),
-        ).unwrap_or_else(|_| now.clone());
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        ).unwrap_or_else(|_| (now.clone(), None));
 
         conn.execute(
             "INSERT OR REPLACE INTO task_contracts \
              (id, session_id, contract_json, phase, current_round, created_at, updated_at, blocked_reason) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
-               COALESCE((SELECT blocked_reason FROM task_contracts WHERE id = ?1), NULL))",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id, session_id, contract_json, phase,
-                current_round as i64, created_at, now,
+                current_round as i64, created_at, now, blocked_reason,
             ],
         ).map_err(|e| format!("Failed to save task contract: {}", e))?;
         Ok(())

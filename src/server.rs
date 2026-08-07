@@ -69,6 +69,11 @@ pub struct AppState {
     pub permission_resolver: PermissionResolver,
     /// Shared pending map for permission requests
     pub permission_pending: PendingMap,
+    /// Per-session Expert-mode task cancellation flags (session_id -> flag).
+    /// Each managed run gets its OWN flag so a subsequent chat message (which
+    /// resets the connection-level `cancelled`) cannot un-cancel a task that is
+    /// still winding down — preventing two managed loops on the same contract.
+    pub expert_tasks: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
     /// CRON task scheduler
     pub scheduler: Arc<Mutex<Scheduler>>,
     /// Broadcast channel for push notifications (sys_remind, etc.)
@@ -766,6 +771,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
     // Phase 2: Chat loop with dedicated reader task
     let ws_sink = Arc::new(Mutex::new(ws_sink));
     let session_id = uuid::Uuid::new_v4().to_string();
+    let mut session_id = session_id; // mutable: may be replaced by the client's persistent session id
 
     // Single dedicated reader task: owns ws_stream, forwards ALL messages via channel.
     // This eliminates the race condition where two tasks compete for the same stream.
@@ -876,6 +882,18 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 continue;
                             }
 
+                            // Adopt the client-provided persistent session id (if any).
+                            // The frontend keeps a stable id across WebSocket reconnects,
+                            // so Expert-mode TaskContract resume (keyed by session_id)
+                            // keeps working instead of starting over at Round 1.
+                            if let Some(client_sess) = parsed["session"].as_str() {
+                                if !client_sess.is_empty() && client_sess != session_id {
+                                    info!("Adopting client session_id {} (connection default was {})",
+                                          client_sess, &session_id[..8.min(session_id.len())]);
+                                    session_id = client_sess.to_string();
+                                }
+                            }
+
                             // Reset cancellation for new chat
                             cancelled.store(false, Ordering::SeqCst);
 
@@ -942,6 +960,20 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
 
                             let run_result = if managed {
                                 info!("Expert mode requested for session {}", session_id);
+                                // Per-task cancellation flag: the connection-level `cancelled`
+                                // is reset to false by the next chat message, which would
+                                // un-cancel a still-winding-down Expert task and allow two
+                                // managed loops to run on the same contract. Register a
+                                // dedicated flag for this run instead.
+                                let task_cancel = Arc::new(AtomicBool::new(false));
+                                {
+                                    let mut tasks = state.expert_tasks.lock().unwrap();
+                                    if let Some(old) = tasks.get(&session_id) {
+                                        // Supersede any previous task for this session.
+                                        old.store(true, Ordering::SeqCst);
+                                    }
+                                    tasks.insert(session_id.clone(), task_cancel.clone());
+                                }
                                 let managed_runner = crate::managed::ManagedRunner::new(
                                     state.runner.clone(),
                                     state.provider.clone(),
@@ -960,7 +992,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 managed_runner.run(
                                     &content, &session_id, &model, &managed_scope,
                                     state.permissions.clone(), state.permission_pending.clone(),
-                                    cancelled.clone(),
+                                    task_cancel,
                                 ).await
                             } else {
                                 state.runner.run(
@@ -1021,6 +1053,15 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                                                 "stop" => {
                                                                     info!("Stop signal received");
                                                                     cancelled.store(true, Ordering::SeqCst);
+                                                                    // Also stop the Expert-mode spawned task via its
+                                                                    // per-task flag (the connection flag is reset by
+                                                                    // the next message and must not be its signal).
+                                                                    if managed {
+                                                                        let tasks = state.expert_tasks.lock().unwrap();
+                                                                        if let Some(flag) = tasks.get(&session_id) {
+                                                                            flag.store(true, Ordering::SeqCst);
+                                                                        }
+                                                                    }
                                                                 }
                                                                 "permission_response" => {
                                                                     let req_id = p["request_id"].as_str().unwrap_or("");
@@ -1043,6 +1084,12 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                                     }
                                                     Some(Message::Close(_)) | None => {
                                                         cancelled.store(true, Ordering::SeqCst);
+                                                        if managed {
+                                                            let tasks = state.expert_tasks.lock().unwrap();
+                                                            if let Some(flag) = tasks.get(&session_id) {
+                                                                flag.store(true, Ordering::SeqCst);
+                                                            }
+                                                        }
                                                         break;
                                                     }
                                                     _ => {}

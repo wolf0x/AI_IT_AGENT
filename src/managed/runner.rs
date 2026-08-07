@@ -258,7 +258,6 @@ impl ManagedRunner {
                     break;
                 }
 
-                contract.current_round = round;
                 info!("[managed:{}] Round {} starting", session, round + 1);
 
                 // ── Manager Round ──
@@ -426,6 +425,12 @@ impl ManagedRunner {
                     let overflow = contract.manager_notes.len() - 20;
                     contract.manager_notes.drain(0..overflow);
                 }
+
+                // Record the completed round so a resume after STOP starts at the
+                // NEXT round instead of re-running the just-completed one. current_round
+                // is a count of finished rounds (also drives the Manager/Executor
+                // "Round N" display via current_round + 1).
+                contract.current_round = round + 1;
 
                 // ── Persist TaskContract after each round (crash recovery) ──
                 persist_contract(&memory_store, &contract_id, &session, &contract);

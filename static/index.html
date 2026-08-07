@@ -905,6 +905,10 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 let ws=null,connected=false,msgHist=[],logHist=[];
 let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
 let lastInvId=null; // Expert mode multi-round: track invocation_id to segment output blocks
+// Persistent session id: survives WebSocket reconnects so Expert-mode TaskContract
+// resume (keyed by session_id on the server) keeps working. Regenerated on "clear chat".
+let SESSION_ID=(function(){try{var s=sessionStorage.getItem('ra_session_id');if(s)return s;var id=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():('sess-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10));sessionStorage.setItem('ra_session_id',id);return id;}catch(e){return 'sess-'+Date.now();}})();
+function rotateSessionId(){try{SESSION_ID=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():('sess-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10));sessionStorage.setItem('ra_session_id',SESSION_ID);}catch(e){}}
 let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0;
 let managedMode=false; // Managed (long-task) mode state
 const MAX_RECONNECT_DELAY=30000;
@@ -1019,7 +1023,7 @@ function handleMsg(msg){
   // Expert mode multi-round: when the invocation_id changes (Manager Plan vs
   // Executor round, or between Executor rounds), finalize the current text
   // block so the next segment starts a fresh bubble instead of appending.
-  if(msg.invocation_id&&lastInvId&&msg.invocation_id!==lastInvId){finalizeTextBlock();}
+  if(msg.invocation_id&&lastInvId&&msg.invocation_id!==lastInvId){if(textAccum&&textAccum.trim()){msgHist.push({role:'assistant',text:textAccum.trim(),time:nowTimeStr()});saveHist()}finalizeTextBlock();}
   if(msg.invocation_id){lastInvId=msg.invocation_id;}
   switch(msg.type){
     case 'auth_ok':connected=true;reconnectAttempts=0;updateStatus();addLog('Authenticated','info');loadModels();sendPerms();renderPerms();break;
@@ -1470,7 +1474,7 @@ function doSend(txt,imgs){
   const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
   const toolMaxRetries=parseInt(document.getElementById('toolMaxRetriesInput').value)||2;
   sendPerms();
-  const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout,max_tool_retries:toolMaxRetries,managed:managedMode,managed_scope:''};
+  const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout,max_tool_retries:toolMaxRetries,managed:managedMode,managed_scope:'',session:SESSION_ID};
   if(imgs&&imgs.length)msg.images=imgs;
   ws.send(JSON.stringify(msg));
   showTyping();
@@ -1513,6 +1517,7 @@ function clearChat(){
   document.getElementById('convArea').innerHTML='';
   document.getElementById('logArea').innerHTML='';
   msgHist=[];logHist=[];curToolMap={};curThinkEl=null;curTextEl=null;textAccum='';msgQueue=[];lastInvId=null;
+  rotateSessionId(); // new chat = new session so Expert mode starts a fresh TaskContract
   addLog('Chat cleared','info');
 }
 function exportChat(){
