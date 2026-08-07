@@ -904,6 +904,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 // 閳光偓閳光偓 State 閳光偓閳光偓
 let ws=null,connected=false,msgHist=[],logHist=[];
 let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
+let lastInvId=null; // Expert mode multi-round: track invocation_id to segment output blocks
 let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0;
 let managedMode=false; // Managed (long-task) mode state
 const MAX_RECONNECT_DELAY=30000;
@@ -1015,6 +1016,11 @@ function updateStatus(){
 // 閳光偓閳光偓 Message Handler 閳光偓閳光偓
 function handleMsg(msg){
   if(!msg||!msg.type)return;
+  // Expert mode multi-round: when the invocation_id changes (Manager Plan vs
+  // Executor round, or between Executor rounds), finalize the current text
+  // block so the next segment starts a fresh bubble instead of appending.
+  if(msg.invocation_id&&lastInvId&&msg.invocation_id!==lastInvId){finalizeTextBlock();}
+  if(msg.invocation_id){lastInvId=msg.invocation_id;}
   switch(msg.type){
     case 'auth_ok':connected=true;reconnectAttempts=0;updateStatus();addLog('Authenticated','info');loadModels();sendPerms();renderPerms();break;
     case 'auth_fail':addLog('Auth failed: '+(msg.message||'bad password'),'error');intentionalDisconnect=true;reconnectAttempts=0;break;
@@ -1077,6 +1083,7 @@ function handleMsg(msg){
       if(textAccum){msgHist.push({role:'assistant',text:textAccum.trim(),time:nowTimeStr()});saveHist()}
       finalizeTextBlock();
       curToolMap={};
+      lastInvId=null;
       setAgentRunning(false);
       // Refresh checkpoint banner (completed checkpoints are deleted server-side)
       checkCheckpoints();
@@ -1505,7 +1512,7 @@ function clearChat(){
   if(ws)ws.send(JSON.stringify({type:'clear'}));
   document.getElementById('convArea').innerHTML='';
   document.getElementById('logArea').innerHTML='';
-  msgHist=[];logHist=[];curToolMap={};curThinkEl=null;curTextEl=null;textAccum='';msgQueue=[];
+  msgHist=[];logHist=[];curToolMap={};curThinkEl=null;curTextEl=null;textAccum='';msgQueue=[];lastInvId=null;
   addLog('Chat cleared','info');
 }
 function exportChat(){
