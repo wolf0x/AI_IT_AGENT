@@ -21,7 +21,9 @@ impl Tool for WebFetchTool {
     fn description(&self) -> &str {
         "Fetch content from a URL via HTTP GET or POST. Returns the response body as text. \
          Useful for reading web pages, APIs, downloading data. Supports custom headers and method. \
-         SSRF protection blocks private IPs by default; set allow_private=true to bypass."
+         SSRF protection blocks private IPs by default; set allow_private=true to bypass. \
+         Large responses (>12k chars) are auto-saved to workspace/output/fetch/ and a preview + \
+         saved_path is returned — use file_read to read the full content."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -67,7 +69,7 @@ impl Tool for WebFetchTool {
         true
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let url = args["url"]
             .as_str()
             .ok_or_else(|| crate::error::AgentError::tool("web_fetch", "Missing required parameter: url"))?;
@@ -154,6 +156,42 @@ impl Tool for WebFetchTool {
         let body_slice = if truncated_bytes { &body_bytes[..max_bytes] } else { &body_bytes };
 
         let body_text = String::from_utf8_lossy(body_slice).to_string();
+
+        // ── Large-response auto-save (prevents context-window truncation) ──
+        // Responses above INLINE_LIMIT chars are written to workspace/output/fetch/
+        // and the LLM gets a preview + saved_path instead of a truncated inline body.
+        const INLINE_LIMIT: usize = 12_000;
+        const PREVIEW_CHARS: usize = 8_000;
+        let body_chars = body_text.chars().count();
+        if body_chars > INLINE_LIMIT {
+            let name = format!(
+                "fetch_{}_{}.json",
+                ctx.base.base.session_id.get(..8).unwrap_or("sess"),
+                chrono::Utc::now().format("%Y%m%d_%H%M%S%3f")
+            );
+            let dir = std::path::Path::new(&ctx.workspace_dir).join("output").join("fetch");
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join(&name);
+            match std::fs::write(&path, &body_text) {
+                Ok(_) => {
+                    let preview: String = body_text.chars().take(PREVIEW_CHARS).collect();
+                    return Ok(json!({
+                        "status": status,
+                        "content_type": content_type,
+                        "truncated": true,
+                        "body_length": body_chars,
+                        "preview": preview,
+                        "saved_path": path.to_string_lossy(),
+                        "note": "Response exceeded the inline limit; full content saved to saved_path. Use file_read to read it (in chunks if needed) instead of relying on the preview."
+                    }));
+                }
+                Err(e) => {
+                    // Fall through to inline truncation if the file cannot be written.
+                    tracing::warn!("web_fetch: failed to save large response to {}: {}", path.display(), e);
+                }
+            }
+        }
+
         let truncated = body_text.len() > max_length;
         let body = if truncated {
             body_text.chars().take(max_length).collect::<String>()

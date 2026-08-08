@@ -323,6 +323,20 @@ Do NOT repeat yourself. The tool call IS your action — explain the result AFTE
 Wrong: \"Let me open the calculator for you! ```json ... ```\"\n\
 Right: ```json\n{{\"name\": \"app_launch\", ...}}\n```\n\
 (Then after the tool result comes back, say \"Calculator has been opened.\")\n\n\
+## Web/HTTP Fetching\n\
+- Use `web_fetch` for most HTTP requests: it returns structured JSON (status, content_type, body), \
+  handles encoding, and has SSRF protection (set `allow_private=true` for internal targets).\n\
+- If `web_fetch` returns a `saved_path` field (large response auto-saved to disk), use `file_read` \
+  to read the full content — do NOT rely on the preview alone.\n\
+- For ADVANCED HTTP scenarios use `shell_exec` with `curl.exe` (NOT web_fetch):\n\
+  - Non-GET/POST methods: PUT, PATCH, DELETE, HEAD, OPTIONS\n\
+  - Multipart/form-data file uploads: `curl.exe -F \"file=@C:\\path\\file\" URL`\n\
+  - Custom TLS options, cookies, redirects, specific protocol quirks, proxies (`--proxy`)\n\
+  - Downloading binary files: `curl.exe -o file.ext URL`\n\
+  - Always add `-s` (silent) and `--max-time 30`; for large outputs use `-o file` and read the file \
+    with `file_read` (in chunks if needed) instead of printing to stdout (stdout results are capped).\n\
+- General rule: when a response is large, prefer saving to a file and reading it with `file_read` \
+  over inline results — inline results are size-capped to protect the context window.\n\n\
 ## Response Guidelines\n\
 - Provide **detailed, comprehensive** responses with real data from tools.\n\
 - Use **Markdown formatting**: headers, bullet points, code blocks, tables.\n\
@@ -1698,10 +1712,10 @@ async fn execute_tool_call(
     let result_event = AgentEvent::tool_result(tool_name, &tc.id, result.clone(), invocation_id, author);
     let _ = tx.send(Ok(result_event)).await;
 
-    // Build the history entry with size cap (max ~15000 chars per result to prevent context overflow)
+    // Build the history entry with size cap (max ~30000 chars per result to prevent context overflow)
     let result_str = serde_json::to_string(&result).unwrap_or_default();
-    let history_str = if result_str.len() > 15_000 {
-        let preview: String = result_str.chars().take(15_000).collect();
+    let history_str = if result_str.len() > 30_000 {
+        let preview: String = result_str.chars().take(30_000).collect();
         format!("{}\n\n... [truncated, original size: {} chars]", preview, result_str.len())
     } else {
         result_str

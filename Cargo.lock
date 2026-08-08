@@ -3,6 +3,58 @@
 version = 4
 
 [[package]]
+name = "RustAgent"
+version = "0.29.1"
+dependencies = [
+ "aes-gcm",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "base64",
+ "boreal",
+ "chromiumoxide",
+ "chrono",
+ "dirs-next",
+ "evtx",
+ "futures",
+ "getrandom 0.3.4",
+ "glob",
+ "goblin",
+ "iced-x86",
+ "image",
+ "mail-parser",
+ "md-5",
+ "memmap2",
+ "mime_guess",
+ "pcap-parser",
+ "prefetch-core",
+ "rayon",
+ "regex",
+ "reqwest",
+ "rmcp",
+ "rusqlite",
+ "russh",
+ "russh-keys",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha1",
+ "sha2",
+ "ssh-key",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "whoami",
+ "windows 0.58.0",
+ "winresource",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3124,58 +3176,6 @@ dependencies = [
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "rust-agent"
-version = "0.29.0"
-dependencies = [
- "aes-gcm",
- "async-stream",
- "async-trait",
- "axum",
- "axum-extra",
- "base64",
- "boreal",
- "chromiumoxide",
- "chrono",
- "dirs-next",
- "evtx",
- "futures",
- "getrandom 0.3.4",
- "glob",
- "goblin",
- "iced-x86",
- "image",
- "mail-parser",
- "md-5",
- "memmap2",
- "mime_guess",
- "pcap-parser",
- "prefetch-core",
- "rayon",
- "regex",
- "reqwest",
- "rmcp",
- "rusqlite",
- "russh",
- "russh-keys",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha1",
- "sha2",
- "ssh-key",
- "tempfile",
- "tokio",
- "tokio-stream",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "whoami",
- "windows 0.58.0",
- "winresource",
 ]
 
 [[package]]
