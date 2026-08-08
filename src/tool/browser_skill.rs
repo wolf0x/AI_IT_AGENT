@@ -142,6 +142,13 @@ impl Tool for BrowserSkillTool {
          - tab_create: Create a new tab (optional 'url') \
          - tab_close: Close a tab (requires 'tab_id') \
          - tab_select: Switch to a tab (requires 'tab_id') \
+         - tab_borrow: Move a user tab into the Agent Window (requires 'tab_id') \
+         - tab_return: Return a borrowed tab to its original window (requires 'tab_id') \
+         - navigate_back: Go back one step in history \
+         - navigate_forward: Go forward one step in history \
+         - reload: Reload the current page (optional 'hard'=true to bypass cache) \
+         - wait_for_navigation: Wait for page load/DOM idle (optional 'wait_until', 'timeout') \
+         - observe: Semantic VOM observation with bounded perception probes \
          - request_help: Pause and ask the user for help (requires 'text' as prompt)"
     }
 
@@ -156,6 +163,9 @@ impl Tool for BrowserSkillTool {
                         "navigate", "snapshot", "screenshot", "get_html",
                         "click", "fill", "press", "select_option", "evaluate",
                         "tab_list", "tab_create", "tab_close", "tab_select",
+                        "tab_borrow", "tab_return",
+                        "navigate_back", "navigate_forward", "reload",
+                        "wait_for_navigation", "observe",
                         "request_help"
                     ],
                     "description": "The browser action to perform"
@@ -166,8 +176,11 @@ impl Tool for BrowserSkillTool {
                 "text": { "type": "string", "description": "Text value for fill, select_option, or request_help prompt" },
                 "key": { "type": "string", "description": "Key name for press (e.g. Enter, Tab, Escape)" },
                 "js": { "type": "string", "description": "JavaScript expression for evaluate" },
-                "tab_id": { "type": "integer", "description": "Tab ID for tab_close or tab_select" },
-                "path": { "type": "string", "description": "Output path for screenshot (optional)" }
+                "tab_id": { "type": "integer", "description": "Tab ID for tab_close, tab_select, tab_borrow, or tab_return" },
+                "path": { "type": "string", "description": "Output path for screenshot (optional)" },
+                "hard": { "type": "boolean", "description": "Hard reload (bypass cache) for reload action" },
+                "wait_until": { "type": "string", "description": "Wait condition for wait_for_navigation: load, domcontentloaded, networkidle (default: load)" },
+                "timeout": { "type": "integer", "description": "Timeout in seconds for wait_for_navigation (default: 30)" }
             },
             "required": ["action"]
         })
@@ -400,6 +413,64 @@ impl Tool for BrowserSkillTool {
                 self.run_bsk(&["tab", "select", &tab_str], Some(&sid)).await.map_err(|e| e.into())
             }
 
+            "tab_borrow" => {
+                let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
+                let tab_id = args.get("tab_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("Missing 'tab_id' parameter for tab_borrow")?;
+                let tab_str = tab_id.to_string();
+                self.run_bsk(&["tab", "borrow", &tab_str, "--json"], Some(&sid)).await.map_err(|e| e.into())
+            }
+
+            "tab_return" => {
+                let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
+                let tab_id = args.get("tab_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("Missing 'tab_id' parameter for tab_return")?;
+                let tab_str = tab_id.to_string();
+                self.run_bsk(&["tab", "return", &tab_str, "--json"], Some(&sid)).await.map_err(|e| e.into())
+            }
+
+            "navigate_back" => {
+                let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
+                self.run_bsk(&["navigate-back", "--json"], Some(&sid)).await.map_err(|e| e.into())
+            }
+
+            "navigate_forward" => {
+                let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
+                self.run_bsk(&["navigate-forward", "--json"], Some(&sid)).await.map_err(|e| e.into())
+            }
+
+            "reload" => {
+                let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
+                let mut cmd_args = vec!["reload"];
+                if args.get("hard").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    cmd_args.push("--hard");
+                }
+                self.run_bsk(&cmd_args, Some(&sid)).await.map_err(|e| e.into())
+            }
+
+            "wait_for_navigation" => {
+                let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
+                let mut cmd_args = vec!["wait-for-navigation"];
+                if let Some(wu) = args.get("wait_until").and_then(|v| v.as_str()) {
+                    cmd_args.push("--wait-until");
+                    cmd_args.push(wu);
+                }
+                let timeout_str;
+                if let Some(t) = args.get("timeout").and_then(|v| v.as_u64()) {
+                    timeout_str = t.to_string();
+                    cmd_args.push("--timeout");
+                    cmd_args.push(&timeout_str);
+                }
+                self.run_bsk(&cmd_args, Some(&sid)).await.map_err(|e| e.into())
+            }
+
+            "observe" => {
+                let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
+                self.run_bsk(&["observe", "--json"], Some(&sid)).await.map_err(|e| e.into())
+            }
+
             "request_help" => {
                 let sid = self.get_or_start_session().await.map_err(|e| -> crate::error::AgentError { e.into() })?;
                 let text = args.get("text")
@@ -408,7 +479,7 @@ impl Tool for BrowserSkillTool {
                 self.run_bsk(&["request-help", "--prompt", text], Some(&sid)).await.map_err(|e| e.into())
             }
 
-            _ => Err(format!("Unknown action '{}'. Valid actions: status, session_start, session_stop, navigate, snapshot, screenshot, get_html, click, fill, press, select_option, evaluate, tab_list, tab_create, tab_close, tab_select, request_help", action).into()),
+            _ => Err(format!("Unknown action '{}'. Valid actions: status, session_start, session_stop, navigate, snapshot, screenshot, get_html, click, fill, press, select_option, evaluate, tab_list, tab_create, tab_close, tab_select, tab_borrow, tab_return, navigate_back, navigate_forward, reload, wait_for_navigation, observe, request_help", action).into()),
         }
     }
 }
