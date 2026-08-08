@@ -26,6 +26,7 @@ use crate::memory::MemoryStore;
 use crate::model::openai::OpenAiProvider;
 use crate::permission::PendingMap;
 use crate::runner::Runner;
+use crate::skill::SkillManager;
 use crate::tool::ToolRegistry;
 
 /// The ManagedRunner orchestrates long-horizon tasks using the Manager-Executor pattern.
@@ -56,6 +57,8 @@ pub struct ManagedRunner {
     tool_timeout_secs: u64,
     /// Max automatic tool retries for Executor rounds.
     max_tool_retries: usize,
+    /// Skill manager for injecting matched skills into Executor briefs.
+    skill_manager: Arc<SkillManager>,
 }
 
 impl ManagedRunner {
@@ -74,6 +77,7 @@ impl ManagedRunner {
         context_window: usize,
         tool_timeout_secs: u64,
         max_tool_retries: usize,
+        skill_manager: Arc<SkillManager>,
     ) -> Self {
         Self {
             inner,
@@ -89,6 +93,7 @@ impl ManagedRunner {
             context_window,
             tool_timeout_secs,
             max_tool_retries,
+            skill_manager,
         }
     }
 
@@ -225,6 +230,7 @@ impl ManagedRunner {
         let context_window = self.context_window;
         let tool_timeout_secs = self.tool_timeout_secs;
         let max_tool_retries = self.max_tool_retries;
+        let skill_manager = self.skill_manager.clone();
         // Move auditor + permission profile into the spawned task for post-Executor
         // verification and pre-authorization consultation (Phase 6).
 
@@ -261,7 +267,9 @@ impl ManagedRunner {
                 info!("[managed:{}] Round {} starting", session, round + 1);
 
                 // ── Manager Round ──
-                let plan = match manager::plan_next(&provider, &manager_model, &contract).await {
+                // Plan A: pass skills catalog so Manager knows which skills exist
+                let skills = skill_manager.list();
+                let plan = match manager::plan_next(&provider, &manager_model, &contract, &skills).await {
                     Ok(plan) => plan,
                     Err(e) => {
                         error!("[managed:{}] Manager planning failed: {}", session, e);
@@ -326,6 +334,30 @@ impl ManagedRunner {
 
                 // Build the condensed brief for the Executor
                 let brief = contract.executor_brief(&plan.subtask, &plan.success_criteria);
+
+                // Plan C: pre-match skills against brief + original task and inject
+                // matched skill content directly into the brief so the Executor
+                // has the skill workflow available without fuzzy matching.
+                let brief = {
+                    let matching_context = format!("{} {}", contract.original_task, plan.subtask);
+                    let matched = skill_manager.find_matching(&matching_context);
+                    if matched.is_empty() {
+                        brief
+                    } else {
+                        let mut enriched = brief;
+                        enriched.push_str("\n\n## Active Skills (pre-matched for this subtask)\n");
+                        enriched.push_str(
+                            "The following skill(s) matched this subtask. Follow their \
+                             workflows directly — no need to load them via file_read.\n\n"
+                        );
+                        for (content, score) in &matched {
+                            info!("[managed:{}] Injecting matched skill (score {:.3}) into Executor brief", session, score);
+                            enriched.push_str(content);
+                            enriched.push('\n');
+                        }
+                        enriched
+                    }
+                };
 
                 info!("[managed:{}] Executor starting with brief ({} chars)", session, brief.len());
 

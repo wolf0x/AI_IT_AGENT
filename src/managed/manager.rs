@@ -11,6 +11,7 @@
 use super::task_contract::{IrPhase, TaskContract};
 use crate::model::openai::OpenAiProvider;
 use crate::model::ChatMessage;
+use crate::skill::types::SkillMetadata;
 use std::sync::Arc;
 
 /// Result of a Manager planning round.
@@ -309,8 +310,35 @@ pub async fn plan_next(
     provider: &Arc<OpenAiProvider>,
     model: &str,
     contract: &TaskContract,
+    skills: &[SkillMetadata],
 ) -> Result<ManagerPlan, String> {
-    let system_prompt = manager_system_prompt();
+    let mut system_prompt = manager_system_prompt();
+
+    // Plan A: inject available skills catalog so the Manager can plan subtasks
+    // that leverage skills (e.g., "use archify-rs to generate architecture diagram").
+    if !skills.is_empty() {
+        system_prompt.push_str("\n\n## Available Skills\n");
+        system_prompt.push_str(
+            "The following skills are available for the Executor. When a subtask \
+             matches a skill's purpose, mention the skill name in the subtask description \
+             so the Executor can leverage its workflow.\n\n"
+        );
+        for skill in skills {
+            if !skill.enabled { continue; }
+            system_prompt.push_str(&format!(
+                "- **{}**: {}",
+                skill.name, skill.description
+            ));
+            if !skill.triggers.is_empty() {
+                system_prompt.push_str(&format!(
+                    " (triggers: {})",
+                    skill.triggers.join(", ")
+                ));
+            }
+            system_prompt.push('\n');
+        }
+    }
+
     let user_prompt = manager_user_prompt(contract);
 
     let messages = vec![

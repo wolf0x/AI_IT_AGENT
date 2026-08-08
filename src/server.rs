@@ -1027,6 +1027,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                     ctx_window,
                                     state.expert_tool_timeout_secs as u64,
                                     state.expert_max_tool_retries,
+                                    state.skill_manager.clone(),
                                 );
                                 managed_runner.run(
                                     &content, &session_id, &model, &managed_scope,
