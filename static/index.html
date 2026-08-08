@@ -122,7 +122,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 
 /* Chat panels */
 .chat-panels{display:flex;flex:1;overflow:hidden}
-.chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border);min-width:0}
+.chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border);min-width:0;background:#f7f9fa}
 .conv-area{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
 .log-panel{width:280px;display:flex;flex-direction:column;background:#f0f3f5;flex-shrink:0}
 .log-section{display:flex;flex-direction:column;min-height:0}
@@ -328,6 +328,76 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .input-bar textarea{resize:none;overflow-y:auto;line-height:1.4;min-height:44px;max-height:120px}
 .input-bar input:focus,.input-bar textarea:focus{border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,.1)}
 .input-bar .btn{height:44px;display:flex;align-items:center;padding:10px 24px}
+
+/* ── Grok 风格输入框（Demo E 复刻：整体圆角容器） ── */
+.grok-bar{
+  display:flex; align-items:flex-end; gap:2px; margin:14px 16px; padding:10px 12px;
+  background:#fff; border:1px solid #cfd9de; border-radius:22px; flex-shrink:0;
+  transition:border-color .15s, box-shadow .15s;
+}
+.grok-bar:focus-within{border-color:#8ecdf8; box-shadow:0 0 0 1px #8ecdf8}
+.grok-bar input[type=file]{display:none}
+.grok-bar textarea{
+  flex:1; border:none; outline:0; resize:none; background:transparent; font-family:inherit;
+  color:var(--t1); font-size:15px; line-height:1.5; max-height:200px;
+  height:40px; min-height:40px; overflow-y:hidden; padding:9px 4px 8px;
+}
+.grok-bar textarea::placeholder{color:#8b98a5}
+/* 附件按钮 */
+.grok-attach{
+  flex-shrink:0; width:40px; height:40px; border-radius:50%; border:none; background:transparent;
+  display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--accent);
+  transition:background .15s, transform .1s; position:relative;
+}
+.grok-attach:hover{background:#e8f4fd}
+.grok-attach:active{transform:scale(.92)}
+.grok-attach svg{width:19px;height:19px}
+.grok-attach .grok-dot{
+  position:absolute; top:6px; right:6px; width:7px; height:7px; border-radius:50%;
+  background:var(--accent); display:none;
+}
+.grok-attach.has-file .grok-dot{display:block}
+/* 模式按钮 + 下拉 */
+.grok-mode{position:relative; flex-shrink:0; margin-right:2px}
+.grok-mode-btn{
+  display:flex; align-items:center; gap:6px; border:none; background:transparent; cursor:pointer;
+  height:40px; padding:0 10px; border-radius:13px; font-size:14px; color:var(--t1);
+  transition:background .15s;
+}
+.grok-mode-btn:hover{background:#e9edf0}
+.grok-mode-btn .grok-bolt{width:16px;height:16px;color:var(--accent)}
+.grok-mode-btn.expert .grok-bolt{color:#8e44ad}
+.grok-mode-btn .grok-arr{width:14px;height:14px;color:var(--t3);transition:transform .2s}
+.grok-mode.open .grok-mode-btn .grok-arr{transform:rotate(180deg)}
+.grok-menu{
+  position:absolute; bottom:calc(100% + 8px); right:0; min-width:250px; background:#fff;
+  border:1px solid var(--border); border-radius:14px; box-shadow:0 4px 16px rgba(0,0,0,.10);
+  padding:6px; display:none; z-index:100;
+}
+.grok-mode.open .grok-menu{display:block}
+.grok-item{display:flex; gap:10px; padding:10px; border-radius:10px; cursor:pointer; align-items:flex-start}
+.grok-item:hover{background:#f5f8fa}
+.grok-item .grok-ic{width:30px;height:30px;border-radius:8px;background:#e8f4fd;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.grok-item .grok-ic svg{width:16px;height:16px;color:var(--accent)}
+.grok-item .grok-ic.grok-exp{background:#f0ebfe}
+.grok-item .grok-ic.grok-exp svg{color:#8e44ad}
+.grok-item .grok-it{font-size:13px;font-weight:600;color:var(--t1)}
+.grok-item .grok-id{font-size:12px;color:var(--t3);margin-top:2px;line-height:1.4}
+.grok-item .grok-chk{margin-left:auto;color:var(--accent);font-weight:700;padding-top:2px;visibility:hidden}
+.grok-item.sel .grok-chk{visibility:visible}
+/* 发送 / 停止（渐变绿狼爪呼吸 ↔ 红色停止脉冲） */
+.grok-send{
+  flex-shrink:0; width:40px; height:40px; border-radius:50%; border:none; cursor:pointer;
+  background:linear-gradient(135deg,#2ecc71 0%,#1abc9c 100%); color:#fff; display:flex; align-items:center; justify-content:center;
+  transition:opacity .2s, transform .1s;
+}
+.grok-send:not(:disabled):not(.running){animation:breatheGrok 2.2s ease-in-out infinite}
+.grok-send:not(:disabled):hover{transform:scale(1.06)}
+.grok-send:disabled{opacity:.35; cursor:not-allowed}
+.grok-send svg{width:17px;height:17px}
+.grok-send.running{background:#e74c3c; animation:pulseGrok 1s infinite}
+@keyframes breatheGrok{0%,100%{box-shadow:0 0 0 0 rgba(46,204,113,.5)}50%{box-shadow:0 0 0 8px rgba(46,204,113,0)}}
+@keyframes pulseGrok{0%,100%{box-shadow:0 0 0 0 rgba(231,76,60,.4)}50%{box-shadow:0 0 0 6px rgba(231,76,60,0)}}
 .btn-img{height:44px;width:44px;display:flex;align-items:center;justify-content:center;padding:0;background:#e8f4fd;border:1px solid #3498db;border-radius:var(--rs);cursor:pointer;font-size:20px;color:#3498db;flex-shrink:0}
 .btn-img:hover{background:#d0e9f9}
 .btn-img.disabled{opacity:0.4;cursor:not-allowed;background:#f0f0f0;border-color:#bdc3c7;color:#bdc3c7}
@@ -335,6 +405,11 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .img-preview-item{position:relative;width:64px;height:64px;border-radius:6px;overflow:hidden;border:1px solid #bdc3c7}
 .img-preview-item img{width:100%;height:100%;object-fit:cover}
 .img-preview-item .remove-img{position:absolute;top:1px;right:1px;width:18px;height:18px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;font-size:12px;line-height:18px;text-align:center;cursor:pointer;padding:0}
+.file-preview-bar{display:flex;gap:8px;padding:8px 20px 0;flex-wrap:wrap}
+.file-preview-item{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #bdc3c7;border-radius:8px;padding:6px 10px;max-width:260px}
+.file-preview-item .fp-ext{font-size:10px;font-weight:700;color:#3498db;background:#e8f4fd;border-radius:4px;padding:2px 5px;flex-shrink:0}
+.file-preview-item .fp-name{font-size:12px;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-preview-item .remove-img{width:18px;height:18px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;font-size:12px;line-height:18px;text-align:center;cursor:pointer;padding:0;flex-shrink:0}
 
 /* Typing dots */
 .dots span{animation:dotB 1.4s infinite;font-weight:700}
@@ -850,6 +925,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           <div class="conv-area" id="convArea"></div>
           <div id="cpBanner"></div>
           <div class="img-preview-bar" id="imgPreviewBar"></div>
+          <div class="file-preview-bar" id="filePreviewBar"></div>
           <div class="sel-bar" id="selBar">
             <span id="selCount">0 selected</span>
             <button class="btn btn-s" onclick="exportSelectedHtml()">&#128196; Export HTML</button>
@@ -857,24 +933,39 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           </div>
           <div style="position:relative">
           <div class="slash-popup" id="slashPopup"></div>
-          <!-- Mode selector bar (Demo B) -->
-          <div class="mode-bar" id="modeBar">
-            <div class="mode-seg" id="modeSeg">
-              <button class="active" data-mode="normal" onclick="setManagedMode(false)">
-                <span class="seg-icon">&#9889;</span> Instant
-              </button>
-              <button data-mode="managed" onclick="setManagedMode(true)">
-                <span class="seg-icon">&#128736;</span> Expert
-              </button>
-            </div>
-            <span class="mode-hint" id="modeHint">Instant mode active — single turn execution</span>
-          </div>
-          <div class="input-bar">
-            <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
-            <button class="btn-img disabled" id="imgBtn" onclick="document.getElementById('imgFileInput').click()" title="Attach image (vision models only)" disabled>&#128247;</button>
+          <div class="input-bar grok-bar">
+            <input type="file" id="attachFileInput" multiple tabindex="-1" style="display:none" accept="image/*,.pdf,.docx,.xlsx,.txt,.md,.csv,.json,.xml,.yaml,.py,.js,.ts,.rs,.go,.java,.c,.cpp,.sql,.sh,.html,.css">
+            <!-- 附件按钮（最左）：点击 / 拖拽 / 粘贴 -->
+            <button class="grok-attach" id="attachBtn" type="button" title="附加文件（点击 / 拖拽 / 粘贴）">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+              <span class="grok-dot"></span>
+            </button>
             <textarea id="msgInput" rows="1" placeholder="Type a message... (/ for skills, Shift+Enter for newline)" disabled onkeydown="handleInputKeydown(event)" oninput="handleInput(event)"></textarea>
-            <button class="btn btn-p btn-send" id="sendBtn" onclick="sendMsg()" disabled>Send</button>
-            <button class="btn btn-stop" id="stopBtn" onclick="stopAgent()">Stop</button>
+            <!-- 模式切换（发送按钮左侧）：Instant / Expert -->
+            <div class="grok-mode" id="modeWrap">
+              <button class="grok-mode-btn" id="modeBtn" type="button" aria-haspopup="true" aria-expanded="false">
+                <svg class="grok-bolt" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                <span id="modeLabel">Instant</span>
+                <svg class="grok-arr" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+              </button>
+              <div class="grok-menu" id="modeMenu">
+                <div class="grok-item sel" data-mode="normal">
+                  <div class="grok-ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+                  <div><div class="grok-it">Instant</div><div class="grok-id">Fast for simple task</div></div>
+                  <div class="grok-chk">✓</div>
+                </div>
+                <div class="grok-item" data-mode="managed">
+                  <div class="grok-ic grok-exp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg></div>
+                  <div><div class="grok-it">Expert</div><div class="grok-id">Loop for long-horizon Tasks</div></div>
+                  <div class="grok-chk">✓</div>
+                </div>
+              </div>
+            </div>
+            <!-- 发送 / 停止（狼爪 ↔ 停止） -->
+            <button class="grok-send" id="sendBtn" type="button" onclick="onSendClick()" disabled aria-label="发送">
+              <svg id="sendIcon" viewBox="0 0 24 24" fill="currentColor"><ellipse cx="12" cy="14.6" rx="3.1" ry="4.5"/><ellipse cx="6.2" cy="8.6" rx="1.5" ry="2.9"/><ellipse cx="9.7" cy="6.4" rx="1.5" ry="2.9"/><ellipse cx="14.3" cy="6.4" rx="1.5" ry="2.9"/><ellipse cx="17.8" cy="8.6" rx="1.5" ry="2.9"/></svg>
+            </button>
+            <button class="btn btn-stop" id="stopBtn" onclick="stopAgent()" style="display:none">Stop</button>
           </div>
           </div>
         </div>
@@ -1013,8 +1104,9 @@ function disconnectWs(){
 }
 function updateStatus(){
   const dot=document.getElementById('statusDot'),txt=document.getElementById('statusText');
-  if(connected){dot.classList.add('ok');txt.textContent='Connected';document.getElementById('msgInput').disabled=false;document.getElementById('sendBtn').disabled=false}
-  else{dot.classList.remove('ok');txt.textContent='Disconnected';document.getElementById('msgInput').disabled=true;document.getElementById('sendBtn').disabled=true}
+  if(connected){dot.classList.add('ok');txt.textContent='Connected';document.getElementById('msgInput').disabled=false;}
+  else{dot.classList.remove('ok');txt.textContent='Disconnected';document.getElementById('msgInput').disabled=true;}
+  updateSendState();
 }
 
 // 閳光偓閳光偓 Message Handler 閳光偓閳光偓
@@ -1099,7 +1191,7 @@ function handleMsg(msg){
       if(msgQueue.length>0){
         const next=msgQueue.shift();
         addLog('Processing queued message ('+msgQueue.length+' remaining)','info');
-        setTimeout(()=>doSend(next.txt,next.imgs),500);
+        setTimeout(()=>doSend(next.txt,next.imgs,next.atts||[]),500);
       }
       scrollBottom();break;
   }
@@ -1411,14 +1503,7 @@ async function exportSelectedHtml(){
 })();
 
 // 閳光偓閳光偓 Send 閳光偓閳光偓
-function updateImgBtnState(){
-  const sel=document.getElementById('modelSel');
-  const btn=document.getElementById('imgBtn');
-  if(!sel||!btn)return;
-  const supportsVision=modelVisionMap[sel.value]||false;
-  if(supportsVision){btn.classList.remove('disabled');btn.disabled=false;btn.title='Attach image';}
-  else{btn.classList.add('disabled');btn.disabled=true;btn.title='Attach image (vision models only)';}
-}
+let pendingFiles=[]; // 文档附件（图片走 pendingImages）
 function handleImageFiles(files){
   for(const f of files){
     if(!f.type.startsWith('image/'))continue;
@@ -1431,6 +1516,46 @@ function handleImageFiles(files){
     reader.readAsDataURL(f);
   }
 }
+function handleAttachFiles(files){
+  for(const f of files){
+    if(f.type.startsWith('image/')){
+      handleImageFiles([f]);
+    }else{
+      if(pendingFiles.length>=5){addLog('Max 5 file attachments per message','warn');break;}
+      // 读取文件内容为 base64 dataURL，发送给服务端保存后 Agent 可用 file_read 读取
+      const reader=new FileReader();
+      reader.onload=function(e){
+        pendingFiles.push({name:f.name,size:f.size,data:e.target.result});
+        renderFilePreviews();
+        updateAttachDot();
+      };
+      reader.readAsDataURL(f);
+    }
+  }
+  updateAttachDot();
+  renderFilePreviews();
+}
+function renderFilePreviews(){
+  const bar=document.getElementById('filePreviewBar');
+  if(!bar)return;
+  bar.innerHTML='';
+  pendingFiles.forEach((f,idx)=>{
+    const div=document.createElement('div');
+    div.className='file-preview-item';
+    const ext=(f.name.split('.').pop()||'?').toUpperCase().slice(0,4);
+    div.innerHTML='<span class="fp-ext">'+ext+'</span><span class="fp-name">'+esc(f.name)+'</span><button class="remove-img" onclick="removeFileAttachment('+idx+')">&times;</button>';
+    bar.appendChild(div);
+  });
+}
+function removeFileAttachment(idx){
+  pendingFiles.splice(idx,1);
+  renderFilePreviews();
+  updateAttachDot();
+}
+function updateAttachDot(){
+  const btn=document.getElementById('attachBtn');
+  if(btn)btn.classList.toggle('has-file',pendingImages.length>0||pendingFiles.length>0);
+}
 function renderImagePreviews(){
   const bar=document.getElementById('imgPreviewBar');
   bar.innerHTML='';
@@ -1440,32 +1565,72 @@ function renderImagePreviews(){
     div.innerHTML='<img src="'+img.data+'" alt="'+img.name+'"><button class="remove-img" onclick="removeImage('+idx+')">&times;</button>';
     bar.appendChild(div);
   });
+  updateAttachDot();
 }
 function removeImage(idx){
   pendingImages.splice(idx,1);
   renderImagePreviews();
+  updateAttachDot();
 }
 document.addEventListener('DOMContentLoaded',function(){
-  const imgInput=document.getElementById('imgFileInput');
-  if(imgInput)imgInput.addEventListener('change',function(e){handleImageFiles(e.target.files);e.target.value='';});
-  const modelSel=document.getElementById('modelSel');
-  if(modelSel)modelSel.addEventListener('change',updateImgBtnState);
+  const attInput=document.getElementById('attachFileInput');
+  if(attInput)attInput.addEventListener('change',function(e){handleAttachFiles(e.target.files);e.target.value='';});
+  const attBtn=document.getElementById('attachBtn');
+  if(attBtn)attBtn.addEventListener('click',function(){attInput.click();});
+  // 模式下拉
+  const modeWrap=document.getElementById('modeWrap'),modeMenu=document.getElementById('modeMenu');
+  const modeBtn=document.getElementById('modeBtn');
+  if(modeBtn)modeBtn.addEventListener('click',function(e){e.stopPropagation();modeWrap.classList.toggle('open');modeBtn.setAttribute('aria-expanded',modeWrap.classList.contains('open'));});
+  document.addEventListener('click',function(e){if(modeWrap&&!modeWrap.contains(e.target)){modeWrap.classList.remove('open');modeBtn.setAttribute('aria-expanded','false');}});
+  if(modeMenu)modeMenu.querySelectorAll('.grok-item').forEach(function(item){
+    item.addEventListener('click',function(){
+      setManagedMode(item.dataset.mode==='managed');
+      modeWrap.classList.remove('open');
+    });
+  });
+  // 拖拽上传
+  const bar=document.querySelector('.grok-bar');
+  if(bar){
+    ['dragenter','dragover'].forEach(function(ev){bar.addEventListener(ev,function(e){e.preventDefault();bar.style.boxShadow='0 0 0 2px #3498db inset';});});
+    ['dragleave','drop'].forEach(function(ev){bar.addEventListener(ev,function(e){e.preventDefault();bar.style.boxShadow='';});});
+    bar.addEventListener('drop',function(e){if(e.dataTransfer.files.length)handleAttachFiles(e.dataTransfer.files);});
+  }
+  // 粘贴（含剪贴板图片）
+  document.addEventListener('paste',function(e){
+    const items=(e.clipboardData||window.clipboardData).items||[];
+    let handled=false;
+    for(const item of items){
+      if(item.type.startsWith('image/')){
+        const f=item.getAsFile(); if(f){handleImageFiles([f]); handled=true;}
+      }
+    }
+    if(handled)e.preventDefault();
+  });
 });
 function sendMsg(){
   const inp=document.getElementById('msgInput');const txt=inp.value.trim();
-  if((!txt&&pendingImages.length===0)||!connected)return;
+  // 文档附件追加为消息标记（图片走 images 字段）
+  let sendTxt=txt;
+  if(pendingFiles.length){
+    const names=pendingFiles.map(f=>f.name).join(', ');
+    sendTxt=(txt?txt+'\n\n':'')+'[附件: '+names+']';
+  }
+  if((!sendTxt&&pendingImages.length===0)||!connected)return;
   const imgs=pendingImages.map(i=>i.data);
   showUserMsg(txt,imgs);inp.value='';inp.style.height='auto';
   msgHist.push({role:'user',text:txt,time:nowTimeStr(),images:imgs.length?imgs:undefined});saveHist();
-  pendingImages=[];renderImagePreviews();
+  // 先提取附件数据，再清空 pending 数组
+  var atts=[];
+  if(pendingFiles.length) atts=pendingFiles.map(function(f){return {name:f.name,data:f.data};});
+  pendingImages=[];pendingFiles=[];renderImagePreviews();renderFilePreviews();updateAttachDot();
   if(agentRunning){
-    msgQueue.push({txt,imgs});
+    msgQueue.push({txt:sendTxt,imgs,atts:atts});
     addLog('Message queued ('+msgQueue.length+' pending)','info');
     return;
   }
-  doSend(txt,imgs);
+  doSend(sendTxt,imgs,atts);
 }
-function doSend(txt,imgs){
+function doSend(txt,imgs,atts){
   const model=document.getElementById('modelSel').value;
   const fallback=document.getElementById('fallbackSel').value;
   const maxIter=parseInt(document.getElementById('maxIterInput').value)||100;
@@ -1476,9 +1641,14 @@ function doSend(txt,imgs){
   sendPerms();
   const msg={type:'chat',content:txt,model:model||'',fallback_model:fallback,max_iterations:maxIter,rabbit_hole_threshold:rabbitHole,context_window_threshold:ctxThreshold,tool_timeout_secs:toolTimeout,max_tool_retries:toolMaxRetries,managed:managedMode,managed_scope:'',session:SESSION_ID};
   if(imgs&&imgs.length)msg.images=imgs;
+  if(atts&&atts.length)msg.attachments=atts;
   ws.send(JSON.stringify(msg));
   showTyping();
   setAgentRunning(true);
+}
+function onSendClick(){
+  if(agentRunning){stopAgent();}
+  else{sendMsg();}
 }
 function stopAgent(){
   if(ws&&connected&&agentRunning){
@@ -1488,12 +1658,29 @@ function stopAgent(){
 }
 function setAgentRunning(running){
   agentRunning=running;
+  const sendBtn=document.getElementById('sendBtn');
   const stopBtn=document.getElementById('stopBtn');
-  if(running){
-    stopBtn.classList.add('visible');
-  }else{
-    stopBtn.classList.remove('visible');
+  if(sendBtn){
+    sendBtn.classList.toggle('running',running);
+    const oldIcon=sendBtn.querySelector('svg');
+    if(oldIcon){
+      const tmp=document.createElement('div');
+      tmp.innerHTML= running
+        ? '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="currentColor"><ellipse cx="12" cy="14.6" rx="3.1" ry="4.5"/><ellipse cx="6.2" cy="8.6" rx="1.5" ry="2.9"/><ellipse cx="9.7" cy="6.4" rx="1.5" ry="2.9"/><ellipse cx="14.3" cy="6.4" rx="1.5" ry="2.9"/><ellipse cx="17.8" cy="8.6" rx="1.5" ry="2.9"/></svg>';
+      const el=tmp.firstChild;el.id='sendIcon';
+      oldIcon.replaceWith(el);
+    }
+    if(!running)updateSendState();
   }
+  if(stopBtn)stopBtn.style.display=running?'none':'none'; // 停止由 sendBtn 双态承担
+}
+function updateSendState(){
+  const inp=document.getElementById('msgInput');
+  const sendBtn=document.getElementById('sendBtn');
+  if(!inp||!sendBtn)return;
+  const hasContent=inp.value.trim().length>0||pendingImages.length>0||pendingFiles.length>0;
+  sendBtn.disabled=!connected||(agentRunning?false:!hasContent);
 }
 function showUserMsg(txt,imgsOrTime,time){
   let imgs=null;
@@ -1578,7 +1765,6 @@ async function loadModels(){
         if(typeof permissions !== 'undefined') permissions[cat] = allowed;
       });
     }
-    updateImgBtnState();
   }catch(e){addLog('Load models failed','error')}
 }
 // --- Provider Management ---
@@ -2182,6 +2368,15 @@ function setManagedMode(on){
   // Show/hide Expert settings section
   const expertSection=document.getElementById('expertSettingsSection');
   if(expertSection)expertSection.style.display=on?'block':'none';
+  // Sync Grok 风格输入框模式下拉
+  const label=document.getElementById('modeLabel');
+  const modeBtn=document.getElementById('modeBtn');
+  if(label)label.textContent=on?'Expert':'Instant';
+  if(modeBtn)modeBtn.classList.toggle('expert',on);
+  const menu=document.getElementById('modeMenu');
+  if(menu)menu.querySelectorAll('.grok-item').forEach(function(it){
+    it.classList.toggle('sel',(on&&it.dataset.mode==='managed')||(!on&&it.dataset.mode==='normal'));
+  });
 }
 function toggleGlobalManaged(checked){
   setManagedMode(checked);
@@ -2631,9 +2826,10 @@ function highlightSlashItem(idx){
 
 function handleInput(e){
   const inp=e.target;
-  // Auto-resize textarea
+  // Auto-resize textarea（单行 40px 起，多行增高至 200px 封顶）
   inp.style.height='auto';
-  inp.style.height=Math.min(inp.scrollHeight,120)+'px';
+  inp.style.height=Math.max(40,Math.min(inp.scrollHeight,200))+'px';
+  updateSendState();
   // Slash detection
   const val=inp.value;
   if(val.startsWith('/')&&val.indexOf(' ')===-1){

@@ -816,7 +816,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
 
                     match msg_type {
                         "chat" => {
-                            let content = parsed["content"].as_str().unwrap_or("").to_string();
+                            let mut content = parsed["content"].as_str().unwrap_or("").to_string();
                             let default_model = {
                                 let mc = state.model_configs.read().await;
                                 mc.first().map(|m| m.name.clone()).unwrap_or_else(|| "gpt-4o".to_string())
@@ -859,6 +859,45 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 .as_array()
                                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                                 .unwrap_or_default();
+
+                            // Parse optional attachments (document files as base64 data URLs).
+                            // Save each to workspace/output/attachments/ and prepend the path
+                            // to the message so the Agent can file_read it.
+                            if let Some(attachments) = parsed["attachments"].as_array() {
+                                let att_dir = std::path::Path::new(&state.workspace_dir)
+                                    .join("output").join("attachments");
+                                let _ = std::fs::create_dir_all(&att_dir);
+                                let mut entry = String::new();
+                                for v in attachments {
+                                    let name = match v["name"].as_str() {
+                                        Some(n) if !n.contains("..") && !n.contains('/') && !n.contains('\\') => n,
+                                        _ => continue,
+                                    };
+                                    let data_url = match v["data"].as_str() {
+                                        Some(d) => d,
+                                        None => continue,
+                                    };
+                                    // data URL: "data:[<mediatype>][;base64],<base64>"
+                                    if let Some(base64_str) = data_url.split(',').nth(1) {
+                                        use ::base64::Engine as _;
+                                        let engine = ::base64::engine::general_purpose::STANDARD;
+                                        if let Ok(bytes) = engine.decode(base64_str) {
+                                            let file_path = att_dir.join(name);
+                                            if let Err(e) = std::fs::write(&file_path, &bytes) {
+                                                tracing::warn!("Failed to save attachment {}: {}", name, e);
+                                            } else {
+                                                entry.push_str(&format!(
+                                                    "\n*附件已保存到: {}*\n",
+                                                    file_path.to_string_lossy()
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                if !entry.is_empty() {
+                                    content = format!("{}\n\n---\n{}", entry, content);
+                                }
+                            }
 
                             // If images are present, check that the model supports vision
                             if !images.is_empty() {
