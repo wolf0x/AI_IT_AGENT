@@ -115,6 +115,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/mcp/{name}/restart", post(mcp_restart_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/logs/dates", get(log_dates_handler))
+        .route("/api/managed/reset", post(managed_reset_handler))
         .route("/api/cron", get(cron_list_handler))
         .route("/api/cron", post(cron_create_handler))
         .route("/api/cron/{id}", put(cron_update_handler))
@@ -468,6 +469,21 @@ async fn skills_reload_handler(State(state): State<Arc<AppState>>) -> Json<Value
     state.skill_manager.reload();
     let skills = state.skill_manager.list();
     Json(json!({ "status": "reloaded", "count": skills.len() }))
+}
+
+/// POST /api/managed/reset — Clear all active (non-completed) Expert mode task contracts.
+/// This resets the Expert mode state so the next Expert task starts fresh.
+async fn managed_reset_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    match state.memory_store.clear_active_contracts() {
+        Ok(deleted) => {
+            info!("Managed plans reset: {} active contract(s) cleared", deleted);
+            Json(json!({ "success": true, "deleted": deleted }))
+        }
+        Err(e) => {
+            error!("Failed to reset managed plans: {}", e);
+            Json(json!({ "success": false, "error": e }))
+        }
+    }
 }
 
 async fn skills_delete_handler(

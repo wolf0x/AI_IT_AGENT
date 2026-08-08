@@ -718,7 +718,9 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
           <div class="btn-row">
             <button class="btn btn-d" onclick="clearChat()">Clear Chat</button>
             <button class="btn btn-s" onclick="exportChat()">Export</button>
+            <button class="btn btn-d" onclick="resetManagedPlans()" title="Clear unfinished Expert mode tasks and start fresh">Reset Managed Plans</button>
           </div>
+          <div id="managedResetStatus" style="margin-top:6px;font-size:12px;color:var(--t3)"></div>
         </div>
         <div class="settings-section">
           <h3>&#128274; Tool Permissions</h3>
@@ -1711,6 +1713,28 @@ function exportChat(){
   const txt=msgHist.map(m=>'['+m.time+'] '+m.role+': '+m.text).join('\n');
   const blob=new Blob([txt],{type:'text/plain'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='rustagent-'+Date.now()+'.txt';a.click();
+}
+function resetManagedPlans(){
+  if(!confirm('Clear all unfinished Expert mode tasks? This will reset the Manager state so the next Expert task starts fresh. Completed tasks are preserved.'))return;
+  fetch('/api/managed/reset',{method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{
+      const status=document.getElementById('managedResetStatus');
+      if(d.success){
+        status.textContent='Cleared '+d.deleted+' unfinished task(s). Expert mode will start fresh next time.';
+        status.style.color='var(--green)';
+        addLog('Managed plans reset: '+d.deleted+' contract(s) cleared','info');
+      }else{
+        status.textContent='Error: '+d.error;
+        status.style.color='var(--red)';
+      }
+      setTimeout(()=>{status.textContent='';},5000);
+    })
+    .catch(e=>{
+      const status=document.getElementById('managedResetStatus');
+      status.textContent='Request failed: '+e;
+      status.style.color='var(--red)';
+    });
 }
 
 // 閳光偓閳光偓 Log 閳光偓閳光偓

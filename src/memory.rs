@@ -1083,6 +1083,16 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Clear all active (non-completed) TaskContracts.
+    /// Returns the number of contracts deleted.
+    pub fn clear_active_contracts(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM task_contracts WHERE phase NOT IN ('completed')",
+            [],
+        ).map_err(|e| format!("Failed to clear active task contracts: {}", e))
+    }
+
     // ── Blackboard CRUD (Instant ↔ Expert mode information exchange) ──
 
     /// Save or update a Blackboard (INSERT OR REPLACE).
