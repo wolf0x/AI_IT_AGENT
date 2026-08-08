@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>狼头发送按钮 — 方案 A 线框几何</title>
+<style>
+  :root{
+    --bg:#ffffff; --page-bg:#f7f9fa; --border:#cfd9de; --border-hover:#8ecdf8;
+    --text:#0f1419; --text2:#536471; --accent:#1d9bf0;
+    --danger:#e74c3c; --radius:22px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    background:var(--page-bg); min-height:100vh; display:flex; align-items:center; justify-content:center;
+    color:var(--text);
+  }
+  .chat{width:min(680px,92vw); padding:0 12px}
+  .demo-tag{font-size:12px; color:var(--text2); text-align:center; margin-bottom:8px; letter-spacing:.5px}
+  .demo-tag b{color:#1abc9c}
+  .swatch{display:flex; align-items:center; justify-content:center; gap:8px; font-size:11px; color:var(--text2); margin-bottom:18px}
+  .swatch .chip{width:14px;height:14px;border-radius:4px;background:linear-gradient(135deg,#2ecc71,#1abc9c);border:1px solid rgba(0,0,0,.1)}
+  .swatch .chip.stop{background:var(--danger);border-radius:3px}
+
+  /* 狼头大图展示 */
+  .big-icon{
+    display:flex; align-items:center; justify-content:center; gap:24px; margin-bottom:22px;
+  }
+  .big-icon .gi{
+    width:88px; height:88px; border-radius:50%; color:#fff;
+    background:linear-gradient(135deg,#2ecc71,#1abc9c);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 0 0 0 rgba(46,204,113,.5); animation:breathe 2.2s ease-in-out infinite;
+  }
+  .big-icon .gi svg{width:46px;height:46px}
+  .big-icon .gi-label{font-size:11px;color:var(--text2);text-align:center;margin-top:6px}
+  @keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(46,204,113,.5)}50%{box-shadow:0 0 0 10px rgba(46,204,113,0)}}
+
+  .preview-row{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px}
+  .pill{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 4px;font-size:12px;max-width:220px}
+  .pill img{width:22px;height:22px;border-radius:8px;object-fit:cover}
+  .pill .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill .rm{cursor:pointer;color:var(--text2);display:flex;padding:2px;border-radius:50%}
+  .pill .rm:hover{color:var(--danger);background:#f0f1f2}
+  .pill .rm svg{width:13px;height:13px}
+
+  .box{
+    background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);
+    display:flex; align-items:flex-end; gap:2px; padding:10px 12px;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  .box:focus-within{border-color:var(--border-hover); box-shadow:0 0 0 1px var(--border-hover)}
+  .box.dragover{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); background:#f0f8ff}
+
+  .attach-btn{
+    flex-shrink:0; width:40px; height:40px; border-radius:50%; border:none; background:transparent;
+    display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--accent);
+    transition:background .15s, transform .1s; position:relative;
+  }
+  .attach-btn:hover{background:#e8f4fd}
+  .attach-btn:active{transform:scale(.92)}
+  .attach-btn svg{width:19px;height:19px}
+  .attach-btn .dot{position:absolute; top:6px; right:6px; width:7px; height:7px; border-radius:50%; background:var(--accent); display:none}
+  .attach-btn.has-file .dot{display:block}
+
+  textarea{
+    flex:1; border:none; outline:none; resize:none; background:transparent; font:inherit;
+    color:var(--text); font-size:15px; line-height:1.5; max-height:200px;
+    height:40px; min-height:40px; overflow-y:hidden; padding:9px 4px 8px;
+  }
+  textarea::placeholder{color:#8b98a5}
+
+  .mode-wrap{position:relative; flex-shrink:0; margin-right:2px}
+  .mode-btn{
+    display:flex; align-items:center; gap:6px; border:none; background:transparent; cursor:pointer;
+    height:40px; padding:0 10px; border-radius:13px; font-size:14px; color:var(--text);
+    transition:background .15s;
+  }
+  .mode-btn:hover{background:#f0f1f2}
+  .mode-btn svg{width:16px;height:16px;color:var(--accent)}
+  .mode-btn.expert svg{color:#8e44ad}
+  .mode-btn .arr{width:14px;height:14px;color:var(--text2);transition:transform .2s}
+  .mode-wrap.open .mode-btn .arr{transform:rotate(180deg)}
+  .mode-menu{
+    position:absolute; bottom:calc(100% + 8px); right:0; min-width:250px; background:var(--bg);
+    border:1px solid var(--border); border-radius:14px; box-shadow:0 4px 16px rgba(0,0,0,.10);
+    padding:6px; display:none; z-index:10;
+  }
+  .mode-wrap.open .mode-menu{display:block}
+  .mode-item{display:flex; gap:10px; padding:10px; border-radius:10px; cursor:pointer; align-items:flex-start}
+  .mode-item:hover{background:#f5f8fa}
+  .mode-item .mi-ic{width:30px;height:30px;border-radius:8px;background:#e8f4fd;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .mode-item .mi-ic svg{width:16px;height:16px;color:var(--accent)}
+  .mode-item.expert .mi-ic{background:#f0ebfe}
+  .mode-item.expert .mi-ic svg{color:#8e44ad}
+  .mode-item .mi-t{font-size:13px;font-weight:600}
+  .mode-item .mi-d{font-size:12px;color:var(--text2);margin-top:2px;line-height:1.4}
+  .mode-item .mi-chk{margin-left:auto;color:var(--accent);font-weight:700;padding-top:2px;visibility:hidden}
+  .mode-item.sel .mi-chk{visibility:visible}
+
+  /* ── 发送按钮：渐变绿 + 狼头 ── */
+  .send-btn{
+    flex-shrink:0; width:40px; height:40px; border-radius:50%; border:none; cursor:pointer;
+    background:linear-gradient(135deg,#2ecc71 0%,#1abc9c 100%); color:#fff; display:flex; align-items:center; justify-content:center;
+    transition:background .2s, transform .1s, opacity .2s;
+  }
+  .send-btn:not(:disabled):not(.running){animation:breathe2 2.2s ease-in-out infinite}
+  .send-btn:not(:disabled):hover{transform:scale(1.06)}
+  .send-btn:disabled{opacity:.35; cursor:not-allowed}
+  .send-btn svg{width:18px;height:18px}
+  .send-btn.running{background:var(--danger); animation:pulse 1s infinite}
+  .send-btn.running:not(:disabled):hover{background:#c0392b}
+  @keyframes breathe2{0%,100%{box-shadow:0 0 0 0 rgba(46,204,113,.5)}50%{box-shadow:0 0 0 8px rgba(46,204,113,0)}}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(231,76,60,.4)}50%{box-shadow:0 0 0 6px rgba(231,76,60,0)}}
+  .hint{font-size:11px; color:var(--text2); text-align:center; margin-top:10px}
+</style>
+</head>
+<body>
+<div class="chat">
+  <div class="demo-tag"><b>方案 A</b> — 狼头线框几何</div>
+  <div class="swatch"><span class="chip"></span> 渐变绿 #2ecc71 → #1abc9c <span class="chip stop"></span> 运行 #e74c3c</div>
+
+  <!-- 狼头大图展示 -->
+  <div class="big-icon">
+    <div>
+      <div class="gi">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6.5 8.5L4 3.5 9 6.5"/>
+          <path d="M17.5 8.5L20 3.5 15 6.5"/>
+          <path d="M6.5 8.5C6.5 5 9 3.5 12 3.5S17.5 5 17.5 8.5"/>
+          <path d="M6.5 8.5C5 10 4 11.5 4 13.5"/>
+          <path d="M17.5 8.5C19 10 20 11.5 20 13.5"/>
+          <path d="M4 13.5c0 3 3.5 5 8 5s8-2 8-5"/>
+          <circle cx="9" cy="10.5" r="1.1"/>
+          <circle cx="15" cy="10.5" r="1.1"/>
+          <path d="M12 12v2"/>
+          <path d="M10.5 14h3"/>
+        </svg>
+      </div>
+      <div class="gi-label">发送按钮 40px</div>
+    </div>
+  </div>
+
+  <div class="preview-row" id="previewRow"></div>
+
+  <div class="box" id="box">
+    <button class="attach-btn" id="attachBtn" type="button" title="附加文件">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+      <span class="dot"></span>
+    </button>
+    <textarea id="ta" rows="1" placeholder="Ask anything" spellcheck="true" dir="auto"></textarea>
+    <div class="mode-wrap" id="modeWrap">
+      <button class="mode-btn" id="modeBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span id="modeLabel">Instant</span>
+        <svg class="arr" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+      </button>
+      <div class="mode-menu" id="modeMenu">
+        <div class="mode-item sel" data-mode="Instant">
+          <div class="mi-ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+          <div><div class="mi-t">Instant</div><div class="mi-d">Fast for simple task</div></div>
+          <div class="mi-chk">✓</div>
+        </div>
+        <div class="mode-item expert" data-mode="Expert">
+          <div class="mi-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg></div>
+          <div><div class="mi-t">Expert</div><div class="mi-d">Loop for long-horizon Tasks</div></div>
+          <div class="mi-chk">✓</div>
+        </div>
+      </div>
+    </div>
+    <button class="send-btn" id="sendBtn" type="button" disabled aria-label="发送">
+      <svg id="sendIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6.5 8.5L4 3.5 9 6.5"/>
+        <path d="M17.5 8.5L20 3.5 15 6.5"/>
+        <path d="M6.5 8.5C6.5 5 9 3.5 12 3.5S17.5 5 17.5 8.5"/>
+        <path d="M6.5 8.5C5 10 4 11.5 4 13.5"/>
+        <path d="M17.5 8.5C19 10 20 11.5 20 13.5"/>
+        <path d="M4 13.5c0 3 3.5 5 8 5s8-2 8-5"/>
+        <circle cx="9" cy="10.5" r="1.1"/>
+        <circle cx="15" cy="10.5" r="1.1"/>
+        <path d="M12 12v2"/>
+        <path d="M10.5 14h3"/>
+      </svg>
+    </button>
+  </div>
+
+  <input type="file" id="fileInput" multiple tabindex="-1" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.py,.js,.rs,.go,.java,.cpp,.sql,.sh">
+
+  <div class="hint">Enter 发送 · Shift+Enter 换行 · 点击发送后切换为红色停止</div>
+</div>
+
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const box=$('box'), ta=$('ta'), sendBtn=$('sendBtn'), modeWrap=$('modeWrap');
+  const modeBtn=$('modeBtn'), modeMenu=$('modeMenu'), modeLabel=$('modeLabel');
+  const previewRow=$('previewRow'), attachBtn=$('attachBtn'), fileInput=$('fileInput');
+  let mode='Instant', files=[], running=false, doneTimer=null;
+  const PAW='<svg id="sendIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 8.5L4 3.5 9 6.5"/><path d="M17.5 8.5L20 3.5 15 6.5"/><path d="M6.5 8.5C6.5 5 9 3.5 12 3.5S17.5 5 17.5 8.5"/><path d="M6.5 8.5C5 10 4 11.5 4 13.5"/><path d="M17.5 8.5C19 10 20 11.5 20 13.5"/><path d="M4 13.5c0 3 3.5 5 8 5s8-2 8-5"/><circle cx="9" cy="10.5" r="1.1"/><circle cx="15" cy="10.5" r="1.1"/><path d="M12 12v2"/><path d="M10.5 14h3"/></svg>';
+  const STOP='<svg id="sendIcon" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>';
+
+  modeBtn.addEventListener('click',e=>{e.stopPropagation();modeWrap.classList.toggle('open');});
+  document.addEventListener('click',e=>{if(!modeWrap.contains(e.target))modeWrap.classList.remove('open');});
+  modeMenu.querySelectorAll('.mode-item').forEach(item=>{
+    item.addEventListener('click',()=>{
+      mode=item.dataset.mode; modeLabel.textContent=mode;
+      modeBtn.classList.toggle('expert',mode==='Expert');
+      modeMenu.querySelectorAll('.mode-item').forEach(i=>i.classList.toggle('sel',i===item));
+      modeWrap.classList.remove('open'); ta.focus();
+    });
+  });
+
+  function autoGrow(){ ta.style.height='auto'; ta.style.height=Math.max(40,Math.min(ta.scrollHeight,200))+'px'; updateSend(); }
+  ta.addEventListener('input',autoGrow);
+  ta.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();} });
+
+  function setRunning(r){
+    running=r;
+    sendBtn.classList.toggle('running',r);
+    const old=sendBtn.querySelector('svg');
+    if(old){ const tmp=document.createElement('div'); tmp.innerHTML=r?STOP:PAW; old.replaceWith(tmp.firstChild); }
+    if(!r)updateSend();
+  }
+  function updateSend(){ sendBtn.disabled=!running && !ta.value.trim() && files.length===0; }
+  sendBtn.addEventListener('click',()=>{ running?stop():send(); });
+  function send(){
+    if(!ta.value.trim()&&!files.length)return;
+    alert('['+mode+'] '+ta.value);
+    ta.value=''; autoGrow(); setRunning(true);
+    doneTimer=setTimeout(()=>setRunning(false),2500);
+  }
+  function stop(){ clearTimeout(doneTimer); setRunning(false); }
+
+  attachBtn.addEventListener('click',()=>fileInput.click());
+  fileInput.addEventListener('change',()=>{ addFiles(fileInput.files); fileInput.value=''; });
+  ['dragenter','dragover'].forEach(ev=>box.addEventListener(ev,e=>{e.preventDefault();box.classList.add('dragover');}));
+  ['dragleave','drop'].forEach(ev=>box.addEventListener(ev,e=>{e.preventDefault();box.classList.remove('dragover');}));
+  box.addEventListener('drop',e=>{ if(e.dataTransfer.files.length)addFiles(e.dataTransfer.files); });
+  document.addEventListener('paste',e=>{
+    const items=(e.clipboardData||window.clipboardData).items||[];
+    let handled=false;
+    for(const item of items){ if(item.type.startsWith('image/')){const f=item.getAsFile();if(f){addFiles([f]);handled=true;}} }
+    if(handled)e.preventDefault();
+  });
+  function addFiles(list){
+    for(const f of list){
+      files.push(f);
+      const pill=document.createElement('div'); pill.className='pill';
+      const url=URL.createObjectURL(f);
+      if(f.type.startsWith('image/')){ pill.innerHTML='<img src="'+url+'">'; }
+      else{ pill.innerHTML='<span class="nm" style="padding:0 4px">'+f.name+'</span>'; }
+      pill.innerHTML+='<span class="rm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></span>';
+      pill.querySelector('.rm').addEventListener('click',()=>{files=files.filter(x=>x!==f);pill.remove();updateSend();});
+      previewRow.appendChild(pill);
+    }
+    updateSend();
+  }
+})();
+</script>
+</body>
+</html>
