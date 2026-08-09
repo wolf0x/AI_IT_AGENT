@@ -230,9 +230,14 @@ impl TaskContract {
     }
 
     /// Add an open lead (unresolved item awaiting investigation).
-    /// Deduplicates by description so repeated failures don't stack identical leads.
+    /// If a lead with the same description exists, update its context (failure reason).
     pub fn add_lead(&mut self, description: &str, context: &str) {
-        if !self.open_leads.iter().any(|l| l.description == description) {
+        if let Some(existing) = self.open_leads.iter_mut().find(|l| l.description == description) {
+            // Update context with latest failure reason
+            existing.context = context.to_string();
+            existing.status = "pending".to_string(); // Reset to pending for re-investigation
+            self.updated_at = Utc::now();
+        } else {
             self.open_leads.push(OpenLead {
                 description: description.to_string(),
                 status: "pending".to_string(),

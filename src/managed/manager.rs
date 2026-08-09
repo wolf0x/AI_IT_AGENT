@@ -29,6 +29,9 @@ pub struct ManagerPlan {
     pub phase: Option<IrPhase>,
     /// Execution channel: cli / gui / ask (default: cli).
     pub channel: String,
+    /// Raw LLM output of the Manager (original reasoning + structured plan).
+    /// Persisted to round_dir/plan_raw.md by the runner for audit replay.
+    pub raw_output: String,
 }
 
 /// What happens after the Executor completes a subtask.
@@ -314,6 +317,7 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
         route,
         phase,
         channel,
+        raw_output: output.to_string(),
     }
 }
 

@@ -2717,7 +2717,8 @@ async function loadManagedRuns(){
         const auditTxt=auditArr.map(a=>{
           const st=a.verified?'✓':'✗';
           const cls=a.verified?'rc-ok':'rc-fail';
-          return '<span class="rc-status '+cls+'">'+st+' '+esc(a.path||'')+'</span>';
+          const reason=a.failure_reason?'<br><span style="color:var(--t3)">'+esc(String(a.failure_reason).slice(0,120))+'</span>':'';
+          return '<span class="rc-status '+cls+'">'+st+' '+esc(a.path||'')+'</span>'+reason;
         }).join('<br>')||'<span style="color:var(--t3)">—</span>';
         const planTxt=(rd.plan||'').split('\n').filter(l=>l.includes('Subtask')).map(l=>esc(l.trim())).join('<br>')||esc((rd.plan||'').slice(0,80));
         // Tool-call summary: group by tool, count + total ms.

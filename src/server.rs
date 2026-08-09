@@ -203,7 +203,7 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
     let managed_dir = std::path::Path::new(&state.workspace_dir)
         .join("output").join("managed");
 
-    let mut runs: Vec<Value> = Vec::new();
+    let mut runs: Vec<(i64, Value)> = Vec::new();
     if let Ok(mut contracts) = tokio::fs::read_dir(&managed_dir).await {
         while let Ok(Some(entry)) = contracts.next_entry().await {
             let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
@@ -212,6 +212,13 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
             }
             let contract_id = entry.file_name().to_string_lossy().to_string();
             let contract_dir = entry.path();
+            // Get modification time for sorting (newest first)
+            let mtime = contract_dir.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
 
             let mut rounds: Vec<Value> = Vec::new();
             if let Ok(mut round_entries) = tokio::fs::read_dir(&contract_dir).await {
@@ -275,15 +282,16 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
                 }
             }
 
-            runs.push(json!({
+            runs.push((mtime, json!({
                 "contract_id": contract_id,
                 "round_count": rounds.len(),
                 "rounds": rounds,
-            }));
+            })));
         }
     }
-    // Newest contracts first.
-    runs.sort_by(|a, b| b["round_count"].as_u64().unwrap_or(0).cmp(&a["round_count"].as_u64().unwrap_or(0)));
+    // Sort by modification time, newest first
+    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    let runs: Vec<Value> = runs.into_iter().map(|(_, v)| v).collect();
     Json(json!({ "runs": runs }))
 }
 
@@ -1136,6 +1144,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                     state.expert_tool_timeout_secs as u64,
                                     state.expert_max_tool_retries,
                                     state.skill_manager.clone(),
+                                    state.computer_use_enabled.clone(),
                                 );
                                 managed_runner.run(
                                     &content, &session_id, &model, &managed_scope,

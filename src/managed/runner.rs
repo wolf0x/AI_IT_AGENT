@@ -59,6 +59,9 @@ pub struct ManagedRunner {
     max_tool_retries: usize,
     /// Skill manager for injecting matched skills into Executor briefs.
     skill_manager: Arc<SkillManager>,
+    /// Computer Use availability flag (shared with server; used for GUI-channel
+    /// auto-enable with a user opt-in window).
+    computer_use_enabled: Arc<AtomicBool>,
 }
 
 impl ManagedRunner {
@@ -78,6 +81,7 @@ impl ManagedRunner {
         tool_timeout_secs: u64,
         max_tool_retries: usize,
         skill_manager: Arc<SkillManager>,
+        computer_use_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
             inner,
@@ -94,6 +98,7 @@ impl ManagedRunner {
             tool_timeout_secs,
             max_tool_retries,
             skill_manager,
+            computer_use_enabled,
         }
     }
 
@@ -239,6 +244,9 @@ impl ManagedRunner {
         let max_tool_retries = self.max_tool_retries;
         let skill_manager = self.skill_manager.clone();
         let workspace_dir = self.workspace_dir.clone();
+        let computer_use_enabled = self.computer_use_enabled.clone();
+        // Direct registry access for GUI-channel auto-enable (register cu_* tools).
+        let tools = self.tools.clone();
         // Move auditor + permission profile into the spawned task for post-Executor
         // verification and pre-authorization consultation (Phase 6).
 
@@ -411,6 +419,41 @@ impl ManagedRunner {
                     }
                 };
 
+                // ── Channel routing: inject execution-channel guidance into the brief ──
+                // F8: gui channel ensures computer_use is available (30s user window,
+                // auto-enable on timeout); ask channel tells the Executor to request
+                // human input instead of terminating the round.
+                let brief = match plan.channel.as_str() {
+                    "gui" => {
+                        ensure_gui_channel(&tx, &contract_id, &session, &computer_use_enabled, &tools, &cancelled_flag).await;
+                        let mut b = brief;
+                        b.push_str(
+                            "\n\n## Execution Channel: GUI\n\
+                             本轮任务必须通过 GUI 工具完成——优先使用 browser_skill（用户真实浏览器）\
+                             或 computer_use 工具（cu_screenshot / cu_mouse / cu_keyboard 等桌面控制）。\
+                             不要尝试用 shell_exec 或 curl 代替 GUI 交互。\n"
+                        );
+                        b
+                    }
+                    "ask" => {
+                        let mut b = brief;
+                        b.push_str(
+                            "\n\n## Execution Channel: ASK\n\
+                             本轮需要用户输入才能继续。完成可做的准备工作后，\
+                             明确说明需要用户提供什么，并调用 request_help 等待用户。\n"
+                        );
+                        b
+                    }
+                    _ => {
+                        let mut b = brief;
+                        b.push_str(
+                            "\n\n## Execution Channel: CLI\n\
+                             本轮优先使用命令行/工具执行（shell_exec、ir_*、file_* 等）。\n"
+                        );
+                        b
+                    }
+                };
+
                 info!("[managed:{}] Executor starting with brief ({} chars)", session, brief.len());
 
                 // Run the Executor with the brief as the user message
@@ -458,6 +501,8 @@ impl ManagedRunner {
                             }
                             // Record tool-call completion (paired by call_id).
                             if let Ok(AgentEvent::ToolResult { name, call_id, result, .. }) = &result {
+                                // Check if result contains an error field (JSON structure check)
+                                let ok = result.get("error").is_none();
                                 if let Some((start_name, args, start_ts)) = pending_calls.remove(call_id) {
                                     let duration_ms = start_ts.elapsed().as_millis();
                                     let args_str = serde_json::to_string(&args).unwrap_or_default();
@@ -468,7 +513,7 @@ impl ManagedRunner {
                                         "args": args_str.chars().take(200).collect::<String>(),
                                         "duration_ms": duration_ms,
                                         "result_preview": result_str.chars().take(300).collect::<String>(),
-                                        "ok": !result_str.contains("\"error\""),
+                                        "ok": ok,
                                     }).to_string();
                                     tool_trace.push(line);
                                 } else {
@@ -480,7 +525,7 @@ impl ManagedRunner {
                                         "args": "",
                                         "duration_ms": 0,
                                         "result_preview": result_str.chars().take(300).collect::<String>(),
-                                        "ok": !result_str.contains("\"error\""),
+                                        "ok": ok,
                                     }).to_string();
                                     tool_trace.push(line);
                                 }
@@ -605,6 +650,11 @@ impl ManagedRunner {
                             round + 1, plan.subtask, plan.success_criteria, plan.expected_evidence, plan.route, plan.channel
                         ),
                     );
+                    // O3: preserve the Manager's raw output (original reasoning +
+                    // structured plan) for audit replay — plan.md is parsed fields.
+                    if !plan.raw_output.trim().is_empty() {
+                        let _ = std::fs::write(round_dir.join("plan_raw.md"), &plan.raw_output);
+                    }
                     let _ = std::fs::write(round_dir.join("executor_output.md"), &executor_output);
                     let _ = std::fs::write(
                         round_dir.join("tool_calls.jsonl"),
@@ -631,10 +681,15 @@ impl ManagedRunner {
                         blackboard = existing;
                     }
                 }
-                // Write verified findings
+                // Write verified findings (include audit status + integrity for Instant visibility)
                 for f in &contract.verified_findings {
                     let summary: String = f.title.chars().take(100).collect();
-                    let detail: String = f.evidence_summary.chars().take(200).collect();
+                    // Include status/integrity in detail so Instant users see audit verdict
+                    let detail = format!(
+                        "[status: {}, integrity: {}] {}",
+                        f.status, f.integrity_status,
+                        f.evidence_summary.chars().take(180).collect::<String>()
+                    );
                     blackboard.add_entry(BlackboardEntry {
                         source: "expert".to_string(),
                         entry_type: "finding".to_string(),
@@ -645,8 +700,14 @@ impl ManagedRunner {
                     });
                 }
                 // Write latest manager notes (up to 3) as summary entries
+                // Filter out executor trajectory summaries ("Round N: ...") — same rule as F2
                 let start = if contract.manager_notes.len() > 3 { contract.manager_notes.len() - 3 } else { 0 };
                 for note in contract.manager_notes.iter().skip(start) {
+                    // Skip executor trajectory notes (consistent with F2 Manager input isolation)
+                    if note.starts_with("Round ") && !note.starts_with("[Audit Guard]")
+                        && !note.starts_with("[User Resume]") && !note.starts_with("[Pre-Expert") {
+                        continue;
+                    }
                     let summary: String = note.chars().take(100).collect();
                     blackboard.add_entry(BlackboardEntry {
                         source: "expert".to_string(),
@@ -665,6 +726,18 @@ impl ManagedRunner {
                         summary: format!("Phase: {:?}", p),
                         detail: None,
                         phase: Some(format!("{:?}", p).to_lowercase()),
+                        timestamp: chrono::Utc::now(),
+                    });
+                }
+                // Write open leads (unresolved items) so Instant users see what Expert hasn't solved
+                for lead in &contract.open_leads {
+                    let summary: String = lead.description.chars().take(100).collect();
+                    blackboard.add_entry(BlackboardEntry {
+                        source: "expert".to_string(),
+                        entry_type: "open_lead".to_string(),
+                        summary,
+                        detail: Some(format!("[{}] {}", lead.status, lead.context)),
+                        phase: Some(format!("{:?}", contract.phase).to_lowercase()),
                         timestamp: chrono::Utc::now(),
                     });
                 }
@@ -689,6 +762,64 @@ impl ManagedRunner {
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
+}
+
+/// Ensure Computer Use tools are available for a GUI-channel round.
+///
+/// If the flag is already enabled, returns immediately. Otherwise announces a
+/// 30-second user opt-in window (the user can enable via Settings > Computer
+/// Use), and auto-enables on timeout — matching the shared flag used by the
+/// server's toggle endpoint so both paths stay consistent.
+///
+/// Respects the cancelled flag: if the user sends STOP during the wait, the
+/// function returns early without enabling tools.
+async fn ensure_gui_channel(
+    tx: &tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
+    contract_id: &str,
+    session: &str,
+    enabled: &Arc<AtomicBool>,
+    tools: &Arc<tokio::sync::RwLock<ToolRegistry>>,
+    cancelled: &Arc<AtomicBool>,
+) {
+    if enabled.load(Ordering::SeqCst) {
+        return;
+    }
+    let _ = tx.send(Ok(AgentEvent::text(
+        "\n\n*[GUI 通道] 本轮任务需要 GUI 交互，但 computer_use 工具未启用。\n\
+         请在 30 秒内前往 **设置 > Computer Use** 手动开启；\n\
+         或等待 30 秒后自动开启。*\n\n",
+        contract_id, "manager"
+    ))).await;
+    // 30-second window: poll every 1s so a manual enable or STOP interrupts the wait.
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // Check if user sent STOP — if so, abort the wait immediately.
+        if cancelled.load(Ordering::SeqCst) {
+            let _ = tx.send(Ok(AgentEvent::text(
+                "*[GUI 通道] 用户已停止任务，取消等待。*\n\n",
+                contract_id, "manager"
+            ))).await;
+            return;
+        }
+        if enabled.load(Ordering::SeqCst) {
+            let _ = tx.send(Ok(AgentEvent::text(
+                "*[GUI 通道] computer_use 已手动开启。*\n\n",
+                contract_id, "manager"
+            ))).await;
+            return;
+        }
+    }
+    // Auto-enable on timeout: flip the shared flag + register the tools.
+    enabled.store(true, Ordering::SeqCst);
+    {
+        let mut registry = tools.write().await;
+        crate::tool::computer_use::register_computer_use_tools(&mut registry);
+    }
+    info!("[managed:{}] computer_use auto-enabled after GUI-channel timeout", session);
+    let _ = tx.send(Ok(AgentEvent::text(
+        "*[GUI 通道] 30 秒内未手动开启，已自动启用 computer_use 工具。*\n\n",
+        contract_id, "manager"
+    ))).await;
 }
 
 /// Persist the TaskContract to SQLite (best-effort crash recovery).
