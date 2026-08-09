@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>方案 E：浮动粒子背景</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.container {
+  width: 700px;
+  height: 600px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 方案 E：浮动粒子背景 */
+.particles-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  z-index: 1;
+}
+.container.active .particles-canvas {
+  opacity: 1;
+}
+
+.header {
+  padding: 16px 20px;
+  background: white;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: relative;
+  z-index: 2;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3498db 0%, #2ecc71 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+.header-title h2 {
+  font-size: 16px;
+  font-weight: 700;
+}
+.header-title p {
+  font-size: 11px;
+  color: #95a5a6;
+}
+
+.chat-area {
+  flex: 1;
+  background: rgba(247, 249, 250, 0.7);
+  padding: 20px;
+  overflow-y: auto;
+  position: relative;
+  z-index: 2;
+}
+.message {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  position: relative;
+  z-index: 3;
+}
+.message.user {
+  background: #3498db;
+  color: white;
+  margin-left: 60px;
+}
+.message.assistant {
+  background: white;
+  border: 1px solid #e2e8f0;
+  margin-right: 60px;
+}
+
+.input-area {
+  padding: 16px;
+  background: white;
+  border-top: 1px solid #e2e8f0;
+  position: relative;
+  z-index: 2;
+}
+.input-box {
+  display: flex;
+  gap: 8px;
+}
+.input-box input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  font-size: 14px;
+  outline: none;
+}
+.send-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #2ecc71 0%, #1abc9c 100%);
+  color: white;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.controls {
+  padding: 16px;
+  background: #f8f9fa;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  gap: 8px;
+  position: relative;
+  z-index: 2;
+}
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.btn-primary { background: #3498db; color: white; }
+.btn-secondary { background: #95a5a6; color: white; }
+</style>
+</head>
+<body>
+<div class="container" id="container">
+  <canvas class="particles-canvas" id="particlesCanvas"></canvas>
+  
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">🐺</div>
+      <div class="header-title">
+        <h2>RustAgent</h2>
+        <p>Expert 模式</p>
+      </div>
+    </div>
+  </div>
+  
+  <div class="chat-area">
+    <div class="message user">分析这台主机的安全状况</div>
+    <div class="message assistant">🧭 Manager Plan (Round 1)<br>Subtask: 执行系统信息收集...</div>
+    <div class="message assistant">✅ Auditor 验证通过<br>发现: 系统信息已收集</div>
+  </div>
+  
+  <div class="input-area">
+    <div class="input-box">
+      <input type="text" placeholder="输入消息..." />
+      <button class="send-btn">➤</button>
+    </div>
+  </div>
+  
+  <div class="controls">
+    <button class="btn btn-primary" onclick="startExecution()">模拟开始执行</button>
+    <button class="btn btn-secondary" onclick="stopExecution()">模拟停止</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('particlesCanvas');
+const ctx = canvas.getContext('2d');
+let particles = [];
+let animationId;
+let isActive = false;
+
+function resizeCanvas() {
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+}
+
+class Particle {
+  constructor() {
+    this.x = Math.random() * canvas.width;
+    this.y = Math.random() * canvas.height;
+    this.size = Math.random() * 5 + 2;
+    this.speedX = (Math.random() - 0.5) * 0.8;
+    this.speedY = (Math.random() - 0.5) * 0.8;
+    this.opacity = Math.random() * 0.6 + 0.3;
+    this.color = Math.random() > 0.5 ? '102, 126, 234' : '118, 75, 162';
+  }
+  
+  update() {
+    this.x += this.speedX;
+    this.y += this.speedY;
+    
+    if (this.x > canvas.width) this.x = 0;
+    if (this.x < 0) this.x = canvas.width;
+    if (this.y > canvas.height) this.y = 0;
+    if (this.y < 0) this.y = canvas.height;
+  }
+  
+  draw() {
+    ctx.fillStyle = `rgba(${this.color}, ${this.opacity})`;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function initParticles() {
+  particles = [];
+  for (let i = 0; i < 80; i++) {
+    particles.push(new Particle());
+  }
+}
+
+function animateParticles() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  particles.forEach(particle => {
+    particle.update();
+    particle.draw();
+  });
+  
+  // Draw connections
+  particles.forEach((p1, i) => {
+    particles.slice(i + 1).forEach(p2 => {
+      const dx = p1.x - p2.x;
+      const dy = p1.y - p2.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < 120) {
+        ctx.strokeStyle = `rgba(102, 126, 234, ${0.3 * (1 - distance / 120)})`;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+    });
+  });
+  
+  if (isActive) {
+    animationId = requestAnimationFrame(animateParticles);
+  }
+}
+
+function startExecution() {
+  isActive = true;
+  document.getElementById('container').classList.add('active');
+  resizeCanvas();
+  initParticles();
+  animateParticles();
+}
+
+function stopExecution() {
+  isActive = false;
+  document.getElementById('container').classList.remove('active');
+  cancelAnimationFrame(animationId);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+window.addEventListener('resize', () => {
+  if (isActive) {
+    resizeCanvas();
+  }
+});
+</script>
+</body>
+</html>

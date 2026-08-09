@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>G1：渐变边框旋转</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.container { width: 600px; background: white; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden; }
+.chat-area { height: 400px; background: #f7f9fa; padding: 20px; overflow-y: auto; }
+.message { margin-bottom: 12px; padding: 10px 14px; border-radius: 12px; font-size: 14px; }
+.message.user { background: #3498db; color: white; margin-left: 60px; }
+.message.assistant { background: white; border: 1px solid #e2e8f0; margin-right: 60px; }
+
+/* G1：渐变边框旋转 */
+.input-area { padding: 16px; background: white; }
+.grok-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 22px;
+  background: white;
+}
+.grok-bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 22px;
+  padding: 2px;
+  background: linear-gradient(90deg, #cfd9de, #cfd9de);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  transition: background 0.3s;
+}
+.grok-bar.running::before {
+  background: linear-gradient(90deg, #3498db, #9b59b6, #2ecc71, #3498db);
+  background-size: 300% 100%;
+  animation: borderRotate 2s linear infinite;
+}
+@keyframes borderRotate {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 300% 50%; }
+}
+
+.grok-bar input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 15px;
+  background: transparent;
+}
+.send-btn {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #2ecc71 0%, #1abc9c 100%);
+  color: white;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.controls { padding: 16px; background: #f8f9fa; border-top: 1px solid #e2e8f0; display: flex; gap: 8px; }
+.btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 600; }
+.btn-primary { background: #3498db; color: white; }
+.btn-secondary { background: #95a5a6; color: white; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="chat-area">
+    <div class="message user">分析这台主机的安全状况</div>
+    <div class="message assistant">正在执行系统信息收集...</div>
+  </div>
+  
+  <div class="input-area">
+    <div class="grok-bar" id="grokBar">
+      <input type="text" placeholder="输入消息..." />
+      <button class="send-btn">➤</button>
+    </div>
+  </div>
+  
+  <div class="controls">
+    <button class="btn btn-primary" onclick="startRunning()">模拟执行中</button>
+    <button class="btn btn-secondary" onclick="stopRunning()">停止</button>
+  </div>
+</div>
+
+<script>
+function startRunning() {
+  document.getElementById('grokBar').classList.add('running');
+}
+function stopRunning() {
+  document.getElementById('grokBar').classList.remove('running');
+}
+</script>
+</body>
+</html>

@@ -89,6 +89,13 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .sidebar-hdr{padding:20px;border-bottom:1px solid #34495e}
 .sidebar-hdr h2{font-size:15px;font-weight:700;display:flex;align-items:center;gap:6px;color:white}
 .sidebar-hdr p{font-size:11px;color:#95a5a6;margin-top:4px}
+/* 方案 B：导航栏狼头呼吸脉冲动画 */
+.sidebar-logo{width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,#3498db 0%,#2ecc71 100%);display:flex;align-items:center;justify-content:center;font-size:24px;position:relative;transition:all 0.3s ease;flex-shrink:0}
+.sidebar-logo.active{animation:logoPulse 2s ease-in-out infinite}
+.sidebar-logo.active::before{content:'';position:absolute;width:100%;height:100%;border-radius:50%;background:inherit;animation:logoRipple 2s ease-out infinite}
+@keyframes logoPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+@keyframes logoRipple{0%{transform:scale(1);opacity:0.6}100%{transform:scale(1.8);opacity:0}}
+.sidebar-hdr-row{display:flex;align-items:center;gap:12px}
 .nav-tabs{display:flex;flex-direction:column;gap:4px;padding:8px}
 .nav-tab{padding:12px 16px;background:0;border:0;color:#bdc3c7;text-align:left;cursor:pointer;border-radius:var(--rs);font-size:14px;font-weight:500;transition:.2s}
 .nav-tab:hover{background:#34495e;color:white}
@@ -332,8 +339,17 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 /* ── Grok 风格输入框（Demo E 复刻：整体圆角容器） ── */
 .grok-bar{
   display:flex; align-items:flex-end; gap:2px; margin:14px 16px; padding:10px 12px;
-  background:#fff; border:1px solid #cfd9de; border-radius:22px; flex-shrink:0;
-  transition:border-color .15s, box-shadow .15s;
+  background:#fff; border:2px solid #cfd9de; border-radius:22px; flex-shrink:0;
+  transition:border-color .3s, box-shadow .3s;
+}
+/* G2：执行时脉冲发光边框 */
+.grok-bar.running{
+  border-color:#3498db;
+  animation:grokPulseGlow 1.5s ease-in-out infinite;
+}
+@keyframes grokPulseGlow{
+  0%,100%{box-shadow:0 0 0 0 rgba(52,152,219,0.4)}
+  50%{box-shadow:0 0 0 8px rgba(52,152,219,0)}
 }
 .grok-bar:focus-within{border-color:#8ecdf8; box-shadow:0 0 0 1px #8ecdf8}
 .grok-bar input[type=file]{display:none}
@@ -572,8 +588,13 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
   <!-- Sidebar -->
   <div class="sidebar">
     <div class="sidebar-hdr">
-      <h2>&#9889; RustAgent</h2>
-      <p>AI System Agent By W@L4</p>
+      <div class="sidebar-hdr-row">
+        <div class="sidebar-logo" id="sidebarLogo">🐺</div>
+        <div>
+          <h2>RustAgent</h2>
+          <p>AI System Agent By W@L4</p>
+        </div>
+      </div>
     </div>
     <div class="nav-tabs">
       <button class="nav-tab active" onclick="switchPage('chat',this)">&#128172; <span>Chat</span></button>
@@ -1690,6 +1711,8 @@ function setAgentRunning(running){
   agentRunning=running;
   const sendBtn=document.getElementById('sendBtn');
   const stopBtn=document.getElementById('stopBtn');
+  const sidebarLogo=document.getElementById('sidebarLogo');
+  const grokBar=document.querySelector('.grok-bar');
   if(sendBtn){
     sendBtn.classList.toggle('running',running);
     const oldIcon=sendBtn.querySelector('svg');
@@ -1704,6 +1727,10 @@ function setAgentRunning(running){
     if(!running)updateSendState();
   }
   if(stopBtn)stopBtn.style.display=running?'none':'none'; // 停止由 sendBtn 双态承担
+  // 方案 B：导航栏狼头呼吸脉冲
+  if(sidebarLogo)sidebarLogo.classList.toggle('active',running);
+  // G2：输入框脉冲发光边框
+  if(grokBar)grokBar.classList.toggle('running',running);
 }
 function updateSendState(){
   const inp=document.getElementById('msgInput');

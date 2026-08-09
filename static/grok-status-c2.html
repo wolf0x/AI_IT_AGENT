@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>C2：输入框正上方紧贴状态条</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.container {
+  width: 600px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  overflow: hidden;
+}
+.chat-area {
+  height: 400px;
+  background: #f7f9fa;
+  padding: 20px;
+  overflow-y: auto;
+}
+.message {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+.message.user { background: #3498db; color: white; margin-left: 60px; }
+.message.assistant { background: white; border: 1px solid #e2e8f0; margin-right: 60px; }
+
+/* C2：输入框正上方紧贴状态条 */
+.input-area {
+  background: white;
+  border-top: 1px solid #e2e8f0;
+}
+.floating-status {
+  height: 0;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  font-size: 12px;
+}
+.floating-status.active {
+  height: 36px;
+  padding: 8px 20px;
+}
+.floating-status-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2ecc71;
+  animation: dotPulse 1.5s ease-in-out infinite;
+}
+@keyframes dotPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.7; }
+}
+.floating-status-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.progress-bar {
+  width: 80px;
+  height: 6px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: white;
+  width: 30%;
+  transition: width 0.3s ease;
+}
+
+.input-box {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  align-items: center;
+}
+.input-box input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  font-size: 14px;
+  outline: none;
+}
+.send-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #2ecc71 0%, #1abc9c 100%);
+  color: white;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.controls {
+  padding: 16px;
+  background: #f8f9fa;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  gap: 8px;
+}
+.btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 600; }
+.btn-primary { background: #3498db; color: white; }
+.btn-secondary { background: #95a5a6; color: white; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="chat-area">
+    <div class="message user">分析这台主机的安全状况</div>
+    <div class="message assistant">🧭 Manager Plan (Round 1)<br>Subtask: 执行系统信息收集...</div>
+  </div>
+  
+  <div class="input-area">
+    <!-- C2：输入框正上方紧贴 -->
+    <div class="floating-status" id="floatingStatus">
+      <div class="floating-status-left">
+        <div class="status-dot"></div>
+        <span id="statusText">Round 3/10 · Auditor 验证中</span>
+      </div>
+      <div class="floating-status-right">
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <span id="progressText" style="font-weight:600">30%</span>
+      </div>
+    </div>
+    
+    <div class="input-box">
+      <input type="text" placeholder="输入消息..." />
+      <button class="send-btn">➤</button>
+    </div>
+  </div>
+  
+  <div class="controls">
+    <button class="btn btn-primary" onclick="startExecution()">模拟开始执行</button>
+    <button class="btn btn-secondary" onclick="stopExecution()">模拟停止</button>
+  </div>
+</div>
+
+<script>
+let progressInterval;
+let progress = 0;
+function startExecution() {
+  document.getElementById('floatingStatus').classList.add('active');
+  progress = 0;
+  progressInterval = setInterval(() => {
+    progress = (progress + 5) % 100;
+    document.getElementById('progressFill').style.width = progress + '%';
+    document.getElementById('progressText').textContent = progress + '%';
+  }, 500);
+}
+function stopExecution() {
+  document.getElementById('floatingStatus').classList.remove('active');
+  clearInterval(progressInterval);
+}
+</script>
+</body>
+</html>
