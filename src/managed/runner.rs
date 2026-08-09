@@ -435,6 +435,12 @@ impl ManagedRunner {
                 ).await;
 
                 let mut executor_output = String::new();
+                // ── Tool-call trace (per-round): pair ToolCall/ToolResult events
+                // by call_id and record name, args, duration, result preview.
+                // Written to round_dir/tool_calls.jsonl by the F5 archive step.
+                let mut tool_trace: Vec<String> = Vec::new();
+                let mut pending_calls: std::collections::HashMap<String, (String, serde_json::Value, std::time::Instant)> =
+                    std::collections::HashMap::new();
                 match executor_result {
                     Ok(mut stream) => {
                         // Forward Executor events to the main stream and capture the
@@ -445,6 +451,39 @@ impl ManagedRunner {
                             // cause server.rs to break the event loop prematurely.
                             if matches!(&result, Ok(AgentEvent::Done { .. })) {
                                 continue;
+                            }
+                            // Record tool-call start.
+                            if let Ok(AgentEvent::ToolCall { name, call_id, args, .. }) = &result {
+                                pending_calls.insert(call_id.clone(), (name.clone(), args.clone(), std::time::Instant::now()));
+                            }
+                            // Record tool-call completion (paired by call_id).
+                            if let Ok(AgentEvent::ToolResult { name, call_id, result, .. }) = &result {
+                                if let Some((start_name, args, start_ts)) = pending_calls.remove(call_id) {
+                                    let duration_ms = start_ts.elapsed().as_millis();
+                                    let args_str = serde_json::to_string(&args).unwrap_or_default();
+                                    let result_str = serde_json::to_string(result).unwrap_or_default();
+                                    let line = serde_json::json!({
+                                        "ts": chrono::Utc::now().to_rfc3339(),
+                                        "tool": start_name,
+                                        "args": args_str.chars().take(200).collect::<String>(),
+                                        "duration_ms": duration_ms,
+                                        "result_preview": result_str.chars().take(300).collect::<String>(),
+                                        "ok": !result_str.contains("\"error\""),
+                                    }).to_string();
+                                    tool_trace.push(line);
+                                } else {
+                                    // Result without a recorded start (e.g. stream began mid-call).
+                                    let result_str = serde_json::to_string(result).unwrap_or_default();
+                                    let line = serde_json::json!({
+                                        "ts": chrono::Utc::now().to_rfc3339(),
+                                        "tool": name,
+                                        "args": "",
+                                        "duration_ms": 0,
+                                        "result_preview": result_str.chars().take(300).collect::<String>(),
+                                        "ok": !result_str.contains("\"error\""),
+                                    }).to_string();
+                                    tool_trace.push(line);
+                                }
                             }
                             if let Ok(AgentEvent::TextDelta { content, .. }) = &result {
                                 executor_output.push_str(content);
@@ -567,6 +606,10 @@ impl ManagedRunner {
                         ),
                     );
                     let _ = std::fs::write(round_dir.join("executor_output.md"), &executor_output);
+                    let _ = std::fs::write(
+                        round_dir.join("tool_calls.jsonl"),
+                        tool_trace.join("\n"),
+                    );
                     let _ = std::fs::write(
                         round_dir.join("audit.json"),
                         serde_json::to_string_pretty(&round_audits).unwrap_or_else(|_| "[]".to_string()),

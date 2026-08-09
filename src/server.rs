@@ -231,6 +231,27 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
                         .chars().take(600).collect::<String>();
                     let audit = tokio::fs::read_to_string(dir.join("audit.json")).await
                         .unwrap_or_else(|_| "[]".to_string());
+                    // Tool-call trace: count calls per tool + total duration.
+                    let mut tool_calls: Vec<Value> = Vec::new();
+                    let mut total_ms: u128 = 0;
+                    let mut call_count = 0usize;
+                    if let Ok(trace_str) = tokio::fs::read_to_string(dir.join("tool_calls.jsonl")).await {
+                        for line in trace_str.lines() {
+                            if let Ok(entry) = serde_json::from_str::<Value>(line) {
+                                if let Some(tool) = entry["tool"].as_str() {
+                                    if let Some(d) = entry["duration_ms"].as_u64() {
+                                        total_ms += d as u128;
+                                    }
+                                    call_count += 1;
+                                    tool_calls.push(json!({
+                                        "tool": tool,
+                                        "duration_ms": entry["duration_ms"].as_u64().unwrap_or(0),
+                                        "ok": entry["ok"].as_bool().unwrap_or(true),
+                                    }));
+                                }
+                            }
+                        }
+                    }
                     // Parse state.json for phase + findings count (best-effort).
                     let mut phase = String::new();
                     let mut findings = 0usize;
@@ -247,6 +268,9 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
                         "audit": audit,
                         "phase": phase,
                         "findings_count": findings,
+                        "tool_calls": tool_calls,
+                        "tool_call_count": call_count,
+                        "tool_total_ms": total_ms,
                     }));
                 }
             }

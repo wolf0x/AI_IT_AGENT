@@ -507,7 +507,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .badge-info{background:#dbeafe;color:#2563eb}
 .badge-warn{background:#fef3c7;color:#d97706}
 .round-list{display:flex;flex-direction:column}
-.round-item{border-bottom:1px solid #f1f5f9;padding:10px 14px;display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:8px;align-items:start}
+.round-item{border-bottom:1px solid #f1f5f9;padding:10px 14px;display:grid;grid-template-columns:70px 1fr 1fr 1fr 1fr;gap:8px;align-items:start}
 .round-item:last-child{border-bottom:none}
 .round-num{font-weight:700;color:var(--t1);font-size:12px;padding-top:2px}
 .round-col{font-size:11px;min-width:0}
@@ -2720,11 +2720,21 @@ async function loadManagedRuns(){
           return '<span class="rc-status '+cls+'">'+st+' '+esc(a.path||'')+'</span>';
         }).join('<br>')||'<span style="color:var(--t3)">—</span>';
         const planTxt=(rd.plan||'').split('\n').filter(l=>l.includes('Subtask')).map(l=>esc(l.trim())).join('<br>')||esc((rd.plan||'').slice(0,80));
+        // Tool-call summary: group by tool, count + total ms.
+        const toolCounts={};
+        let toolTotalMs=0;
+        (rd.tool_calls||[]).forEach(tc=>{
+          toolCounts[tc.tool]=(toolCounts[tc.tool]||0)+1;
+          toolTotalMs+=Number(tc.duration_ms||0);
+        });
+        const toolsTxt=Object.keys(toolCounts).map(t=>esc(t)+' ×'+toolCounts[t]).join(', ')||'—';
+        const toolsHtml='<div class="round-col"><b>Tools</b><div class="rc-txt">'+toolsTxt+'<br><span style="color:var(--t3)">'+(toolTotalMs/1000).toFixed(1)+'s</span></div></div>';
         roundsHtml+='<div class="round-item">'+
           '<div class="round-num">R'+rd.round+'</div>'+
           '<div class="round-col"><b>Plan</b><div class="rc-txt">'+planTxt+'</div></div>'+
           '<div class="round-col"><b>Audit</b>'+auditTxt+'</div>'+
           '<div class="round-col"><b>State</b><div class="rc-txt">phase: '+esc(rd.phase||'')+' · findings: '+rd.findings_count+'</div></div>'+
+          toolsHtml+
           '</div>';
       });
       card.innerHTML='<div class="run-card-hdr">'+
