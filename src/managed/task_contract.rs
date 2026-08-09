@@ -173,7 +173,12 @@ impl TaskContract {
 
         if !self.verified_findings.is_empty() {
             brief.push_str("## Verified Findings\n");
-            for f in &self.verified_findings {
+            // Show only the most recent 20 findings to prevent brief from growing too large
+            let display_findings: Vec<_> = self.verified_findings.iter().rev().take(20).rev().collect();
+            if display_findings.len() < self.verified_findings.len() {
+                brief.push_str(&format!("(Showing most recent {} of {} findings)\n", display_findings.len(), self.verified_findings.len()));
+            }
+            for f in display_findings {
                 brief.push_str(&format!("- [{}] {} ({})\n", f.severity.to_uppercase(), f.title, f.evidence_summary));
                 if let Some(ref path) = f.evidence_path {
                     brief.push_str(&format!("  Evidence file: `{}`\n", path));
@@ -184,7 +189,12 @@ impl TaskContract {
 
         if !self.verified_actions.is_empty() {
             brief.push_str("## Verified Actions Taken\n");
-            for a in &self.verified_actions {
+            // Show only the most recent 10 actions to prevent brief from growing too large
+            let display_actions: Vec<_> = self.verified_actions.iter().rev().take(10).rev().collect();
+            if display_actions.len() < self.verified_actions.len() {
+                brief.push_str(&format!("(Showing most recent {} of {} actions)\n", display_actions.len(), self.verified_actions.len()));
+            }
+            for a in display_actions {
                 brief.push_str(&format!("- {} → {}\n", a.description, a.verification));
             }
             brief.push('\n');
@@ -192,7 +202,12 @@ impl TaskContract {
 
         if !self.open_leads.is_empty() {
             brief.push_str("## Open Leads\n");
-            for l in &self.open_leads {
+            // Show only the most recent 10 leads to prevent brief from growing too large
+            let display_leads: Vec<_> = self.open_leads.iter().rev().take(10).rev().collect();
+            if display_leads.len() < self.open_leads.len() {
+                brief.push_str(&format!("(Showing most recent {} of {} leads)\n", display_leads.len(), self.open_leads.len()));
+            }
+            for l in display_leads {
                 brief.push_str(&format!("- [{}] {}: {}\n", l.status, l.description, l.context));
             }
             brief.push('\n');
@@ -225,13 +240,19 @@ impl TaskContract {
     }
 
     /// Add a verified finding.
+    /// **Limit**: Max 50 findings (FIFO eviction) to prevent executor_brief from growing too large.
     pub fn add_finding(&mut self, finding: VerifiedFinding) {
         self.verified_findings.push(finding);
+        // Enforce limit: remove oldest if over 50
+        if self.verified_findings.len() > 50 {
+            self.verified_findings.remove(0);
+        }
         self.updated_at = Utc::now();
     }
 
     /// Add an open lead (unresolved item awaiting investigation).
     /// If a lead with the same description exists, update its context (failure reason).
+    /// **Limit**: Max 20 leads (FIFO eviction) to prevent executor_brief from growing too large.
     pub fn add_lead(&mut self, description: &str, context: &str) {
         if let Some(existing) = self.open_leads.iter_mut().find(|l| l.description == description) {
             // Update context with latest failure reason
@@ -244,6 +265,10 @@ impl TaskContract {
                 status: "pending".to_string(),
                 context: context.to_string(),
             });
+            // Enforce limit: remove oldest if over 20
+            if self.open_leads.len() > 20 {
+                self.open_leads.remove(0);
+            }
             self.updated_at = Utc::now();
         }
     }
