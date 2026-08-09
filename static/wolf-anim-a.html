@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wolf Animation Demo A - Minimalist Line Art</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f7f9fa;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .container {
+    width: 600px;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    padding: 20px;
+  }
+  .demo-tag {
+    text-align: center;
+    font-size: 12px;
+    color: #8b98a5;
+    margin-bottom: 16px;
+  }
+  .wolf-stage {
+    height: 100px;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .wolf {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+    transition: transform 0.3s ease;
+  }
+  .wolf.idle {
+    left: 50%;
+    transform: translateX(-50%);
+    animation: breathe 2s ease-in-out infinite;
+  }
+  .wolf.running {
+    animation: runLeftRight 3s ease-in-out infinite;
+  }
+  .wolf.done {
+    left: 50%;
+    transform: translateX(-50%);
+    animation: settle 0.5s ease-out forwards;
+  }
+  @keyframes breathe {
+    0%, 100% { transform: translateX(-50%) scale(1); }
+    50% { transform: translateX(-50%) scale(1.05); }
+  }
+  @keyframes runLeftRight {
+    0% { left: 10%; transform: scaleX(1); }
+    45% { left: calc(100% - 90px); transform: scaleX(1); }
+    50% { left: calc(100% - 90px); transform: scaleX(-1); }
+    95% { left: 10%; transform: scaleX(-1); }
+    100% { left: 10%; transform: scaleX(1); }
+  }
+  @keyframes settle {
+    0% { transform: translateX(-50%) scale(0.9); }
+    100% { transform: translateX(-50%) scale(1); }
+  }
+  .input-box {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border: 2px solid #cfd9de;
+    border-radius: 12px;
+    transition: border-color 0.2s;
+  }
+  .input-box:focus-within {
+    border-color: #8ecdf8;
+  }
+  .input-box textarea {
+    flex: 1;
+    border: none;
+    outline: none;
+    resize: none;
+    font-size: 14px;
+    font-family: inherit;
+    min-height: 40px;
+  }
+  .send-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    background: linear-gradient(135deg, #2ecc71, #1abc9c);
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.1s;
+  }
+  .send-btn:hover { transform: scale(1.05); }
+  .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .controls {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
+  .controls button {
+    padding: 6px 16px;
+    border: 1px solid #cfd9de;
+    border-radius: 8px;
+    background: white;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .controls button:hover { background: #f5f8fa; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="demo-tag"><b>Demo A</b> — 极简线条风格</div>
+  
+  <div class="wolf-stage">
+    <div class="wolf idle" id="wolf">
+      <!-- Front-facing wolf (idle) -->
+      <svg id="wolf-front" viewBox="0 0 100 100" fill="none" stroke="#2c3e50" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Ears -->
+        <path d="M30,35 L35,18 L40,35"/>
+        <path d="M60,35 L65,18 L70,35"/>
+        <!-- Head outline -->
+        <ellipse cx="50" cy="52" rx="22" ry="28"/>
+        <!-- Eyes -->
+        <circle cx="42" cy="48" r="2.5" fill="#2c3e50"/>
+        <circle cx="58" cy="48" r="2.5" fill="#2c3e50"/>
+        <!-- Nose -->
+        <ellipse cx="50" cy="58" rx="3.5" ry="2.5" fill="#2c3e50"/>
+        <!-- Mouth -->
+        <path d="M50,60 Q46,64 42,62"/>
+        <path d="M50,60 Q54,64 58,62"/>
+      </svg>
+      <!-- Side-running wolf -->
+      <svg id="wolf-side" viewBox="0 0 120 80" fill="none" stroke="#2c3e50" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+        <!-- Body -->
+        <ellipse cx="60" cy="40" rx="32" ry="18"/>
+        <!-- Head -->
+        <ellipse cx="88" cy="35" rx="14" ry="11"/>
+        <!-- Ear -->
+        <path d="M92,26 L96,16 L98,28"/>
+        <!-- Eye -->
+        <circle cx="93" cy="33" r="2" fill="#2c3e50"/>
+        <!-- Nose -->
+        <circle cx="100" cy="35" r="2" fill="#2c3e50"/>
+        <!-- Legs -->
+        <path d="M42,54 L38,68 L42,68"/>
+        <path d="M52,54 L56,68 L52,68"/>
+        <path d="M68,54 L64,68 L68,68"/>
+        <path d="M78,54 L82,68 L78,68"/>
+        <!-- Tail -->
+        <path d="M28,40 Q18,35 14,40"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="input-box">
+    <textarea placeholder="输入消息..." id="input"></textarea>
+    <button class="send-btn" id="sendBtn" disabled>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="controls">
+    <button onclick="setState('idle')">空闲</button>
+    <button onclick="setState('running')">运行中</button>
+    <button onclick="setState('done')">完成</button>
+  </div>
+</div>
+
+<script>
+const wolf = document.getElementById('wolf');
+const wolfFront = document.getElementById('wolf-front');
+const wolfSide = document.getElementById('wolf-side');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+
+let currentState = 'idle';
+
+function setState(state) {
+  currentState = state;
+  wolf.className = 'wolf ' + state;
+  
+  if (state === 'running') {
+    wolfFront.style.display = 'none';
+    wolfSide.style.display = 'block';
+  } else {
+    wolfFront.style.display = 'block';
+    wolfSide.style.display = 'none';
+  }
+}
+
+input.addEventListener('input', () => {
+  sendBtn.disabled = !input.value.trim();
+});
+
+sendBtn.addEventListener('click', () => {
+  if (!input.value.trim()) return;
+  setState('running');
+  setTimeout(() => {
+    setState('done');
+    setTimeout(() => setState('idle'), 1000);
+  }, 2000);
+  input.value = '';
+  sendBtn.disabled = true;
+});
+</script>
+</body>
+</html>

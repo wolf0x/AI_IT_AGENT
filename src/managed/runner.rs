@@ -201,10 +201,17 @@ impl ManagedRunner {
         let permission_profile = std::sync::Arc::new(PermissionProfile::ir_containment(contract_id.clone()));
 
         // ── Phase 4: Auditor for independent verification ──
+        // F6: Enable LLM-based semantic verification (deterministic checks always
+        // run first; semantic artifacts additionally get LLM interpretation).
         let auditor = Auditor::new(
             self.tools.clone(),
             self.working_dir.clone(),
             self.workspace_dir.clone(),
+        )
+        .with_llm(
+            self.provider.clone(),
+            model_name.to_string(),
+            8000, // auditor_context_chars budget
         );
 
         // ── Persist initial TaskContract for crash recovery ──
@@ -231,6 +238,7 @@ impl ManagedRunner {
         let tool_timeout_secs = self.tool_timeout_secs;
         let max_tool_retries = self.max_tool_retries;
         let skill_manager = self.skill_manager.clone();
+        let workspace_dir = self.workspace_dir.clone();
         // Move auditor + permission profile into the spawned task for post-Executor
         // verification and pre-authorization consultation (Phase 6).
 
@@ -240,6 +248,14 @@ impl ManagedRunner {
         let cancelled_flag = cancelled.clone();
         tokio::spawn(async move {
             let mut round = if resumed { contract.current_round } else { 0usize };
+            // F10: human-gate tracking — consecutive rounds with no new verified
+            // findings trigger an intervention notice instead of silent looping.
+            let mut stale_rounds: usize = 0;
+            let mut last_finding_count: usize = 0;
+            // F5: per-round archive directory for audit trail.
+            let archive_dir = std::path::Path::new(&workspace_dir)
+                .join("output").join("managed").join(&contract_id);
+            let _ = std::fs::create_dir_all(&archive_dir);
 
             loop {
                 // ── Fix 3: Check cancellation before each round ──
@@ -252,6 +268,24 @@ impl ManagedRunner {
                     // Do NOT persist here — the server already set the USER_STOPPED
                     // marker and persisted the contract. Persisting here could
                     // overwrite the marker with the old blocked_reason.
+                    break;
+                }
+
+                // ── F10: Human gate — repeated rounds with zero new findings ──
+                if contract.verified_findings.len() == last_finding_count {
+                    stale_rounds += 1;
+                } else {
+                    stale_rounds = 0;
+                    last_finding_count = contract.verified_findings.len();
+                }
+                if stale_rounds >= 3 {
+                    info!("[managed:{}] Human gate: {} consecutive rounds without new findings", session, stale_rounds);
+                    let _ = tx.send(Ok(AgentEvent::text(
+                        "\n\n⚠️ *[需要人工介入] 连续 3 轮未产生新的已验证发现。任务已标记 blocked——请检查当前策略或提供新指令。*\n\n",
+                        &contract_id, "manager"
+                    ))).await;
+                    contract.block("No progress after 3 consecutive rounds without new verified findings".to_string());
+                    persist_contract(&memory_store, &contract_id, &session, &contract);
                     break;
                 }
 
@@ -294,6 +328,24 @@ impl ManagedRunner {
                 // Check route before executing
                 match &plan.route {
                     ManagerRoute::Done => {
+                        // F1: Done guard — the completion decision belongs to the
+                        // Auditor, not the Manager. If zero findings have been
+                        // verified, reject the Done claim and feed back a synthetic
+                        // audit note so the Manager continues with concrete work.
+                        if contract.verified_findings.is_empty() {
+                            warn!("[managed:{}] Done guard: Manager claimed Done with zero verified findings — rejected", session);
+                            let _ = tx.send(Ok(AgentEvent::text(
+                                "\n\n*[Audit Guard] Manager 声称任务完成，但当前没有任何已验证发现。\
+                                 完成申请被驳回——请继续安排具体的工具执行工作。*\n\n",
+                                &contract_id, "manager"
+                            ))).await;
+                            contract.manager_notes.push(
+                                "[Audit Guard] Manager claimed Done with zero verified findings. \
+                                 Rejected — continue with concrete tool work.".to_string()
+                            );
+                            round += 1;
+                            continue;
+                        }
                         let _ = tx.send(Ok(AgentEvent::text(
                             "\n\n*[Manager: Task complete]*\n\n",
                             &contract_id, "manager"
@@ -410,9 +462,29 @@ impl ManagedRunner {
                     }
                 }
 
+                // ── F7: Crash-pattern scan ──
+                // Detect common agent/tool crash signatures in Executor output and
+                // escalate to a human-gate instead of silently looping.
+                {
+                    let lower = executor_output.to_lowercase();
+                    let crash_markers = ["traceback", "agent_exit", "connection error", "panic:", "segmentation fault"];
+                    if crash_markers.iter().any(|m| lower.contains(m)) {
+                        warn!("[managed:{}] Crash pattern detected in Executor output (round {})", session, round + 1);
+                        let _ = tx.send(Ok(AgentEvent::text(
+                            "\n\n⚠️ *[崩溃检测] Executor 输出包含崩溃特征（Traceback/Connection error 等）。\
+                              任务已标记 blocked，建议人工介入或更换策略。*\n\n",
+                            &contract_id, "manager"
+                        ))).await;
+                        contract.block(format!("Crash pattern detected in Executor output at round {}", round + 1));
+                        persist_contract(&memory_store, &contract_id, &session, &contract);
+                        break;
+                    }
+                }
+
                 // ── Phase 4: Auditor verification + TaskContract update ──
                 // Verify each expected evidence path; verified artifacts become
-                // findings, failed ones become manager notes.
+                // findings, failed ones become structured open leads + notes.
+                let mut round_audits = Vec::new();
                 if !plan.expected_evidence.trim().is_empty() {
                     for item in plan.expected_evidence.split(|c| c == ',' || c == '\n') {
                         let mut path = item.trim();
@@ -424,11 +496,21 @@ impl ManagedRunner {
                             continue;
                         }
                         let audit = auditor.verify_artifact(path, None).await;
+                        round_audits.push(serde_json::json!({
+                            "path": path,
+                            "verified": audit.verified,
+                            "status": audit.status,
+                            "integrity": audit.integrity,
+                            "evidence": audit.evidence.chars().take(300).collect::<String>(),
+                            "failure_reason": audit.failure_reason,
+                        }));
                         if audit.verified {
                             contract.add_finding(VerifiedFinding {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 title: format!("Evidence collected: {}", path),
                                 severity: "info".to_string(),
+                                status: audit.status.clone(),
+                                integrity_status: audit.integrity.clone(),
                                 evidence_summary: audit.evidence,
                                 evidence_path: Some(path.to_string()),
                                 mitre_technique: None,
@@ -438,6 +520,12 @@ impl ManagedRunner {
                         } else {
                             let reason = audit.failure_reason
                                 .unwrap_or_else(|| "verification failed".to_string());
+                            // F3: failed evidence becomes a structured open lead (pending)
+                            // so the Manager sees an actionable unresolved item.
+                            contract.add_lead(
+                                &format!("Evidence '{}' not verified", path),
+                                &reason,
+                            );
                             contract.manager_notes.push(format!(
                                 "Round {}: evidence '{}' not verified: {}",
                                 round + 1, path, reason
@@ -463,6 +551,30 @@ impl ManagedRunner {
                 // is a count of finished rounds (also drives the Manager/Executor
                 // "Round N" display via current_round + 1).
                 contract.current_round = round + 1;
+
+                // ── F5: Per-round archive (audit trail, re-playable) ──
+                // Each round writes plan / executor output / audit report / state
+                // snapshot to output/managed/<contract>/round_N/. SQLite remains
+                // the recovery source; this directory is the audit archive.
+                {
+                    let round_dir = archive_dir.join(format!("round_{:03}", round + 1));
+                    let _ = std::fs::create_dir_all(&round_dir);
+                    let _ = std::fs::write(
+                        round_dir.join("plan.md"),
+                        format!(
+                            "# Manager Plan (Round {})\n\n**Subtask**: {}\n\n**Success Criteria**: {}\n\n**Expected Evidence**: {}\n\n**Route**: {:?}\n\n**Channel**: {}\n",
+                            round + 1, plan.subtask, plan.success_criteria, plan.expected_evidence, plan.route, plan.channel
+                        ),
+                    );
+                    let _ = std::fs::write(round_dir.join("executor_output.md"), &executor_output);
+                    let _ = std::fs::write(
+                        round_dir.join("audit.json"),
+                        serde_json::to_string_pretty(&round_audits).unwrap_or_else(|_| "[]".to_string()),
+                    );
+                    if let Ok(state_json) = contract.to_json() {
+                        let _ = std::fs::write(round_dir.join("state.json"), &state_json);
+                    }
+                }
 
                 // ── Persist TaskContract after each round (crash recovery) ──
                 persist_contract(&memory_store, &contract_id, &session, &contract);

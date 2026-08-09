@@ -45,6 +45,12 @@ pub struct VerifiedFinding {
     pub title: String,
     /// Severity: critical, high, medium, low, info.
     pub severity: String,
+    /// Audit status: complete / incomplete / blocked (default: complete).
+    #[serde(default = "default_complete")]
+    pub status: String,
+    /// Evidence integrity: clean / suspect / violation (default: clean).
+    #[serde(default = "default_clean")]
+    pub integrity_status: String,
     /// Evidence summary (not full content — reference files for details).
     pub evidence_summary: String,
     /// Path to evidence file in workspace (if applicable).
@@ -56,6 +62,9 @@ pub struct VerifiedFinding {
     /// Which Manager round verified this.
     pub round_index: usize,
 }
+
+fn default_complete() -> String { "complete".to_string() }
+fn default_clean() -> String { "clean".to_string() }
 
 /// A verified action — containment/eradication step confirmed by Auditor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +227,19 @@ impl TaskContract {
     pub fn add_finding(&mut self, finding: VerifiedFinding) {
         self.verified_findings.push(finding);
         self.updated_at = Utc::now();
+    }
+
+    /// Add an open lead (unresolved item awaiting investigation).
+    /// Deduplicates by description so repeated failures don't stack identical leads.
+    pub fn add_lead(&mut self, description: &str, context: &str) {
+        if !self.open_leads.iter().any(|l| l.description == description) {
+            self.open_leads.push(OpenLead {
+                description: description.to_string(),
+                status: "pending".to_string(),
+                context: context.to_string(),
+            });
+            self.updated_at = Utc::now();
+        }
     }
 
     /// Add a verified action.

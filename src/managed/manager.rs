@@ -27,6 +27,8 @@ pub struct ManagerPlan {
     pub route: ManagerRoute,
     /// The IR phase the NEXT subtask belongs to (forward-only progression).
     pub phase: Option<IrPhase>,
+    /// Execution channel: cli / gui / ask (default: cli).
+    pub channel: String,
 }
 
 /// What happens after the Executor completes a subtask.
@@ -84,6 +86,15 @@ CRITICAL — Anti-Stagnation Rules:
     b. Set Route = "blocked:No progress after N rounds, need human guidance" 
 13. If the same evidence path failed verification, do NOT retry it — try a different approach or acknowledge the limitation.
 14. The Subtask description MUST name at least one concrete tool. Generic descriptions like "investigate further" are not acceptable.
+
+CRITICAL — Evidence Discipline Rules:
+15. EVERY fact you reference from Verified Findings MUST cite its source round (round_index). If a fact has no verified evidence behind it, explicitly write "待审计" (pending audit) — never present unverified claims as established fact.
+16. NEVER treat the Executor's own output (manager notes, self-reports) as verified fact. Only entries in Verified Findings / Verified Actions have passed Auditor verification — everything else is unconfirmed.
+17. Each subtask SHOULD declare its execution channel:
+    - Channel: cli — the Executor runs tools/commands on the system (default)
+    - Channel: gui — the task requires GUI interaction (browser, desktop)
+    - Channel: ask — the task needs human input before it can proceed
+    If no channel is specified, cli is assumed.
 
 Tool Reference — Use this to pick the RIGHT tool for the job:
 
@@ -175,11 +186,21 @@ fn manager_user_prompt(contract: &TaskContract) -> String {
     }
 
     if !contract.manager_notes.is_empty() {
-        prompt.push_str("# Manager Notes\n");
-        for note in &contract.manager_notes {
-            prompt.push_str(&format!("- {}\n", note));
+        // F2: Manager must NOT see the Executor's raw trajectory. Notes that
+        // are "Round N: <executor output summary>" are filtered out — only
+        // audit guard feedback, user instructions, and pre-expert context pass.
+        let manager_notes: Vec<&String> = contract.manager_notes.iter()
+            .filter(|n| {
+                !n.starts_with("Round ") || n.starts_with("[Audit Guard]") || n.starts_with("[User Resume]") || n.starts_with("[Pre-Expert")
+            })
+            .collect();
+        if !manager_notes.is_empty() {
+            prompt.push_str("# Manager Notes\n");
+            for note in manager_notes {
+                prompt.push_str(&format!("- {}\n", note));
+            }
+            prompt.push('\n');
         }
-        prompt.push('\n');
     }
 
     // ── Anti-stagnation hint: show recent round summaries so the Manager
@@ -230,6 +251,7 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
     let mut expected_evidence = String::new();
     let mut route = ManagerRoute::Continue;
     let mut phase: Option<IrPhase> = None;
+    let mut channel = "cli".to_string();
 
     let mut current_section = "";
 
@@ -262,6 +284,12 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
                 route = ManagerRoute::Invalid(format!("Unknown route: {}", route_str));
             }
             current_section = "";
+        } else if trimmed.starts_with("Channel:") {
+            let ch = trimmed.trim_start_matches("Channel:").trim().to_lowercase();
+            channel = if ch.starts_with("gui") { "gui".to_string() }
+                else if ch.starts_with("ask") { "ask".to_string() }
+                else { "cli".to_string() };
+            current_section = "";
         } else if !trimmed.is_empty() && current_section == "subtask" {
             subtask.push(' ');
             subtask.push_str(trimmed);
@@ -285,6 +313,7 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
         expected_evidence,
         route,
         phase,
+        channel,
     }
 }
 

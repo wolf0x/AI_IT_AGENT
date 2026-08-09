@@ -143,6 +143,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/output/list", get(output_list_handler))
         .route("/api/output/download/{filename}", get(output_download_handler))
         .route("/api/output/open", post(output_open_handler))
+        .route("/api/managed/runs", get(managed_runs_handler))
         .route("/api/todos", get(todos_handler))
         .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
@@ -195,6 +196,73 @@ async fn workspace_file_handler(State(state): State<Arc<AppState>>, Path(path): 
 }
 
 /// List the most recent output artifacts in workspace/output/ (max 5).
+/// GET /api/managed/runs — list Expert-mode run archives (F9 Dashboard).
+/// Scans output/managed/<contract_id>/round_NN/ for plan / audit / state files
+/// and returns a structured per-round view for the Runs dashboard.
+async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let managed_dir = std::path::Path::new(&state.workspace_dir)
+        .join("output").join("managed");
+
+    let mut runs: Vec<Value> = Vec::new();
+    if let Ok(mut contracts) = tokio::fs::read_dir(&managed_dir).await {
+        while let Ok(Some(entry)) = contracts.next_entry().await {
+            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            let contract_id = entry.file_name().to_string_lossy().to_string();
+            let contract_dir = entry.path();
+
+            let mut rounds: Vec<Value> = Vec::new();
+            if let Ok(mut round_entries) = tokio::fs::read_dir(&contract_dir).await {
+                let mut round_dirs: Vec<(u32, std::path::PathBuf)> = Vec::new();
+                while let Ok(Some(re)) = round_entries.next_entry().await {
+                    let name = re.file_name().to_string_lossy().to_string();
+                    if let Some(round_str) = name.strip_prefix("round_") {
+                        if let Ok(n) = round_str.parse::<u32>() {
+                            round_dirs.push((n, re.path()));
+                        }
+                    }
+                }
+                round_dirs.sort_by_key(|(n, _)| *n);
+                for (n, dir) in round_dirs {
+                    let plan = tokio::fs::read_to_string(dir.join("plan.md")).await
+                        .unwrap_or_default()
+                        .chars().take(600).collect::<String>();
+                    let audit = tokio::fs::read_to_string(dir.join("audit.json")).await
+                        .unwrap_or_else(|_| "[]".to_string());
+                    // Parse state.json for phase + findings count (best-effort).
+                    let mut phase = String::new();
+                    let mut findings = 0usize;
+                    if let Ok(state_str) = tokio::fs::read_to_string(dir.join("state.json")).await {
+                        if let Ok(state) = serde_json::from_str::<Value>(&state_str) {
+                            phase = state["phase"].as_str().unwrap_or("").to_string();
+                            findings = state["verified_findings"]
+                                .as_array().map(|a| a.len()).unwrap_or(0);
+                        }
+                    }
+                    rounds.push(json!({
+                        "round": n,
+                        "plan": plan,
+                        "audit": audit,
+                        "phase": phase,
+                        "findings_count": findings,
+                    }));
+                }
+            }
+
+            runs.push(json!({
+                "contract_id": contract_id,
+                "round_count": rounds.len(),
+                "rounds": rounds,
+            }));
+        }
+    }
+    // Newest contracts first.
+    runs.sort_by(|a, b| b["round_count"].as_u64().unwrap_or(0).cmp(&a["round_count"].as_u64().unwrap_or(0)));
+    Json(json!({ "runs": runs }))
+}
+
 async fn output_list_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let output_dir = std::path::Path::new(&state.workspace_dir).join("output");
 

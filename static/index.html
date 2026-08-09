@@ -497,6 +497,24 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .collapse-icon{font-size:10px;transition:transform .3s;display:inline-block}
 .collapsible.expanded .collapse-icon{transform:rotate(180deg)}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+/* Expert Runs (F9 Dashboard) */
+.managed-runs-list{display:flex;flex-direction:column;gap:12px;margin-top:8px}
+.run-card{border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;background:white}
+.run-card-hdr{padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.run-card-hdr .cid{font-family:var(--mono);font-size:11px;color:var(--t3)}
+.run-card-hdr .badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}
+.badge-ok{background:#dcfce7;color:#16a34a}
+.badge-info{background:#dbeafe;color:#2563eb}
+.badge-warn{background:#fef3c7;color:#d97706}
+.round-list{display:flex;flex-direction:column}
+.round-item{border-bottom:1px solid #f1f5f9;padding:10px 14px;display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:8px;align-items:start}
+.round-item:last-child{border-bottom:none}
+.round-num{font-weight:700;color:var(--t1);font-size:12px;padding-top:2px}
+.round-col{font-size:11px;min-width:0}
+.round-col b{display:block;font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.round-col .rc-txt{color:#475569;white-space:pre-wrap;word-break:break-all;max-height:60px;overflow:hidden;font-size:11px}
+.round-col .rc-status{font-size:10px;font-weight:600}
+.rc-ok{color:#16a34a}.rc-fail{color:#dc2626}.rc-block{color:#d97706}
 
 /* Modern page style (Dashboard-consistent) for Skills/MCP/Tools/CRON */
 .modern-page{background:linear-gradient(135deg,#f5f7fa 0%,#e8ecf4 50%,#f0f4f8 100%)}
@@ -890,6 +908,16 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
               <span class="action-icon">&#127919;</span>
               <span class="action-text">Full Hunt</span>
             </button>
+          </div>
+        </div>
+
+        <!-- Expert Runs (F9 Dashboard) -->
+        <div class="dash-section">
+          <div class="dash-section-header">
+            <h3>&#128270; Expert Runs <button class="btn btn-s" style="margin-left:8px;padding:2px 10px;font-size:11px" onclick="loadManagedRuns()">Refresh</button></h3>
+          </div>
+          <div id="managedRunsList" class="managed-runs-list">
+            <span style="color:var(--t3);font-size:12px">No Expert runs yet — run an Expert mode task to see per-round audit trails.</span>
           </div>
         </div>
 
@@ -2659,10 +2687,63 @@ document.addEventListener('DOMContentLoaded',()=>{
 let dashStartTime=Date.now();
 let dashRefreshTimer=null;
 
+// F9: Load Expert-mode run archives (per-round audit trail).
+async function loadManagedRuns(){
+  const list=document.getElementById('managedRunsList');
+  if(!list)return;
+  list.innerHTML='<span style="color:var(--t3);font-size:12px">Loading...</span>';
+  try{
+    const r=await fetch('/api/managed/runs');
+    const d=await r.json();
+    const runs=d.runs||[];
+    if(!runs.length){
+      list.innerHTML='<span style="color:var(--t3);font-size:12px">No Expert runs yet — run an Expert mode task to see per-round audit trails.</span>';
+      return;
+    }
+    list.innerHTML='';
+    runs.forEach(run=>{
+      const card=document.createElement('div');card.className='run-card';
+      let lastStatus='info',lastLabel='RUNNING';
+      const lastRound=run.rounds&&run.rounds.length?run.rounds[run.rounds.length-1]:null;
+      if(lastRound){
+        if(lastRound.phase==='blocked'){lastStatus='warn';lastLabel='BLOCKED';}
+        else if(lastRound.phase==='completed'){lastStatus='ok';lastLabel='COMPLETED';}
+        else if(lastRound.findings_count>0){lastStatus='ok';lastLabel='PROGRESS';}
+      }
+      let roundsHtml='';
+      (run.rounds||[]).forEach(rd=>{
+        let auditArr=[];
+        try{auditArr=JSON.parse(rd.audit||'[]');}catch(e){}
+        const auditTxt=auditArr.map(a=>{
+          const st=a.verified?'✓':'✗';
+          const cls=a.verified?'rc-ok':'rc-fail';
+          return '<span class="rc-status '+cls+'">'+st+' '+esc(a.path||'')+'</span>';
+        }).join('<br>')||'<span style="color:var(--t3)">—</span>';
+        const planTxt=(rd.plan||'').split('\n').filter(l=>l.includes('Subtask')).map(l=>esc(l.trim())).join('<br>')||esc((rd.plan||'').slice(0,80));
+        roundsHtml+='<div class="round-item">'+
+          '<div class="round-num">R'+rd.round+'</div>'+
+          '<div class="round-col"><b>Plan</b><div class="rc-txt">'+planTxt+'</div></div>'+
+          '<div class="round-col"><b>Audit</b>'+auditTxt+'</div>'+
+          '<div class="round-col"><b>State</b><div class="rc-txt">phase: '+esc(rd.phase||'')+' · findings: '+rd.findings_count+'</div></div>'+
+          '</div>';
+      });
+      card.innerHTML='<div class="run-card-hdr">'+
+        '<span class="cid">'+esc(run.contract_id.slice(0,8))+'</span>'+
+        '<span class="badge badge-'+lastStatus+'">'+lastLabel+'</span>'+
+        '<span style="font-size:11px;color:var(--t3)">'+run.round_count+' round(s)</span>'+
+        '</div><div class="round-list">'+roundsHtml+'</div>';
+      list.appendChild(card);
+    });
+  }catch(e){
+    list.innerHTML='<span style="color:var(--red);font-size:12px">Failed to load runs: '+esc(String(e))+'</span>';
+  }
+}
+
 async function loadDashboard(){
   loadSystemStatus();
   loadTodayUsage();
   loadTokenUsage();
+  loadManagedRuns();
   // Start periodic refresh for uptime
   if(dashRefreshTimer)clearInterval(dashRefreshTimer);
   dashRefreshTimer=setInterval(()=>{

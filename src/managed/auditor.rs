@@ -27,14 +27,19 @@
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use crate::model::openai::OpenAiProvider;
 use crate::tool::ToolRegistry;
 use crate::context::ToolContext;
 
 /// Result of an audit verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditResult {
-    /// Whether the verification passed.
+    /// Whether the verification passed (complete == verified true).
     pub verified: bool,
+    /// Audit status: complete / incomplete / blocked.
+    pub status: String,
+    /// Evidence integrity: clean / suspect / violation.
+    pub integrity: String,
     /// Description of what was verified.
     pub description: String,
     /// Evidence from the verification (e.g., process list output).
@@ -43,11 +48,56 @@ pub struct AuditResult {
     pub failure_reason: Option<String>,
 }
 
+impl AuditResult {
+    pub fn ok(description: &str, evidence: String) -> Self {
+        Self {
+            verified: true,
+            status: "complete".to_string(),
+            integrity: "clean".to_string(),
+            description: description.to_string(),
+            evidence,
+            failure_reason: None,
+        }
+    }
+
+    pub fn fail(description: &str, evidence: String, reason: &str) -> Self {
+        Self {
+            verified: false,
+            status: "incomplete".to_string(),
+            integrity: "suspect".to_string(),
+            description: description.to_string(),
+            evidence,
+            failure_reason: Some(reason.to_string()),
+        }
+    }
+
+    pub fn blocked(description: &str, evidence: String, reason: &str) -> Self {
+        Self {
+            verified: false,
+            status: "blocked".to_string(),
+            integrity: "violation".to_string(),
+            description: description.to_string(),
+            evidence,
+            failure_reason: Some(reason.to_string()),
+        }
+    }
+}
+
 /// Auditor for managed task execution.
+///
+/// Hybrid design:
+/// - Deterministic layer (code, zero token): file existence, process checks.
+/// - Semantic layer (LLM, optional): log interpretation, test results, evidence chains.
 pub struct Auditor {
     tools: std::sync::Arc<tokio::sync::RwLock<ToolRegistry>>,
     working_dir: String,
     workspace_dir: String,
+    /// LLM provider for semantic verification (None = code-only mode).
+    provider: Option<std::sync::Arc<OpenAiProvider>>,
+    /// Model used for semantic verification.
+    auditor_model: String,
+    /// Max characters of evidence fed to the LLM (budget control).
+    auditor_context_chars: usize,
 }
 
 impl Auditor {
@@ -61,7 +111,18 @@ impl Auditor {
             tools,
             working_dir,
             workspace_dir,
+            provider: None,
+            auditor_model: String::new(),
+            auditor_context_chars: 8000,
         }
+    }
+
+    /// Enable LLM-based semantic verification.
+    pub fn with_llm(mut self, provider: std::sync::Arc<OpenAiProvider>, model: String, context_chars: usize) -> Self {
+        self.provider = Some(provider);
+        self.auditor_model = model;
+        self.auditor_context_chars = context_chars.max(1000);
+        self
     }
 
     /// Verify a containment/eradication action.
@@ -90,15 +151,12 @@ impl Auditor {
         }
 
         // Default: cannot verify automatically
-        AuditResult {
-            verified: false,
-            description: action_desc.to_string(),
-            evidence: String::new(),
-            failure_reason: Some("No automatic verification method for this action type".to_string()),
-        }
+        AuditResult::fail(action_desc, String::new(), "No automatic verification method for this action type")
     }
 
     /// Verify an artifact (file) exists and is valid.
+    /// If the file is a log/test-output artifact and an LLM is configured,
+    /// additionally run semantic verification against the expected criteria.
     pub async fn verify_artifact(&self, path: &str, expected_content: Option<&str>) -> AuditResult {
         info!("[auditor] Verifying artifact: {}", path);
 
@@ -112,23 +170,21 @@ impl Auditor {
         let metadata = match tokio::fs::metadata(&full_path).await {
             Ok(m) => m,
             Err(e) => {
-                return AuditResult {
-                    verified: false,
-                    description: format!("Artifact verification: {}", path),
-                    evidence: String::new(),
-                    failure_reason: Some(format!("File not found: {}", e)),
-                };
+                return AuditResult::fail(
+                    &format!("Artifact verification: {}", path),
+                    String::new(),
+                    &format!("File not found: {}", e),
+                );
             }
         };
 
         // Check non-empty
         if metadata.len() == 0 {
-            return AuditResult {
-                verified: false,
-                description: format!("Artifact verification: {}", path),
-                evidence: String::new(),
-                failure_reason: Some("File is empty".to_string()),
-            };
+            return AuditResult::fail(
+                &format!("Artifact verification: {}", path),
+                String::new(),
+                "File is empty",
+            );
         }
 
         // Check content if expected
@@ -136,30 +192,117 @@ impl Auditor {
             match tokio::fs::read_to_string(&full_path).await {
                 Ok(content) => {
                     if !content.contains(expected) {
-                        return AuditResult {
-                            verified: false,
-                            description: format!("Artifact verification: {}", path),
-                            evidence: format!("File size: {} bytes", metadata.len()),
-                            failure_reason: Some(format!("Expected content '{}' not found", expected)),
-                        };
+                        return AuditResult::fail(
+                            &format!("Artifact verification: {}", path),
+                            format!("File size: {} bytes", metadata.len()),
+                            &format!("Expected content '{}' not found", expected),
+                        );
                     }
                 }
                 Err(e) => {
-                    return AuditResult {
-                        verified: false,
-                        description: format!("Artifact verification: {}", path),
-                        evidence: String::new(),
-                        failure_reason: Some(format!("Cannot read file: {}", e)),
-                    };
+                    return AuditResult::fail(
+                        &format!("Artifact verification: {}", path),
+                        String::new(),
+                        &format!("Cannot read file: {}", e),
+                    );
                 }
             }
         }
 
+        // Deterministic layer passed. Now try semantic verification if an LLM is
+        // configured AND the artifact looks like a semantic artifact (log/test/
+        // analysis output larger than a bare marker file).
+        let is_semantic = matches!(
+            path.to_lowercase().rsplit('.').next().unwrap_or(""),
+            "log" | "txt" | "md" | "json" | "csv" | "out"
+        );
+        if is_semantic && self.provider.is_some() {
+            if let Ok(content) = tokio::fs::read_to_string(&full_path).await {
+                let criteria = expected_content.unwrap_or("the artifact is valid and complete");
+                return self.verify_semantic(path, &content, criteria).await;
+            }
+        }
+
+        AuditResult::ok(&format!("Artifact verified: {}", path), format!("File exists, {} bytes", metadata.len()))
+    }
+
+    /// LLM-based semantic verification: interprets real file content against
+    /// the Manager's success criteria. Never fabricates evidence — it only
+    /// receives actual file content and must state insufficiency explicitly.
+    pub async fn verify_semantic(&self, path: &str, content: &str, criteria: &str) -> AuditResult {
+        let Some(provider) = &self.provider else {
+            return AuditResult::fail(path, String::new(), "LLM verification not configured");
+        };
+
+        // Budget control: truncate evidence to auditor_context_chars.
+        let truncated: String = content.chars().take(self.auditor_context_chars).collect();
+        let truncated_note = if truncated.len() < content.len() {
+            format!("\n[truncated from {} chars]", content.len())
+        } else {
+            String::new()
+        };
+
+        let system = "You are the Auditor role in a long-horizon incident response task.\n\
+            ROLE: READ-ONLY verification. You never modify anything.\n\
+            HARD RULES:\n\
+            1. You receive ONLY real file content — never accept agent claims.\n\
+            2. Verify the evidence against the success criteria.\n\
+            3. Output EXACTLY this format, nothing else:\n\
+               status: complete|incomplete|blocked\n\
+               integrity: clean|suspect|violation\n\
+               reason: <one sentence>\n\
+            4. NEVER fabricate evidence. If the provided data is insufficient, say so explicitly.\n\
+            5. If evidence contradicts the claim, integrity = violation.";
+        let user = format!(
+            "Evidence file: {}\n\nSuccess criteria: {}\n\nEvidence content (truncated to {} chars):\n{}{}\n\nOutput the verdict in the required format.",
+            path, criteria, self.auditor_context_chars, truncated, truncated_note
+        );
+
+        let messages = vec![
+            crate::model::ChatMessage::system(system),
+            crate::model::ChatMessage::user(&user),
+        ];
+
+        let output = match provider.chat_simple(&self.auditor_model, &messages).await {
+            Ok(o) => o,
+            Err(e) => {
+                return AuditResult::blocked(
+                    &format!("Semantic verification: {}", path),
+                    String::new(),
+                    &format!("LLM verification failed: {}", e),
+                );
+            }
+        };
+
+        // Parse fixed format: status / integrity / reason lines.
+        let lower = output.to_lowercase();
+        let status = if lower.contains("status: complete") || lower.contains("status:complete") {
+            "complete"
+        } else if lower.contains("status: blocked") || lower.contains("status:blocked") {
+            "blocked"
+        } else {
+            "incomplete"
+        };
+        let integrity = if lower.contains("integrity: clean") || lower.contains("integrity:clean") {
+            "clean"
+        } else if lower.contains("integrity: violation") || lower.contains("integrity:violation") {
+            "violation"
+        } else {
+            "suspect"
+        };
+        let reason = output.lines()
+            .find(|l| l.trim_start().starts_with("reason:"))
+            .map(|l| l.trim_start().trim_start_matches("reason:").trim().to_string())
+            .unwrap_or_else(|| "No reason provided".to_string());
+
+        let verified = status == "complete" && integrity != "violation";
         AuditResult {
-            verified: true,
-            description: format!("Artifact verified: {}", path),
-            evidence: format!("File exists, {} bytes", metadata.len()),
-            failure_reason: None,
+            verified,
+            status: status.to_string(),
+            integrity: integrity.to_string(),
+            description: format!("Semantic verification: {}", path),
+            evidence: truncated.chars().take(500).collect(),
+            failure_reason: if verified { None } else { Some(reason) },
         }
     }
 
@@ -170,12 +313,7 @@ impl Auditor {
         let process_name = extract_process_name(action_desc);
 
         if process_name.is_empty() {
-            return AuditResult {
-                verified: false,
-                description: action_desc.to_string(),
-                evidence: String::new(),
-                failure_reason: Some("Could not extract process name from action description".to_string()),
-            };
+            return AuditResult::fail(action_desc, String::new(), "Could not extract process name from action description");
         }
 
         // Run ir_process to check if process is still running
@@ -192,60 +330,37 @@ impl Auditor {
                     let result_str = result.to_string();
                     // Check if process is still in the list
                     if result_str.to_lowercase().contains(&process_name.to_lowercase()) {
-                        AuditResult {
-                            verified: false,
-                            description: action_desc.to_string(),
-                            evidence: result_str.chars().take(500).collect(),
-                            failure_reason: Some(format!("Process '{}' still running", process_name)),
-                        }
+                        AuditResult::fail(
+                            action_desc,
+                            result_str.chars().take(500).collect(),
+                            &format!("Process '{}' still running", process_name),
+                        )
                     } else {
-                        AuditResult {
-                            verified: true,
-                            description: action_desc.to_string(),
-                            evidence: format!("Process '{}' not found in process list", process_name),
-                            failure_reason: None,
-                        }
+                        AuditResult::ok(
+                            action_desc,
+                            format!("Process '{}' not found in process list", process_name),
+                        )
                     }
                 }
                 Err(e) => {
-                    AuditResult {
-                        verified: false,
-                        description: action_desc.to_string(),
-                        evidence: String::new(),
-                        failure_reason: Some(format!("ir_process failed: {}", e)),
-                    }
+                    AuditResult::fail(action_desc, String::new(), &format!("ir_process failed: {}", e))
                 }
             }
         } else {
-            AuditResult {
-                verified: false,
-                description: action_desc.to_string(),
-                evidence: String::new(),
-                failure_reason: Some("ir_process tool not available".to_string()),
-            }
+            AuditResult::fail(action_desc, String::new(), "ir_process tool not available")
         }
     }
 
     /// Verify a service is stopped.
     async fn verify_service_stopped(&self, action_desc: &str) -> AuditResult {
         // Simplified — would need to extract service name and check status
-        AuditResult {
-            verified: false,
-            description: action_desc.to_string(),
-            evidence: String::new(),
-            failure_reason: Some("Service verification not yet implemented".to_string()),
-        }
+        AuditResult::fail(action_desc, String::new(), "Service verification not yet implemented")
     }
 
     /// Verify persistence was removed.
     async fn verify_persistence_removed(&self, action_desc: &str) -> AuditResult {
         // Simplified — would need to re-run ir_persistence and check
-        AuditResult {
-            verified: false,
-            description: action_desc.to_string(),
-            evidence: String::new(),
-            failure_reason: Some("Persistence verification not yet implemented".to_string()),
-        }
+        AuditResult::fail(action_desc, String::new(), "Persistence verification not yet implemented")
     }
 }
 
