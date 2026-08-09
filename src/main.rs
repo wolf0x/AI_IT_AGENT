@@ -393,6 +393,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         crate::tool::computer_use::register_computer_use_tools(&mut reg);
         info!("Computer Use tools registered (enabled in config)");
     }
+    
+    // Share Blackoard switch (default: false)
+    let share_blackboard_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Build app state
     let state = Arc::new(AppState {
@@ -425,6 +428,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_dir,
         provider: provider_for_state,
         computer_use_enabled,
+        share_blackboard_enabled,
         primary_model: config.agent.primary_model.clone(),
         fallback_model: config.agent.fallback_model.clone(),
         timezone_offset: config.agent.timezone_offset,

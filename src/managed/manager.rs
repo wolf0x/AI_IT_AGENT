@@ -98,6 +98,7 @@ CRITICAL — Evidence Discipline Rules:
     - Channel: gui — the task requires GUI interaction (browser, desktop)
     - Channel: ask — the task needs human input before it can proceed
     If no channel is specified, cli is assumed.
+18. **MANDATORY OUTPUT LOCATION**: ALL artifacts, evidence files, reports, and any other outputs MUST be saved under the `workspace/output/` directory. NEVER create files in C:\, D:\, or any other location outside workspace/output/. The Expected Evidence paths MUST always be relative to workspace/output/ (e.g., "output/scan_result.json", not "C:\evidence\scan_result.json").
 
 Tool Reference — Use this to pick the RIGHT tool for the job:
 

@@ -216,7 +216,8 @@ impl TaskContract {
 
         brief.push_str("## Instructions\n");
         brief.push_str("- Execute this subtask using available tools.\n");
-        brief.push_str("- Save detailed evidence to files in workspace/output/ and reference paths in your response.\n");
+        brief.push_str("- **MANDATORY**: Save ALL artifacts, evidence files, reports, and outputs to `workspace/output/` directory. NEVER save files to C:\\, D:\\, or any location outside workspace/output/.\n");
+        brief.push_str("- Reference the saved file paths in your response (e.g., 'Saved to output/scan_result.json').\n");
         brief.push_str("- Focus ONLY on this subtask. Do not repeat work from verified findings.\n");
         brief.push_str("- If you encounter a timeout, use partial results and narrow scope.\n");
 

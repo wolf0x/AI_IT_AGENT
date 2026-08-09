@@ -157,8 +157,33 @@ impl Auditor {
     /// Verify an artifact (file) exists and is valid.
     /// If the file is a log/test-output artifact and an LLM is configured,
     /// additionally run semantic verification against the expected criteria.
+    /// 
+    /// **MANDATORY**: All artifacts MUST be saved under workspace/output/. 
+    /// Paths outside workspace/output/ will be rejected.
     pub async fn verify_artifact(&self, path: &str, expected_content: Option<&str>) -> AuditResult {
         info!("[auditor] Verifying artifact: {}", path);
+
+        // **MANDATORY CHECK**: Ensure path is under workspace/output/
+        let normalized_path = path.replace('\\', "/").to_lowercase();
+        let workspace_output = format!("{}/output/", self.workspace_dir.replace('\\', "/")).to_lowercase();
+        
+        // Check if path is relative (starts with "output/" or "workspace/output/")
+        // or absolute and under workspace_dir/output/
+        let is_valid_path = if std::path::Path::new(path).is_absolute() {
+            // Absolute path: must be under workspace_dir/output/
+            normalized_path.starts_with(&workspace_output)
+        } else {
+            // Relative path: must start with "output/" or be just a filename (will be prefixed with workspace_dir)
+            normalized_path.starts_with("output/") || normalized_path.starts_with("workspace/output/") || !normalized_path.contains('/')
+        };
+        
+        if !is_valid_path {
+            return AuditResult::fail(
+                path,
+                String::new(),
+                &format!("VIOLATION: Artifact path '{}' is NOT under workspace/output/. ALL artifacts MUST be saved under workspace/output/ directory. NEVER save to C:\\, D:\\, or other locations.", path)
+            );
+        }
 
         let full_path = if std::path::Path::new(path).is_absolute() {
             path.to_string()

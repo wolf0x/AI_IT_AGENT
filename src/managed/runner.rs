@@ -62,6 +62,8 @@ pub struct ManagedRunner {
     /// Computer Use availability flag (shared with server; used for GUI-channel
     /// auto-enable with a user opt-in window).
     computer_use_enabled: Arc<AtomicBool>,
+    /// Whether to share Instant mode context with Expert mode via Blackboard.
+    share_blackboard_enabled: Arc<AtomicBool>,
 }
 
 impl ManagedRunner {
@@ -82,6 +84,7 @@ impl ManagedRunner {
         max_tool_retries: usize,
         skill_manager: Arc<SkillManager>,
         computer_use_enabled: Arc<AtomicBool>,
+        share_blackboard_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
             inner,
@@ -99,6 +102,7 @@ impl ManagedRunner {
             max_tool_retries,
             skill_manager,
             computer_use_enabled,
+            share_blackboard_enabled,
         }
     }
 
@@ -176,19 +180,25 @@ impl ManagedRunner {
 
         // ── Seed TaskContract from Blackboard (Instant-mode context) ──
         // Only for NEW contracts — resumed contracts already have this context.
-        if !resumed {
+        // Note: We use the current user_message as original_task, NOT the Blackboard's
+        // original_task (which may be stale from previous Instant mode conversations).
+        // Blackboard context is added as manager_notes for additional context only.
+        // Only inject if share_blackboard_enabled is true.
+        if !resumed && self.share_blackboard_enabled.load(std::sync::atomic::Ordering::SeqCst) {
             if let Ok(Some(json)) = self.memory_store.load_blackboard(session_id) {
                 if let Ok(bb) = crate::blackboard::Blackboard::from_json(&json) {
                     let entries = bb.get_entries_by_source("instant");
                     if !entries.is_empty() {
-                        let original_task = bb.get_original_task().unwrap_or(user_message);
                         let context_summary = bb.to_context_string(Some("instant"));
                         if !context_summary.trim().is_empty() {
                             info!("[managed:{}] Seeded TaskContract from Blackboard ({} entries, {} chars)",
                                   session_id, entries.len(), context_summary.len());
-                            contract.original_task = original_task.to_string();
+                            // DO NOT overwrite original_task — keep the current user_message
+                            // contract.original_task = original_task.to_string(); // REMOVED
+                            // Add clear warning that this context may not be relevant
                             contract.manager_notes.push(format!(
-                                "[Pre-Expert Mode Work Summary]\n{}", context_summary
+                                "[Pre-Expert Mode Work History — WARNING: This is Instant mode history, may NOT be relevant to current task. Use your own judgment.]\n{}", 
+                                context_summary
                             ));
                         }
                     }

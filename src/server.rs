@@ -84,6 +84,8 @@ pub struct AppState {
     pub provider: Arc<OpenAiProvider>,
     /// Whether Computer Use (GUI control) tools are enabled
     pub computer_use_enabled: Arc<AtomicBool>,
+    /// Whether to share Instant mode context with Expert mode via Blackboard
+    pub share_blackboard_enabled: Arc<AtomicBool>,
     /// Primary model name (from config.toml)
     pub primary_model: Option<String>,
     /// Fallback model name (from config.toml)
@@ -137,6 +139,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/checkpoints", get(checkpoints_list_handler))
         .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
         .route("/api/settings/computer_use", post(computer_use_toggle_handler))
+        .route("/api/settings/share_blackboard", post(share_blackboard_toggle_handler))
         .route("/api/settings/agent", post(agent_settings_save_handler))
         .route("/api/settings/agent/extended", post(agent_settings_extended_save_handler))
         .route("/api/settings/agent/expert", post(agent_settings_expert_save_handler))
@@ -221,6 +224,7 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
                 .unwrap_or(0);
 
             let mut rounds: Vec<Value> = Vec::new();
+            let mut total_rounds = 0usize;
             if let Ok(mut round_entries) = tokio::fs::read_dir(&contract_dir).await {
                 let mut round_dirs: Vec<(u32, std::path::PathBuf)> = Vec::new();
                 while let Ok(Some(re)) = round_entries.next_entry().await {
@@ -232,7 +236,10 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
                     }
                 }
                 round_dirs.sort_by_key(|(n, _)| *n);
-                for (n, dir) in round_dirs {
+                total_rounds = round_dirs.len();
+                // Only process the last 5 rounds for display (others available via pagination)
+                let display_rounds: Vec<_> = round_dirs.into_iter().rev().take(5).rev().collect();
+                for (n, dir) in display_rounds {
                     let plan = tokio::fs::read_to_string(dir.join("plan.md")).await
                         .unwrap_or_default()
                         .chars().take(600).collect::<String>();
@@ -285,6 +292,7 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
             runs.push((mtime, json!({
                 "contract_id": contract_id,
                 "round_count": rounds.len(),
+                "total_rounds": total_rounds,
                 "rounds": rounds,
             })));
         }
@@ -1145,6 +1153,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                     state.expert_max_tool_retries,
                                     state.skill_manager.clone(),
                                     state.computer_use_enabled.clone(),
+                                    state.share_blackboard_enabled.clone(),
                                 );
                                 managed_runner.run(
                                     &content, &session_id, &model, &managed_scope,
@@ -1314,44 +1323,49 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                                     blackboard = existing;
                                                 }
                                             }
-                                            // Write original task entry (only once, from first user message)
-                                            if blackboard.get_original_task().is_none() {
-                                                let first_user = history.iter()
-                                                    .find(|m| m.role == "user")
-                                                    .and_then(|m| m.content_as_text())
-                                                    .unwrap_or_default();
-                                                if !first_user.trim().is_empty() {
-                                                    let summary: String = first_user.chars().take(100).collect();
-                                                    blackboard.add_entry(BlackboardEntry {
-                                                        source: "instant".to_string(),
-                                                        entry_type: "original_task".to_string(),
-                                                        summary,
-                                                        detail: None,
-                                                        phase: None,
-                                                        timestamp: chrono::Utc::now(),
-                                                    });
-                                                }
-                                            }
-                                            // Write assistant response summary
-                                            // P1: Extract first 200 chars (context) + last 300 chars (findings)
-                                            // to capture both the intent and the key results.
-                                            let text = assistant_text.trim();
-                                            let summary: String = if text.len() > 500 {
-                                                let first: String = text.chars().take(200).collect();
-                                                let last: String = text.chars().skip(text.len().saturating_sub(300)).collect();
-                                                format!("{}...{}[truncated]", first, last)
-                                            } else {
-                                                text.chars().take(500).collect()
-                                            };
-                                            if !summary.trim().is_empty() {
+                                            // Write task_summary entry (user request + agent result)
+                                            // This provides complete context for Expert mode to reference.
+                                            let user_request = history.iter()
+                                                .rev()
+                                                .find(|m| m.role == "user")
+                                                .and_then(|m| m.content_as_text())
+                                                .unwrap_or_default();
+                                            
+                                            let agent_result = assistant_text.trim();
+                                            if !user_request.trim().is_empty() && !agent_result.is_empty() {
+                                                // Format: [User] request\n[Agent] result
+                                                let task_summary = format!(
+                                                    "[User] {}\n[Agent] {}",
+                                                    user_request.chars().take(100).collect::<String>(),
+                                                    if agent_result.len() > 400 {
+                                                        format!("{}...[truncated]", agent_result.chars().take(400).collect::<String>())
+                                                    } else {
+                                                        agent_result.to_string()
+                                                    }
+                                                );
+                                                
                                                 blackboard.add_entry(BlackboardEntry {
                                                     source: "instant".to_string(),
-                                                    entry_type: "summary".to_string(),
-                                                    summary,
+                                                    entry_type: "task_summary".to_string(),
+                                                    summary: task_summary,
                                                     detail: None,
                                                     phase: None,
                                                     timestamp: chrono::Utc::now(),
                                                 });
+                                            }
+                                            
+                                            // Limit Instant mode entries to max 10 (FIFO eviction)
+                                            let instant_entries: Vec<_> = blackboard.entries.iter()
+                                                .filter(|e| e.source == "instant")
+                                                .collect();
+                                            if instant_entries.len() > 10 {
+                                                let to_remove = instant_entries.len() - 10;
+                                                // Remove oldest instant entries
+                                                for _ in 0..to_remove {
+                                                    if let Some(pos) = blackboard.entries.iter().position(|e| e.source == "instant") {
+                                                        blackboard.entries.remove(pos);
+                                                    }
+                                                }
                                             }
                                             // Persist
                                             if let Ok(json) = blackboard.to_json() {
@@ -1793,6 +1807,24 @@ async fn computer_use_toggle_handler(
         }
     }
 
+    Json(json!({ "success": true, "enabled": enabled }))
+}
+
+// ============================================================
+// Share Blackboard toggle
+// ============================================================
+
+async fn share_blackboard_toggle_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let prev = state.share_blackboard_enabled.swap(enabled, Ordering::SeqCst);
+    
+    if prev != enabled {
+        info!("Share Blackboard {}", if enabled { "ENABLED" } else { "DISABLED" });
+    }
+    
     Json(json!({ "success": true, "enabled": enabled }))
 }
 

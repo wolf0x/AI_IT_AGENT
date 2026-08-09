@@ -401,19 +401,26 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .grok-item .grok-id{font-size:12px;color:var(--t3);margin-top:2px;line-height:1.4}
 .grok-item .grok-chk{margin-left:auto;color:var(--accent);font-weight:700;padding-top:2px;visibility:hidden}
 .grok-item.sel .grok-chk{visibility:visible}
-/* 发送 / 停止（渐变绿狼爪呼吸 ↔ 红色停止脉冲） */
+/* 发送 / 停止（狼头 LOGO 呼吸 ↔ 红色停止脉冲） */
 .grok-send{
   flex-shrink:0; width:40px; height:40px; border-radius:50%; border:none; cursor:pointer;
-  background:linear-gradient(135deg,#2ecc71 0%,#1abc9c 100%); color:#fff; display:flex; align-items:center; justify-content:center;
+  background:linear-gradient(135deg,#3498db 0%,#2ecc71 100%); color:#fff; display:flex; align-items:center; justify-content:center;
   transition:opacity .2s, transform .1s;
+  font-size:20px;
+  position:relative;
 }
 .grok-send:not(:disabled):not(.running){animation:breatheGrok 2.2s ease-in-out infinite}
 .grok-send:not(:disabled):hover{transform:scale(1.06)}
 .grok-send:disabled{opacity:.35; cursor:not-allowed}
-.grok-send svg{width:17px;height:17px}
-.grok-send.running{background:#e74c3c; animation:pulseGrok 1s infinite}
-@keyframes breatheGrok{0%,100%{box-shadow:0 0 0 0 rgba(46,204,113,.5)}50%{box-shadow:0 0 0 8px rgba(46,204,113,0)}}
-@keyframes pulseGrok{0%,100%{box-shadow:0 0 0 0 rgba(231,76,60,.4)}50%{box-shadow:0 0 0 6px rgba(231,76,60,0)}}
+.grok-send.running{animation:wolfPulse 2s ease-in-out infinite}
+.grok-send.running::before{
+  content:''; position:absolute; width:100%; height:100%;
+  border-radius:50%; background:inherit;
+  animation:wolfRipple 2s ease-out infinite;
+}
+@keyframes breatheGrok{0%,100%{box-shadow:0 0 0 0 rgba(52,152,219,.5)}50%{box-shadow:0 0 0 8px rgba(52,152,219,0)}}
+@keyframes wolfPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+@keyframes wolfRipple{0%{transform:scale(1);opacity:0.6}100%{transform:scale(1.8);opacity:0}}
 .btn-img{height:44px;width:44px;display:flex;align-items:center;justify-content:center;padding:0;background:#e8f4fd;border:1px solid #3498db;border-radius:var(--rs);cursor:pointer;font-size:20px;color:#3498db;flex-shrink:0}
 .btn-img:hover{background:#d0e9f9}
 .btn-img.disabled{opacity:0.4;cursor:not-allowed;background:#f0f0f0;border-color:#bdc3c7;color:#bdc3c7}
@@ -698,6 +705,16 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
             </div>
             <label class="perm-toggle">
               <input type="checkbox" id="cuToggle" onchange="toggleComputerUse(this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <label style="margin-bottom:0">&#128221; Share Blackboard Context</label>
+              <small style="color:var(--t3)">Share Instant mode history with Expert mode (default: OFF)</small>
+            </div>
+            <label class="perm-toggle">
+              <input type="checkbox" id="shareBlackboardToggle" onchange="toggleShareBlackboard(this.checked)">
               <span class="slider"></span>
             </label>
           </div>
@@ -1012,10 +1029,8 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
                 </div>
               </div>
             </div>
-            <!-- 发送 / 停止（狼爪 ↔ 停止） -->
-            <button class="grok-send" id="sendBtn" type="button" onclick="onSendClick()" disabled aria-label="发送">
-              <svg id="sendIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M7.5 8.5 L5 2 L9.5 6.5 C10.3 6 11.2 5.7 12 5.7 C12.8 5.7 13.7 6 14.5 6.5 L19 2 L16.5 8.5 C17.5 9.3 18.2 10.5 18.2 11.9 C18.2 14.7 15 16.9 12 16.9 C9 16.9 5.8 14.7 5.8 11.9 C5.8 10.5 6.5 9.3 7.5 8.5 Z"/><circle cx="9" cy="10.8" r="1.1" fill="#fff" opacity=".9"/><circle cx="15" cy="10.8" r="1.1" fill="#fff" opacity=".9"/><ellipse cx="12" cy="14" rx="0.9" ry="0.6" fill="#fff" opacity=".85"/></svg>
-            </button>
+            <!-- 发送 / 停止（狼头 LOGO） -->
+            <button class="grok-send" id="sendBtn" type="button" onclick="onSendClick()" disabled aria-label="发送">🐺</button>
             <button class="btn btn-stop" id="stopBtn" onclick="stopAgent()" style="display:none">Stop</button>
           </div>
           </div>
@@ -1714,16 +1729,8 @@ function setAgentRunning(running){
   const sidebarLogo=document.getElementById('sidebarLogo');
   const grokBar=document.querySelector('.grok-bar');
   if(sendBtn){
+    // 狼头 LOGO 按钮：只需切换 running class（脉冲动画），不需要切换图标
     sendBtn.classList.toggle('running',running);
-    const oldIcon=sendBtn.querySelector('svg');
-    if(oldIcon){
-      const tmp=document.createElement('div');
-      tmp.innerHTML= running
-        ? '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'
-        : '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.5 8.5 L5 2 L9.5 6.5 C10.3 6 11.2 5.7 12 5.7 C12.8 5.7 13.7 6 14.5 6.5 L19 2 L16.5 8.5 C17.5 9.3 18.2 10.5 18.2 11.9 C18.2 14.7 15 16.9 12 16.9 C9 16.9 5.8 14.7 5.8 11.9 C5.8 10.5 6.5 9.3 7.5 8.5 Z"/><circle cx="9" cy="10.8" r="1.1" fill="#fff" opacity=".9"/><circle cx="15" cy="10.8" r="1.1" fill="#fff" opacity=".9"/><ellipse cx="12" cy="14" rx="0.9" ry="0.6" fill="#fff" opacity=".85"/></svg>';
-      const el=tmp.firstChild;el.id='sendIcon';
-      oldIcon.replaceWith(el);
-    }
     if(!running)updateSendState();
   }
   if(stopBtn)stopBtn.style.display=running?'none':'none'; // 停止由 sendBtn 双态承担
@@ -2426,6 +2433,21 @@ function toggleComputerUse(enabled){
     .then(d=>{if(d.success)addLog('Computer Use '+(enabled?'ENABLED':'DISABLED'),'info');else addLog('Computer Use toggle failed','error');})
     .catch(e=>addLog('Computer Use toggle error: '+e,'error'));
 }
+function toggleShareBlackboard(enabled){
+  fetch('/api/settings/share_blackboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enabled})})
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.success){
+        addLog('Share Blackboard '+(enabled?'ENABLED':'DISABLED'),'info');
+        if(enabled){
+          addLog('WARNING: Instant mode history will be shared with Expert mode. This may cause context pollution if tasks are unrelated.','warn');
+        }
+      }else{
+        addLog('Share Blackboard toggle failed','error');
+      }
+    })
+    .catch(e=>addLog('Share Blackboard toggle error: '+e,'error'));
+}
 
 // ── Managed Mode (Long Tasks) ──
 function setManagedMode(on){
@@ -2765,10 +2787,13 @@ async function loadManagedRuns(){
           toolsHtml+
           '</div>';
       });
+      const roundInfo = run.total_rounds > run.round_count 
+        ? `Showing last ${run.round_count} of ${run.total_rounds} rounds`
+        : `${run.round_count} round(s)`;
       card.innerHTML='<div class="run-card-hdr">'+
         '<span class="cid">'+esc(run.contract_id.slice(0,8))+'</span>'+
         '<span class="badge badge-'+lastStatus+'">'+lastLabel+'</span>'+
-        '<span style="font-size:11px;color:var(--t3)">'+run.round_count+' round(s)</span>'+
+        '<span style="font-size:11px;color:var(--t3)">'+roundInfo+'</span>'+
         '</div><div class="round-list">'+roundsHtml+'</div>';
       list.appendChild(card);
     });
