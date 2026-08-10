@@ -159,7 +159,8 @@ fn parse_link_info(data: &[u8], start: usize) -> Option<(String, usize)> {
     let info_size = read_u32(data, start)?;
     let header_size = read_u32(data, start + 4)?;
     let info_flags = read_u32(data, start + 8)?;
-    let vol_id_off = read_u32(data, start + 0x0C)? as usize;
+    // VolumeIDOffset — reserved for future volume serial/label extraction.
+    let _vol_id_off = read_u32(data, start + 0x0C)? as usize;
     let local_base_off = read_u32(data, start + 0x10)? as usize;
 
     let mut path = String::new();

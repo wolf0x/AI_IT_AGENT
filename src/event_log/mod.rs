@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Unique identifier for a run session.
 pub type RunId = String;
@@ -142,38 +142,6 @@ pub enum LogEvent {
 }
 
 impl LogEvent {
-    /// Get the run_id for this event.
-    pub fn run_id(&self) -> &str {
-        match self {
-            Self::RunStarted { run_id, .. }
-            | Self::TurnStarted { run_id, .. }
-            | Self::Thinking { run_id, .. }
-            | Self::TextOutput { run_id, .. }
-            | Self::ToolCallStarted { run_id, .. }
-            | Self::ToolCallCompleted { run_id, .. }
-            | Self::Checkpoint { run_id, .. }
-            | Self::RunCompleted { run_id, .. }
-            | Self::RunFailed { run_id, .. }
-            | Self::Usage { run_id, .. } => run_id,
-        }
-    }
-
-    /// Get the timestamp for this event.
-    pub fn timestamp(&self) -> DateTime<Utc> {
-        match self {
-            Self::RunStarted { timestamp, .. }
-            | Self::TurnStarted { timestamp, .. }
-            | Self::Thinking { timestamp, .. }
-            | Self::TextOutput { timestamp, .. }
-            | Self::ToolCallStarted { timestamp, .. }
-            | Self::ToolCallCompleted { timestamp, .. }
-            | Self::Checkpoint { timestamp, .. }
-            | Self::RunCompleted { timestamp, .. }
-            | Self::RunFailed { timestamp, .. }
-            | Self::Usage { timestamp, .. } => *timestamp,
-        }
-    }
-
     /// Check if this event should trigger fsync.
     pub fn requires_sync(&self) -> bool {
         matches!(
@@ -192,7 +160,6 @@ impl LogEvent {
 /// Critical events trigger fsync to ensure durability.
 pub struct EventLog {
     file: File,
-    path: PathBuf,
     events_written: u64,
 }
 
@@ -210,24 +177,7 @@ impl EventLog {
 
         Ok(Self {
             file,
-            path,
             events_written,
-        })
-    }
-
-    /// Create a new event log, truncating any existing file.
-    pub fn create_new(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)?;
-
-        Ok(Self {
-            file,
-            path,
-            events_written: 0,
         })
     }
 
@@ -247,21 +197,6 @@ impl EventLog {
         Ok(())
     }
 
-    /// Force sync all pending data to disk.
-    pub fn sync(&mut self) -> std::io::Result<()> {
-        self.file.sync_all()
-    }
-
-    /// Get the path to the log file.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Get the number of events written.
-    pub fn events_written(&self) -> u64 {
-        self.events_written
-    }
-
     /// Count events in an existing log file.
     fn count_events(path: &Path) -> std::io::Result<u64> {
         let file = File::open(path)?;
@@ -271,6 +206,7 @@ impl EventLog {
 }
 
 /// Read events from a JSONL log file.
+#[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn read_events(path: impl AsRef<Path>) -> std::io::Result<Vec<LogEvent>> {
     let file = File::open(path.as_ref())?;
     let reader = BufReader::new(file);
@@ -293,11 +229,13 @@ pub fn read_events(path: impl AsRef<Path>) -> std::io::Result<Vec<LogEvent>> {
 }
 
 /// Find the last checkpoint in an event log.
+#[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn find_last_checkpoint(events: &[LogEvent]) -> Option<&LogEvent> {
     events.iter().rev().find(|e| matches!(e, LogEvent::Checkpoint { .. }))
 }
 
 /// Get the run_id from a log file (from the first RunStarted event).
+#[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn get_run_id(events: &[LogEvent]) -> Option<&str> {
     events.iter().find_map(|e| match e {
         LogEvent::RunStarted { run_id, .. } => Some(run_id.as_str()),
@@ -306,6 +244,7 @@ pub fn get_run_id(events: &[LogEvent]) -> Option<&str> {
 }
 
 /// Replay statistics for a run.
+#[allow(dead_code)] // replay API — reserved for crash-resume feature
 #[derive(Debug, Default)]
 pub struct ReplayStats {
     pub total_events: usize,
@@ -320,6 +259,7 @@ pub struct ReplayStats {
 }
 
 /// Compute replay statistics from events.
+#[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn compute_replay_stats(events: &[LogEvent]) -> ReplayStats {
     let mut stats = ReplayStats {
         total_events: events.len(),

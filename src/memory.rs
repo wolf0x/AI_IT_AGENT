@@ -49,7 +49,6 @@ pub struct TaskCheckpoint {
 
 pub struct MemoryStore {
     conn: Mutex<Connection>,
-    db_path: PathBuf,
 }
 
 fn compose_summary_from_entries(entries: &[ConversationEntry]) -> Result<String, String> {
@@ -261,7 +260,6 @@ impl MemoryStore {
 
         let store = Self {
             conn: Mutex::new(conn),
-            db_path: path,
         };
         store.migrate()?;
         info!("Memory store initialized: {}", db_path);
@@ -871,15 +869,6 @@ impl MemoryStore {
         Ok(parts.join("\n"))
     }
 
-    /// Get total entry count.
-    pub fn total_entries(&self) -> Result<usize, String> {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM conversations", [], |row| row.get(0),
-        ).map_err(|e| format!("Count failed: {}", e))?;
-        Ok(count as usize)
-    }
-
     // ── Task Checkpoint CRUD ──────────────────────────────────────
 
     /// Save or update a task checkpoint (INSERT OR REPLACE).
@@ -1016,6 +1005,7 @@ impl MemoryStore {
     }
 
     /// Load a TaskContract JSON by ID. Returns None if not found.
+    #[allow(dead_code)] // CRUD API — reserved for future UI/resume
     pub fn get_task_contract(&self, id: &str) -> Result<Option<String>, String> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
@@ -1075,7 +1065,8 @@ impl MemoryStore {
         );
     }
 
-    /// Delete a TaskContract by ID (called when a managed task completes).
+    /// Delete a TaskContract by ID (for targeted cleanup of completed contracts).
+    #[allow(dead_code)] // CRUD API — reserved for future UI/maintenance
     pub fn delete_task_contract(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM task_contracts WHERE id = ?1", params![id])

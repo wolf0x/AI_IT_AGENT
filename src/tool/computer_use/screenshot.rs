@@ -344,7 +344,6 @@ fn encode_png(rgb: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
 
 fn encode_jpeg(rgb: &[u8], w: u32, h: u32, quality: u8) -> Result<Vec<u8>, String> {
     use image::codecs::jpeg::JpegEncoder;
-    use image::ImageEncoder;
     let mut buf = std::io::Cursor::new(Vec::with_capacity((w * h * 3 / 4) as usize));
     let mut enc = JpegEncoder::new_with_quality(&mut buf, quality);
     enc.encode(rgb, w, h, image::ExtendedColorType::Rgb8)

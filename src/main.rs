@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // ── Extract embedded workspace files (first-run only) ────
-    // AGENTS.md, SOUL.md, TOOLS.md are compiled into the binary.
+    // AGENTS.md, SOUL.md, TOOLS.md, USER.md are compiled into the binary.
     // On first run they are written to workspace; existing files are never overwritten.
     for &(name, content) in EMBEDDED_FILES {
         let path = std::path::Path::new(&workspace_dir).join(name);

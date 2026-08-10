@@ -396,7 +396,6 @@ fn parse_skill_file(path: &Path, skill_dir: String) -> Result<Skill, String> {
     Ok(Skill {
         metadata,
         content: body.trim().to_string(),
-        file_path: path.to_string_lossy().to_string(),
         skill_dir,
     })
 }

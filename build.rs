@@ -49,7 +49,7 @@ fn embed_workspace_files(out_dir: &str) {
     let dest_path = Path::new(out_dir).join("embedded_files.rs");
     let mut f = fs::File::create(&dest_path).unwrap();
 
-    let files = ["AGENTS.md", "SOUL.md", "TOOLS.md"];
+    let files = ["AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md"];
 
     write!(f, "&[").unwrap();
     for name in &files {

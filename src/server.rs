@@ -35,7 +35,6 @@ use crate::distill;
 
 /// Type alias for the broadcast channel used to push notifications to all WS clients.
 pub type NotifyTx = tokio::sync::broadcast::Sender<String>;
-pub type NotifyRx = tokio::sync::broadcast::Receiver<String>;
 
 pub struct AppState {
     pub runner: Arc<Runner>,
@@ -1640,13 +1639,7 @@ async fn memory_summarize_handler(
     let date = body.date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
     match state.memory_store.build_raw_context_for_date(&date) {
         Ok(raw) => {
-            // Build a summary prompt
-            let prompt = format!(
-                "Please provide a concise summary of the following conversation log from {}. \
-                 Focus on key topics discussed, actions taken, and outcomes. Keep it under 200 words.\n\n{}",
-                date, raw
-            );
-            // For now, store a simple extractive summary (LLM-based summary would need provider access)
+            // Store a simple extractive summary (LLM-based summary would need provider access).
             let lines: Vec<&str> = raw.lines().collect();
             let user_msgs: Vec<&str> = lines.iter()
                 .filter(|l| l.starts_with("User:"))
@@ -2000,7 +1993,7 @@ async fn agent_settings_expert_save_handler(
 
 async fn config_files_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let workspace = &state.workspace_dir;
-    let files = ["AGENTS.md", "SOUL.md", "TOOLS.md", "MEMORY.md"];
+    let files = ["AGENTS.md", "SOUL.md", "TOOLS.md", "MEMORY.md", "USER.md"];
     let mut result = serde_json::Map::new();
 
     for file_name in &files {
@@ -2017,9 +2010,9 @@ async fn config_file_save_handler(
     Path(name): Path<String>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
-    let allowed = ["AGENTS.md", "SOUL.md", "TOOLS.md", "MEMORY.md"];
+    let allowed = ["AGENTS.md", "SOUL.md", "TOOLS.md", "MEMORY.md", "USER.md"];
     if !allowed.contains(&name.as_str()) {
-        return Json(json!({ "success": false, "error": "Invalid file name. Allowed: AGENTS.md, SOUL.md, TOOLS.md, MEMORY.md" }));
+        return Json(json!({ "success": false, "error": "Invalid file name. Allowed: AGENTS.md, SOUL.md, TOOLS.md, MEMORY.md, USER.md" }));
     }
 
     let content = body["content"].as_str().unwrap_or("");

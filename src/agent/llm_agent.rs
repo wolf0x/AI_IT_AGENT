@@ -272,9 +272,57 @@ impl LlmAgent {
         LlmAgentBuilder::new()
     }
 
+    /// Extract preferred name from USER.md content.
+    /// Looks for patterns like "称呼我为 X" or "Call me X".
+    fn extract_preferred_name(content: &str) -> Option<String> {
+        // Chinese pattern: 称呼我为 <name>
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(idx) = trimmed.find("称呼我为") {
+                let rest = &trimmed[idx + "称呼我为".len()..];
+                let name: String = rest.chars()
+                    .skip_while(|c| c.is_whitespace() || *c == '：' || *c == ':')
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == ' ')
+                    .collect();
+                let name = name.trim().to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+            // English pattern: Call me <name>
+            if let Some(idx) = trimmed.to_lowercase().find("call me") {
+                let rest = &trimmed[idx + "call me".len()..];
+                let name: String = rest.chars()
+                    .skip_while(|c| c.is_whitespace())
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .collect();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
     fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage]) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
-        let user_name = &self.user_given_name;
+        
+        // Determine user's preferred name: USER.md takes priority over whoami-detected name
+        let user_name = if !self.workspace_dir.is_empty() {
+            let user_md_path = std::path::Path::new(&self.workspace_dir).join("USER.md");
+            if let Ok(content) = std::fs::read_to_string(&user_md_path) {
+                if let Some(preferred) = Self::extract_preferred_name(&content) {
+                    preferred
+                } else {
+                    self.user_given_name.clone()
+                }
+            } else {
+                self.user_given_name.clone()
+            }
+        } else {
+            self.user_given_name.clone()
+        };
+        
         let mut prompt = format!(
             "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
 You have FULL ACCESS to the user's system via built-in tools.\n\
@@ -457,6 +505,7 @@ Example:\n\
                 ("SOUL.md", "Personality, Tone & Boundaries"),
                 ("TOOLS.md", "Local Tool Usage Conventions"),
                 ("MEMORY.md", "Curated Long-Term Memory"),
+                ("USER.md", "User Communication Preferences"),
             ];
             let mut injected = Vec::new();
             for (filename, description) in &config_files {

@@ -763,6 +763,8 @@ impl ManagedRunner {
             // The contract remains in the DB for reference or manual cleanup.
             if contract.phase == IrPhase::Completed {
                 persist_contract(&memory_store, &contract_id, &session, &contract);
+                // Generate HTML report for completed Expert tasks
+                write_expert_report(&workspace_dir, &contract, &contract_id, &archive_dir);
             }
 
             // Send done event
@@ -857,4 +859,215 @@ fn phase_rank(p: IrPhase) -> usize {
         IrPhase::Completed => 6,
         IrPhase::Blocked => 7,
     }
+}
+
+/// Generate a self-contained HTML report for a completed Expert task.
+/// Writes to workspace/Expert/<task_name>_<contract_id_short>.html.
+fn write_expert_report(
+    workspace_dir: &str,
+    contract: &TaskContract,
+    contract_id: &str,
+    archive_dir: &std::path::Path,
+) {
+    use std::fmt::Write as FmtWrite;
+
+    // Ensure Expert directory exists
+    let expert_dir = std::path::Path::new(workspace_dir).join("Expert");
+    if let Err(e) = std::fs::create_dir_all(&expert_dir) {
+        warn!("[managed] Failed to create Expert directory: {}", e);
+        return;
+    }
+
+    // Sanitize task name for filename
+    let task_slug: String = contract.original_task.chars()
+        .take(40)
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let short_id = &contract_id[..8.min(contract_id.len())];
+    let filename = format!("Expert_{}_{}.html", task_slug, short_id);
+    let report_path = expert_dir.join(&filename);
+
+    // Build HTML content
+    let mut html = String::with_capacity(16384);
+    let _ = writeln!(html, "<!DOCTYPE html>
+<html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+<title>Expert Report: {}</title>
+<style>
+:root{{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#c9d1d9;--t2:#8b949e;--accent:#58a6ff;--accent2:#7ee787;--accent3:#ffa657;--accent4:#ff7b72}}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:40px 20px}}
+.container{{max-width:960px;margin:0 auto}}
+h1{{font-size:28px;color:#f0f6fc;margin-bottom:8px}}
+h2{{font-size:20px;color:#f0f6fc;margin:32px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}}
+h3{{font-size:16px;color:var(--accent);margin:20px 0 8px}}
+.meta{{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin:16px 0}}
+.meta-row{{display:flex;gap:24px;flex-wrap:wrap;margin:4px 0}}
+.meta-label{{color:var(--t2);font-size:12px;min-width:80px}}
+.meta-val{{font-size:13px}}
+.badge{{display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700}}
+.badge-ok{{background:#1a3a2a;color:var(--accent2)}}
+.badge-warn{{background:#3a2a0a;color:var(--accent3)}}
+.badge-info{{background:#0a2a3a;color:var(--accent)}}
+.finding{{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin:8px 0}}
+.finding-title{{font-weight:700;color:#f0f6fc;font-size:14px;margin-bottom:4px}}
+.finding-meta{{font-size:11px;color:var(--t2)}}
+.round{{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin:12px 0}}
+.round-hdr{{display:flex;align-items:center;gap:12px;margin-bottom:12px}}
+.round-num{{font-size:18px;font-weight:700;color:var(--accent)}}
+.section{{margin:8px 0}}
+.section-title{{font-size:12px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}}
+.section-content{{font-size:13px;white-space:pre-wrap;word-break:break-word}}
+.tool-list{{display:flex;flex-wrap:wrap;gap:6px}}
+.tool-tag{{background:#1a2332;border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:11px}}
+.footer{{margin-top:40px;padding-top:16px;border-top:1px solid var(--border);color:var(--t2);font-size:12px;text-align:center}}
+</style></head><body><div class=\"container\">",
+        html_escape(&contract.original_task));
+
+    // Header
+    let phase_str = format!("{:?}", contract.phase);
+    let status_class = if contract.phase == IrPhase::Completed { "badge-ok" } else if contract.phase == IrPhase::Blocked { "badge-warn" } else { "badge-info" };
+    let _ = writeln!(html, "<h1>🛠 Expert Task Report</h1>
+<div class=\"meta\">
+<div class=\"meta-row\"><span class=\"meta-label\">Task</span><span class=\"meta-val\">{}</span></div>
+<div class=\"meta-row\"><span class=\"meta-label\">Scope</span><span class=\"meta-val\">{}</span></div>
+<div class=\"meta-row\"><span class=\"meta-label\">Status</span><span class=\"badge {}\">{}</span></div>
+<div class=\"meta-row\"><span class=\"meta-label\">Rounds</span><span class=\"meta-val\">{}</span></div>
+<div class=\"meta-row\"><span class=\"meta-label\">Contract</span><span class=\"meta-val\" style=\"font-family:monospace;font-size:11px\">{}</span></div>
+</div>",
+        html_escape(&contract.original_task),
+        html_escape(&contract.scope),
+        status_class, html_escape(&phase_str),
+        contract.current_round,
+        contract_id);
+
+    // Verified Findings
+    if !contract.verified_findings.is_empty() {
+        let _ = writeln!(html, "<h2>🔍 Verified Findings ({})</h2>", contract.verified_findings.len());
+        for f in &contract.verified_findings {
+            let _ = writeln!(html, "<div class=\"finding\">
+<div class=\"finding-title\">[{}] {}</div>
+<div class=\"finding-meta\">Severity: {} | Status: {} | Integrity: {}</div>
+<div class=\"section-content\">{}</div>
+</div>",
+                html_escape(&f.severity), html_escape(&f.title),
+                html_escape(&f.severity), html_escape(&f.status), html_escape(&f.integrity_status),
+                html_escape(&f.evidence_summary));
+        }
+    }
+
+    // Verified Actions
+    if !contract.verified_actions.is_empty() {
+        let _ = writeln!(html, "<h2>✅ Verified Actions ({})</h2>", contract.verified_actions.len());
+        for a in &contract.verified_actions {
+            let _ = writeln!(html, "<div class=\"finding\">
+<div class=\"finding-title\">{}</div>
+<div class=\"section-content\">{}</div>
+</div>",
+                html_escape(&a.description), html_escape(&a.verification));
+        }
+    }
+
+    // Per-round details from archive
+    let _ = writeln!(html, "<h2>📋 Round-by-Round Details</h2>");
+    let mut round_dirs: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(archive_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(round_str) = name.strip_prefix("round_") {
+                if let Ok(n) = round_str.parse::<u32>() {
+                    round_dirs.push((n, entry.path()));
+                }
+            }
+        }
+    }
+    round_dirs.sort_by_key(|(n, _)| *n);
+    for (n, dir) in &round_dirs {
+            let _ = writeln!(html, "<div class=\"round\">");
+            let _ = writeln!(html, "<div class=\"round-hdr\"><span class=\"round-num\">Round {}</span></div>", n);
+
+            // Plan
+            if let Ok(plan) = std::fs::read_to_string(dir.join("plan.md")) {
+                let _ = writeln!(html, "<div class=\"section\"><div class=\"section-title\">Manager Plan</div>
+<div class=\"section-content\">{}</div></div>", html_escape(&plan.chars().take(500).collect::<String>()));
+            }
+
+            // Executor output
+            if let Ok(output) = std::fs::read_to_string(dir.join("executor_output.md")) {
+                let _ = writeln!(html, "<div class=\"section\"><div class=\"section-title\">Executor Output</div>
+<div class=\"section-content\">{}</div></div>", html_escape(&output.chars().take(800).collect::<String>()));
+            }
+
+            // Tool calls
+            if let Ok(trace) = std::fs::read_to_string(dir.join("tool_calls.jsonl")) {
+                let mut tools: Vec<String> = Vec::new();
+                for line in trace.lines() {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(tool) = v["tool"].as_str() {
+                            let ms = v["duration_ms"].as_u64().unwrap_or(0);
+                            tools.push(format!("{} ({}ms)", tool, ms));
+                        }
+                    }
+                }
+                if !tools.is_empty() {
+                    let _ = writeln!(html, "<div class=\"section\"><div class=\"section-title\">Tool Calls ({})</div><div class=\"tool-list\">",
+                        tools.len());
+                    for t in &tools {
+                        let _ = writeln!(html, "<span class=\"tool-tag\">{}</span>", html_escape(t));
+                    }
+                    let _ = writeln!(html, "</div></div>");
+                }
+            }
+
+            // Audit
+            if let Ok(audit_str) = std::fs::read_to_string(dir.join("audit.json")) {
+                if let Ok(audits) = serde_json::from_str::<Vec<serde_json::Value>>(&audit_str) {
+                    if !audits.is_empty() {
+                        let _ = writeln!(html, "<div class=\"section\"><div class=\"section-title\">Audit Results</div>");
+                        for a in &audits {
+                            let path = a["path"].as_str().unwrap_or("");
+                            let verified = a["verified"].as_bool().unwrap_or(false);
+                            let icon = if verified { "✅" } else { "❌" };
+                            let _ = writeln!(html, "<div style=\"font-size:12px;margin:2px 0\">{} {} — {}</div>",
+                                icon, html_escape(path),
+                                html_escape(a["failure_reason"].as_str().unwrap_or("verified")));
+                        }
+                        let _ = writeln!(html, "</div>");
+                    }
+                }
+            }
+
+            let _ = writeln!(html, "</div>");
+    }
+
+    // Manager Notes
+    if !contract.manager_notes.is_empty() {
+        let _ = writeln!(html, "<h2>📝 Manager Notes</h2><div class=\"section-content\">");
+        for note in &contract.manager_notes {
+            let _ = writeln!(html, "<div style=\"margin:4px 0;padding:6px 10px;background:var(--surface);border-radius:6px;font-size:12px\">{}</div>",
+                html_escape(&note.chars().take(200).collect::<String>()));
+        }
+        let _ = writeln!(html, "</div>");
+    }
+
+    // Footer
+    let _ = writeln!(html, "<div class=\"footer\">Generated by RustAgent Expert Mode · {}</div>
+</div></body></html>",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+
+    // Write report
+    if let Err(e) = std::fs::write(&report_path, &html) {
+        warn!("[managed] Failed to write Expert report: {}", e);
+    } else {
+        info!("[managed] Expert report written: {}", report_path.display());
+    }
+}
+
+/// Escape HTML special characters.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+     .replace('\'', "&#39;")
 }

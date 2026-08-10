@@ -13,13 +13,13 @@ pub struct LinuxParsedIntent {
     pub targets: Vec<String>,
     /// Original command (lowercased).
     pub raw_lower: String,
-    /// Original command (preserved case).
-    pub raw: String,
     /// Parsing confidence: 0.0 to 1.0.
     pub confidence: f64,
     /// Whether command contains pipe chains (potential for complex operations).
+    #[allow(dead_code)] // kept for future safety-rule refinement
     pub has_pipe_chain: bool,
     /// Whether command redirects to a device.
+    #[allow(dead_code)] // kept for future safety-rule refinement
     pub has_device_redirect: bool,
 }
 
@@ -63,7 +63,6 @@ pub fn parse_linux_intent(command: &str) -> LinuxParsedIntent {
         verb,
         targets,
         raw_lower,
-        raw: command.to_string(),
         confidence,
         has_pipe_chain,
         has_device_redirect,
