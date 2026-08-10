@@ -24,21 +24,23 @@ fn resolve_path(ctx: &ToolContext, path: &str) -> PathBuf {
 
 /// Resolve path for file WRITE operations.
 /// - Absolute path → use as-is (user explicitly specified)
-/// - Relative path with directory component (contains / or \) → resolve against working_dir
-/// - Relative path, filename only → default to workspace/output/ (artifact convention)
+/// - Relative path with directory component (contains / or \, but not just ./ or .\) → resolve against working_dir
+/// - Relative path, filename only (or ./filename, .\filename) → default to workspace/output/ (artifact convention)
 fn resolve_write_path(ctx: &ToolContext, path: &str) -> PathBuf {
     let p = PathBuf::from(path);
     if p.is_absolute() {
         return p;
     }
-    // Check if path has a directory component (contains separator)
-    let has_dir_component = path.contains('/') || path.contains('\\');
+    // Strip leading ./ or .\ to treat as bare filename
+    let stripped = path.strip_prefix("./").or_else(|| path.strip_prefix(".\\")).unwrap_or(path);
+    // Check if remaining path has a directory component
+    let has_dir_component = stripped.contains('/') || stripped.contains('\\');
     if has_dir_component {
         // User specified a relative path with directory — respect it
         PathBuf::from(&ctx.working_dir).join(p)
     } else {
-        // Just a filename — default to workspace/output/
-        PathBuf::from(&ctx.workspace_dir).join("output").join(p)
+        // Just a filename (or ./filename) — default to workspace/output/
+        PathBuf::from(&ctx.workspace_dir).join("output").join(stripped)
     }
 }
 
@@ -163,7 +165,9 @@ impl Tool for FileWriteTool {
             fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {}", e))?;
         }
         fs::write(&resolved, content).map_err(|e| format!("Failed to write: {}", e))?;
-        Ok(json!({ "status": "ok", "path": resolved.to_string_lossy(), "bytes": content.len() }))
+        // Convert path to forward slashes for markdown/HTML compatibility
+        let path_str = resolved.to_string_lossy().replace('\\', "/");
+        Ok(json!({ "status": "ok", "path": path_str, "bytes": content.len() }))
     }
 }
 
@@ -196,7 +200,7 @@ impl Tool for FileDeleteTool {
         } else {
             return Err(format!("Path does not exist: {}", resolved.display()).into());
         }
-        Ok(json!({ "status": "deleted", "path": resolved.to_string_lossy() }))
+        Ok(json!({ "status": "deleted", "path": resolved.to_string_lossy().replace('\\', "/") }))
     }
 }
 
@@ -299,7 +303,7 @@ fn list_dir_recursive(
                     "name": name,
                     "type": kind,
                     "size": size,
-                    "path": path.to_string_lossy()
+                    "path": path.to_string_lossy().replace('\\', "/")
                 }));
             }
         }

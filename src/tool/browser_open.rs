@@ -35,7 +35,25 @@ impl Tool for BrowserOpenTool {
             return Err(format!("URL contains dangerous characters: {:?}. Only http/https URLs with standard characters are allowed.", dangerous_chars).into());
         }
 
-        if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("file://") {
+        // Smart URL detection and conversion
+        if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
+            // Already a proper URL, use as-is
+        } else if url.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false) && url.chars().nth(1) == Some(':') {
+            // Windows absolute path (e.g., C:\path\to\file)
+            // Convert to file:/// URL with forward slashes
+            let path_normalized = url.replace('\\', "/");
+            url = format!("file:///{}", path_normalized);
+        } else if url.starts_with("output/") || url.starts_with("workspace/") {
+            // Workspace-relative path, convert to workspace URL
+            // The workspace is served at http://localhost:7788/workspace/
+            let workspace_path = if url.starts_with("output/") {
+                format!("workspace/{}", url)
+            } else {
+                url
+            };
+            url = format!("http://localhost:7788/{}", workspace_path);
+        } else {
+            // Assume it's a domain or URL without scheme
             url = format!("https://{}", url);
         }
 
