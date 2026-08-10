@@ -1021,16 +1021,16 @@ impl MemoryStore {
     }
 
     /// Load the latest resumable TaskContract for a session.
-    /// A contract is resumable if it is NOT in 'completed' or 'blocked' phase,
-    /// OR if it was explicitly stopped by the user (blocked_reason = '[USER_STOPPED]').
+    /// A contract is resumable if it is NOT in 'completed' phase.
+    /// This includes 'blocked' contracts (from F10 human gate or user STOP) so users
+    /// can resume them with new instructions instead of creating a blank new session.
     /// Returns (contract_id, contract_json) or None.
     pub fn get_latest_active_contract(&self, session_id: &str) -> Result<Option<(String, String)>, String> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
             "SELECT id, contract_json FROM task_contracts \
              WHERE session_id = ?1 \
-               AND (phase NOT IN ('completed', 'blocked') \
-                    OR blocked_reason = '[USER_STOPPED]') \
+               AND phase != 'completed' \
              ORDER BY updated_at DESC LIMIT 1",
             params![session_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),

@@ -396,6 +396,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Share Blackoard switch (default: false)
     let share_blackboard_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    
+    // Human intervention simulation switch (default: false)
+    let human_intervention_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Build app state
     let state = Arc::new(AppState {
@@ -429,6 +432,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         provider: provider_for_state,
         computer_use_enabled,
         share_blackboard_enabled,
+        human_intervention_enabled,
         primary_model: config.agent.primary_model.clone(),
         fallback_model: config.agent.fallback_model.clone(),
         timezone_offset: config.agent.timezone_offset,

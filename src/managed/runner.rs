@@ -64,6 +64,8 @@ pub struct ManagedRunner {
     computer_use_enabled: Arc<AtomicBool>,
     /// Whether to share Instant mode context with Expert mode via Blackboard.
     share_blackboard_enabled: Arc<AtomicBool>,
+    /// Whether to use LLM to simulate human intervention when blocked.
+    human_intervention_enabled: Arc<AtomicBool>,
 }
 
 impl ManagedRunner {
@@ -85,6 +87,7 @@ impl ManagedRunner {
         skill_manager: Arc<SkillManager>,
         computer_use_enabled: Arc<AtomicBool>,
         share_blackboard_enabled: Arc<AtomicBool>,
+        human_intervention_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
             inner,
@@ -103,6 +106,7 @@ impl ManagedRunner {
             skill_manager,
             computer_use_enabled,
             share_blackboard_enabled,
+            human_intervention_enabled,
         }
     }
 
@@ -142,10 +146,13 @@ impl ManagedRunner {
                 match TaskContract::from_json(&json) {
                     Ok(mut c) => {
                         let round = c.current_round;
-                        info!("[managed:{}] Resuming existing TaskContract {} from round {}",
-                              session_id, &id[..8.min(id.len())], round);
-                        // Clear the USER_STOPPED marker so normal lifecycle resumes.
-                        c.blocked_reason = None;
+                        let was_blocked = c.phase == IrPhase::Blocked;
+                        info!("[managed:{}] Resuming existing TaskContract {} from round {} (was_blocked: {})",
+                              session_id, &id[..8.min(id.len())], round, was_blocked);
+                        // Unblock the contract if it was blocked (clears blocked_reason and resets phase)
+                        if was_blocked {
+                            c.unblock();
+                        }
                         // Also clear the SQL column so future persists don't carry the marker.
                         self.memory_store.clear_contract_stopped(&id);
                         // Append user's new message as a manager note so the Manager
@@ -255,6 +262,9 @@ impl ManagedRunner {
         let skill_manager = self.skill_manager.clone();
         let workspace_dir = self.workspace_dir.clone();
         let computer_use_enabled = self.computer_use_enabled.clone();
+        let human_intervention_enabled = self.human_intervention_enabled.clone();
+        let provider = self.provider.clone();
+        let manager_model = self.manager_model.clone();
         // Direct registry access for GUI-channel auto-enable (register cu_* tools).
         let tools = self.tools.clone();
         // Move auditor + permission profile into the spawned task for post-Executor
@@ -266,10 +276,11 @@ impl ManagedRunner {
         let cancelled_flag = cancelled.clone();
         tokio::spawn(async move {
             let mut round = if resumed { contract.current_round } else { 0usize };
-            // F10: human-gate tracking — consecutive rounds with no new verified
-            // findings trigger an intervention notice instead of silent looping.
+            // F10: human-gate tracking — consecutive rounds with no progress
+            // (no new findings, actions, or lead changes) trigger intervention.
             let mut stale_rounds: usize = 0;
-            let mut last_finding_count: usize = 0;
+            let mut last_finding_count: usize = contract.verified_findings.len() + contract.verified_actions.len();
+            let mut last_leads_count: usize = contract.open_leads.len();
             // F5: per-round archive directory for audit trail.
             let archive_dir = std::path::Path::new(&workspace_dir)
                 .join("output").join("managed").join(&contract_id);
@@ -289,20 +300,70 @@ impl ManagedRunner {
                     break;
                 }
 
-                // ── F10: Human gate — repeated rounds with zero new findings ──
-                if contract.verified_findings.len() == last_finding_count {
+                // ── F10: Human gate — repeated rounds with zero progress ──
+                // Check multiple progress indicators, not just verified_findings.
+                // Some tasks (e.g., CTF solving, report generation) may not produce findings
+                // but still make progress through actions or lead resolution.
+                let current_progress = contract.verified_findings.len() 
+                    + contract.verified_actions.len();
+                // Also consider open_leads changes as progress
+                let leads_progress = contract.open_leads.len();
+                
+                if current_progress == last_finding_count && leads_progress == last_leads_count {
                     stale_rounds += 1;
                 } else {
                     stale_rounds = 0;
-                    last_finding_count = contract.verified_findings.len();
+                    last_finding_count = current_progress;
+                    last_leads_count = leads_progress;
                 }
                 if stale_rounds >= 3 {
-                    info!("[managed:{}] Human gate: {} consecutive rounds without new findings", session, stale_rounds);
+                    info!("[managed:{}] Human gate: {} consecutive rounds without progress (findings: {}, actions: {}, leads: {})", 
+                          session, stale_rounds, 
+                          contract.verified_findings.len(), 
+                          contract.verified_actions.len(),
+                          contract.open_leads.len());
+                    
+                    // Check if human intervention simulation is enabled
+                    if human_intervention_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+                        info!("[managed:{}] Human intervention simulation enabled - using LLM to generate guidance", session);
+                        let _ = tx.send(Ok(AgentEvent::text(
+                            "\n\n🤖 *[人工介入模拟] 连续 3 轮未取得进展，正在使用 LLM 生成指导...*\n\n",
+                            &contract_id, "manager"
+                        ))).await;
+                        
+                        // Use LLM to generate guidance based on current contract state
+                        match Self::generate_human_guidance_static(&provider, &manager_model, &contract, &session).await {
+                            Ok(guidance) => {
+                                info!("[managed:{}] LLM generated guidance: {}", session, guidance.chars().take(100).collect::<String>());
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("\n\n💡 *[模拟人工指导]*\n{}\n\n", guidance),
+                                    &contract_id, "manager"
+                                ))).await;
+                                // Add guidance as a manager note and reset stale counter
+                                contract.manager_notes.push(format!("[Simulated Human Guidance] {}", guidance));
+                                if contract.manager_notes.len() > 20 {
+                                    let overflow = contract.manager_notes.len() - 20;
+                                    contract.manager_notes.drain(0..overflow);
+                                }
+                                stale_rounds = 0; // Reset counter to give it more rounds
+                                continue; // Continue to next round instead of breaking
+                            }
+                            Err(e) => {
+                                error!("[managed:{}] Failed to generate LLM guidance: {}", session, e);
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("\n\n❌ *[人工介入模拟失败] {}*\n\n", e),
+                                    &contract_id, "manager"
+                                ))).await;
+                                // Fall through to normal blocking
+                            }
+                        }
+                    }
+                    
                     let _ = tx.send(Ok(AgentEvent::text(
-                        "\n\n⚠️ *[需要人工介入] 连续 3 轮未产生新的已验证发现。任务已标记 blocked——请检查当前策略或提供新指令。*\n\n",
+                        "\n\n⚠️ *[需要人工介入] 连续 3 轮未取得进展（无新发现、无新操作、无线索变化）。任务已标记 blocked——请检查当前策略或提供新指令。*\n\n",
                         &contract_id, "manager"
                     ))).await;
-                    contract.block("No progress after 3 consecutive rounds without new verified findings".to_string());
+                    contract.block("No progress after 3 consecutive rounds".to_string());
                     persist_contract(&memory_store, &contract_id, &session, &contract);
                     break;
                 }
@@ -773,6 +834,55 @@ impl ManagedRunner {
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+
+    /// Generate human guidance using LLM when Expert mode is blocked.
+    /// Analyzes the current contract state and provides actionable guidance.
+    async fn generate_human_guidance_static(
+        provider: &Arc<OpenAiProvider>,
+        manager_model: &str,
+        contract: &TaskContract,
+        session: &str,
+    ) -> Result<String, String> {
+        use crate::model::ChatMessage;
+        
+        let system_prompt = r#"You are a human expert providing guidance to an AI agent that is stuck.
+The agent has been working on a task but has made no progress for several rounds.
+
+Analyze the current state and provide clear, actionable guidance:
+1. What might be causing the lack of progress?
+2. What specific actions should the agent take next?
+3. Are there alternative approaches to consider?
+
+Be concise and specific. Focus on practical next steps."#;
+
+        let user_prompt = format!(
+            "Current Task: {}\n\nCurrent Phase: {:?}\n\nVerified Findings: {}\n\nVerified Actions: {}\n\nOpen Leads: {}\n\nManager Notes (recent):\n{}\n\nPlease provide guidance on how to proceed.",
+            contract.original_task,
+            contract.phase,
+            contract.verified_findings.len(),
+            contract.verified_actions.len(),
+            contract.open_leads.len(),
+            contract.manager_notes.iter().rev().take(5).cloned().collect::<Vec<_>>().join("\n")
+        );
+
+        let messages = vec![
+            ChatMessage::system(system_prompt),
+            ChatMessage::user(&user_prompt),
+        ];
+
+        // Use a dummy channel for the LLM call (we don't stream this)
+        let (dummy_tx, mut dummy_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while dummy_rx.recv().await.is_some() {}
+        });
+
+        let (content, _reasoning, _tool_calls, _usage) = provider
+            .chat_stream(manager_model, &messages, &[], dummy_tx, &contract.id, "human_guidance")
+            .await
+            .map_err(|e| format!("LLM call failed: {}", e))?;
+
+        Ok(content)
     }
 }
 

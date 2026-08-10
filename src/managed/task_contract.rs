@@ -298,6 +298,15 @@ impl TaskContract {
         self.updated_at = Utc::now();
     }
 
+    /// Unblock a previously blocked task, restoring it to the Collection phase.
+    /// This is called when resuming a blocked contract with new user instructions.
+    pub fn unblock(&mut self) {
+        // Reset to Collection phase so Manager can plan new subtasks
+        self.phase = IrPhase::Collection;
+        self.blocked_reason = None;
+        self.updated_at = Utc::now();
+    }
+
     /// Serialize to JSON for storage.
     pub fn to_json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize TaskContract: {}", e))

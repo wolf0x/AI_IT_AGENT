@@ -85,6 +85,8 @@ pub struct AppState {
     pub computer_use_enabled: Arc<AtomicBool>,
     /// Whether to share Instant mode context with Expert mode via Blackboard
     pub share_blackboard_enabled: Arc<AtomicBool>,
+    /// Whether to use LLM to simulate human intervention when Expert mode is blocked
+    pub human_intervention_enabled: Arc<AtomicBool>,
     /// Primary model name (from config.toml)
     pub primary_model: Option<String>,
     /// Fallback model name (from config.toml)
@@ -139,6 +141,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
         .route("/api/settings/computer_use", post(computer_use_toggle_handler))
         .route("/api/settings/share_blackboard", post(share_blackboard_toggle_handler))
+        .route("/api/settings/human_intervention", post(human_intervention_toggle_handler))
         .route("/api/settings/agent", post(agent_settings_save_handler))
         .route("/api/settings/agent/extended", post(agent_settings_extended_save_handler))
         .route("/api/settings/agent/expert", post(agent_settings_expert_save_handler))
@@ -1153,6 +1156,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                     state.skill_manager.clone(),
                                     state.computer_use_enabled.clone(),
                                     state.share_blackboard_enabled.clone(),
+                                    state.human_intervention_enabled.clone(),
                                 );
                                 managed_runner.run(
                                     &content, &session_id, &model, &managed_scope,
@@ -1816,6 +1820,24 @@ async fn share_blackboard_toggle_handler(
     
     if prev != enabled {
         info!("Share Blackboard {}", if enabled { "ENABLED" } else { "DISABLED" });
+    }
+    
+    Json(json!({ "success": true, "enabled": enabled }))
+}
+
+// ============================================================
+// Human Intervention Simulation toggle
+// ============================================================
+
+async fn human_intervention_toggle_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let prev = state.human_intervention_enabled.swap(enabled, Ordering::SeqCst);
+    
+    if prev != enabled {
+        info!("Human Intervention Simulation {}", if enabled { "ENABLED" } else { "DISABLED" });
     }
     
     Json(json!({ "success": true, "enabled": enabled }))
