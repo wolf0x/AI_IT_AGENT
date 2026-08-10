@@ -141,7 +141,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
         .route("/api/settings/computer_use", post(computer_use_toggle_handler))
         .route("/api/settings/share_blackboard", post(share_blackboard_toggle_handler))
-        .route("/api/settings/human_intervention", post(human_intervention_toggle_handler))
+        .route("/api/settings/human_intervention", get(human_intervention_get_handler).post(human_intervention_toggle_handler))
         .route("/api/settings/agent", post(agent_settings_save_handler))
         .route("/api/settings/agent/extended", post(agent_settings_extended_save_handler))
         .route("/api/settings/agent/expert", post(agent_settings_expert_save_handler))
@@ -1828,6 +1828,13 @@ async fn share_blackboard_toggle_handler(
 // ============================================================
 // Human Intervention Simulation toggle
 // ============================================================
+
+async fn human_intervention_get_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<Value> {
+    let enabled = state.human_intervention_enabled.load(Ordering::SeqCst);
+    Json(json!({ "success": true, "enabled": enabled }))
+}
 
 async fn human_intervention_toggle_handler(
     State(state): State<Arc<AppState>>,

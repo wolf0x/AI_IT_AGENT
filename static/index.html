@@ -1097,7 +1097,7 @@ function switchPage(name,btn){
   if(name==='skills')loadSkills();
   if(name==='mcp')loadMcp();
   if(name==='cron')loadCron();
-  if(name==='settings'){loadProviders();loadConfigFiles();}
+  if(name==='settings'){loadProviders();loadConfigFiles();initHumanInterventionToggle();}
   if(name==='tools')loadTools();
   if(name==='dashboard')loadDashboard();
   if(name==='chat')setTimeout(()=>scrollBottom(false),50);
@@ -1866,6 +1866,20 @@ async function loadProviders(){
       el.innerHTML='<span style="color:var(--t3)">No providers configured</span>';
     }
   }catch(e){addLog('Load providers failed','error')}
+}
+
+// Initialize human intervention toggle state from backend
+async function initHumanInterventionToggle(){
+  try{
+    const r=await fetch('/api/settings/human_intervention');
+    const d=await r.json();
+    const toggle=document.getElementById('humanInterventionToggle');
+    if(toggle&&d.enabled!==undefined){
+      toggle.checked=d.enabled;
+    }
+  }catch(e){
+    // Failed to load state, keep default (unchecked)
+  }
 }
 async function saveProvider(){
   const name=document.getElementById('provName').value.trim();

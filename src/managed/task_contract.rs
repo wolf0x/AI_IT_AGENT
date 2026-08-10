@@ -127,6 +127,9 @@ pub struct TaskContract {
     pub manager_notes: Vec<String>,
     /// Why the task is blocked (if phase == Blocked).
     pub blocked_reason: Option<String>,
+    /// Original phase before blocking (used to restore on unblock).
+    #[serde(default)]
+    pub phase_before_block: Option<IrPhase>,
 }
 
 impl TaskContract {
@@ -148,6 +151,7 @@ impl TaskContract {
             updated_at: now,
             manager_notes: Vec::new(),
             blocked_reason: None,
+            phase_before_block: None,
         }
     }
 
@@ -293,16 +297,19 @@ impl TaskContract {
 
     /// Mark task as blocked.
     pub fn block(&mut self, reason: String) {
+        // Save the current phase before blocking so it can be restored on unblock
+        self.phase_before_block = Some(self.phase);
         self.phase = IrPhase::Blocked;
         self.blocked_reason = Some(reason);
         self.updated_at = Utc::now();
     }
 
-    /// Unblock a previously blocked task, restoring it to the Collection phase.
+    /// Unblock a previously blocked task, restoring the original phase.
     /// This is called when resuming a blocked contract with new user instructions.
     pub fn unblock(&mut self) {
-        // Reset to Collection phase so Manager can plan new subtasks
-        self.phase = IrPhase::Collection;
+        // Restore the original phase (or default to Collection if not saved)
+        self.phase = self.phase_before_block.unwrap_or(IrPhase::Collection);
+        self.phase_before_block = None;
         self.blocked_reason = None;
         self.updated_at = Utc::now();
     }

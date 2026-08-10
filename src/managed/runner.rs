@@ -245,8 +245,6 @@ impl ManagedRunner {
             );
         }
 
-        let provider = self.provider.clone();
-        let manager_model = self.manager_model.clone();
         let inner = self.inner.clone();
         let model = model_name.to_string();
         let session = session_id.to_string();
@@ -281,6 +279,8 @@ impl ManagedRunner {
             let mut stale_rounds: usize = 0;
             let mut last_finding_count: usize = contract.verified_findings.len() + contract.verified_actions.len();
             let mut last_leads_count: usize = contract.open_leads.len();
+            // Track how many times LLM human intervention has been attempted
+            let mut human_intervention_attempts: usize = 0;
             // F5: per-round archive directory for audit trail.
             let archive_dir = std::path::Path::new(&workspace_dir)
                 .join("output").join("managed").join(&contract_id);
@@ -323,9 +323,10 @@ impl ManagedRunner {
                           contract.verified_actions.len(),
                           contract.open_leads.len());
                     
-                    // Check if human intervention simulation is enabled
-                    if human_intervention_enabled.load(std::sync::atomic::Ordering::SeqCst) {
-                        info!("[managed:{}] Human intervention simulation enabled - using LLM to generate guidance", session);
+                    // Check if human intervention simulation is enabled and not exhausted
+                    if human_intervention_enabled.load(std::sync::atomic::Ordering::SeqCst) 
+                        && human_intervention_attempts < 2 {
+                        info!("[managed:{}] Human intervention simulation enabled (attempt {}/2) - using LLM to generate guidance", session, human_intervention_attempts + 1);
                         let _ = tx.send(Ok(AgentEvent::text(
                             "\n\n🤖 *[人工介入模拟] 连续 3 轮未取得进展，正在使用 LLM 生成指导...*\n\n",
                             &contract_id, "manager"
@@ -345,6 +346,7 @@ impl ManagedRunner {
                                     let overflow = contract.manager_notes.len() - 20;
                                     contract.manager_notes.drain(0..overflow);
                                 }
+                                human_intervention_attempts += 1;
                                 stale_rounds = 0; // Reset counter to give it more rounds
                                 continue; // Continue to next round instead of breaking
                             }
@@ -842,7 +844,7 @@ impl ManagedRunner {
         provider: &Arc<OpenAiProvider>,
         manager_model: &str,
         contract: &TaskContract,
-        session: &str,
+        _session: &str,
     ) -> Result<String, String> {
         use crate::model::ChatMessage;
         
