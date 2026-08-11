@@ -140,7 +140,9 @@ fn build_summary(messages: &[&ChatMessage]) -> String {
         let role_label = if msg.role == "user" { "User" } else { "Assistant" };
         let text = msg.content_as_text().unwrap_or_default();
         let truncated = if text.len() > MAX_MSG_CHARS {
-            format!("{}...", &text[..MAX_MSG_CHARS])
+            let mut end = MAX_MSG_CHARS;
+            while end > 0 && !text.is_char_boundary(end) { end -= 1; }
+            format!("{}...", &text[..end])
         } else {
             text
         };

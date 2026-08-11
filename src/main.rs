@@ -61,30 +61,91 @@ use crate::tool::ToolRegistry;
 /// Extracted to workspace on first run only — existing files are never overwritten.
 const EMBEDDED_FILES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embedded_files.rs"));
 
-/// A tracing writer that mirrors every formatted line to both stdout and a file.
-/// Keeps live console output while persisting a copy under the workspace logs
-/// directory for debugging on machines without an attached console.
+/// Shared per-process log state: the workspace logs directory, file prefix, and
+/// the currently open per-day file together with the day it belongs to.
+struct DailyLogShared {
+    log_dir: std::path::PathBuf,
+    prefix: String,
+    state: std::sync::Mutex<DailyLogState>,
+}
+struct DailyLogState {
+    day: String,
+    file: Option<std::fs::File>,
+}
+impl DailyLogShared {
+    fn new(log_dir: std::path::PathBuf, prefix: String) -> Self {
+        Self {
+            log_dir,
+            prefix,
+            state: std::sync::Mutex::new(DailyLogState { day: String::new(), file: None }),
+        }
+    }
+    fn today() -> String {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    }
+    fn todays_path(&self, day: &str) -> std::path::PathBuf {
+        self.log_dir.join(format!("{}-{}.log", self.prefix, day))
+    }
+    /// Open today's file if the date changed or none is open yet, and (best-effort)
+    /// fall back to console-only when the file cannot be opened instead of aborting.
+    fn rotate(&self, st: &mut DailyLogState, today: &str) {
+        if st.day == today && st.file.is_some() {
+            return;
+        }
+        match std::fs::OpenOptions::new().create(true).append(true).open(self.todays_path(today)) {
+            Ok(f) => {
+                st.day = today.to_string();
+                st.file = Some(f);
+            }
+            Err(_) => {
+                st.day = today.to_string();
+                st.file = None;
+            }
+        }
+    }
+}
+
+/// A tracing writer that mirrors every formatted line to stdout and a per-day log
+/// file, creating a fresh rustagent-YYYY-MM-DD.log each day. Keeps live console
+/// output while persisting a copy under workspace/logs/ for headless machines.
 struct TeeLogWriter {
-    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+    shared: std::sync::Arc<DailyLogShared>,
 }
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TeeLogWriter {
     type Writer = TeeLogSink;
     fn make_writer(&'a self) -> Self::Writer {
-        TeeLogSink { file: self.file.clone() }
+        TeeLogSink { shared: self.shared.clone() }
     }
 }
+
 struct TeeLogSink {
-    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+    shared: std::sync::Arc<DailyLogShared>,
 }
 impl std::io::Write for TeeLogSink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // Recover from a poisoned lock instead of panicking (a panicked holder must
+        // not take down the logging path / process).
+        let mut st = match self.shared.state.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
         let _ = std::io::Write::write_all(&mut std::io::stdout(), buf);
-        let _ = std::io::Write::write_all(&mut *self.file.lock().unwrap(), buf);
+        let today = DailyLogShared::today();
+        self.shared.rotate(&mut st, &today);
+        if let Some(f) = st.file.as_mut() {
+            let _ = std::io::Write::write_all(f, buf);
+        }
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
         let _ = std::io::Write::flush(&mut std::io::stdout());
-        let _ = std::io::Write::flush(&mut *self.file.lock().unwrap());
+        let mut st = match self.shared.state.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if let Some(f) = st.file.as_mut() {
+            let _ = std::io::Write::flush(f);
+        }
         Ok(())
     }
 }
@@ -104,25 +165,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("Failed to create workspace directory {}: {}", workspace_dir, e);
     }
 
-    // Initialize logging: mirror to console AND workspace/logs/rustagent.log
-    let log_path = std::path::Path::new(&workspace_dir).join("logs").join("rustagent.log");
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let log_file = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
-    let tee = TeeLogWriter { file: std::sync::Arc::new(std::sync::Mutex::new(log_file)) };
+    // Initialize logging: mirror to console AND a per-day file under workspace/logs/.
+    // A fresh rustagent-YYYY-MM-DD.log is created per day and rotated at midnight.
+    let logs_dir = std::path::Path::new(&workspace_dir).join("logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    let log_shared = std::sync::Arc::new(DailyLogShared::new(logs_dir.clone(), "rustagent".to_string()));
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,chromiumoxide::handler=error")),
         )
-        .with_writer(tee)
+        .with_writer(TeeLogWriter { shared: log_shared.clone() })
         .with_ansi(false)
         .init();
 
     info!("Starting RustAgent...");
     info!("Executable directory: {}", exe_dir.display());
     info!("Workspace directory: {}", workspace_dir);
-    info!("Runtime log file: {}", log_path.display());
+    info!(
+        "Runtime log file: {}",
+        log_shared.todays_path(&DailyLogShared::today()).display()
+    );
     let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output", "knowledge", "rules"];
     for sub in &ws_subdirs {
         let p = std::path::Path::new(&workspace_dir).join(sub);
