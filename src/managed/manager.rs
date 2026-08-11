@@ -48,8 +48,8 @@ pub enum ManagerRoute {
 }
 
 /// Build the Manager's system prompt.
-fn manager_system_prompt() -> String {
-    r#"You are the Manager role in a long-horizon incident response task.
+fn manager_system_prompt(lang: &str) -> String {
+    let mut prompt = r#"You are the Manager role in a long-horizon incident response task.
 
 Your job is to plan the NEXT subtask for the Executor agent. You receive:
 - The original task description
@@ -149,7 +149,9 @@ Tool Reference — Use this to pick the RIGHT tool for the job:
 
 IR Phase Progression:
 - Collection → Analysis → Attribution → Containment → Eradication → Reporting → Done
-- Do not skip phases. Each phase builds on verified findings from the previous one."#.to_string()
+- Do not skip phases. Each phase builds on verified findings from the previous one."#.to_string();
+    prompt.push_str(&format!("\n\nLANGUAGE: The original task is written in {lang}. Write all free-text fields (Subtask, Success Criteria, Expected Evidence, reason) in {lang}; keep structure and tool names in English.\n"));
+    prompt
 }
 
 /// Build the Manager's user prompt from the TaskContract.
@@ -346,7 +348,8 @@ pub async fn plan_next(
     contract: &TaskContract,
     skills: &[SkillMetadata],
 ) -> Result<ManagerPlan, String> {
-    let mut system_prompt = manager_system_prompt();
+    let lang = crate::agent::llm_agent::detect_user_language(&contract.original_task);
+    let mut system_prompt = manager_system_prompt(&lang);
 
     // Plan A: inject available skills catalog so the Manager can plan subtasks
     // that leverage skills (e.g., "use archify-rs to generate architecture diagram").

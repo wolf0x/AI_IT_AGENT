@@ -603,6 +603,13 @@ impl ManagedRunner {
                         // assistant's final text for the TaskContract.
                         use futures::StreamExt;
                         while let Some(result) = stream.next().await {
+                            // STOP during an Executor round: abort so the underlying
+                            // agent loop sees its consumer close and stops issuing
+                            // tools (e.g. browser_cdp) instead of running on.
+                            if cancelled_flag.load(Ordering::SeqCst) {
+                                info!("[managed:{}] STOP during Executor round {} - aborting executor", session, round + 1);
+                                break;
+                            }
                             // Do NOT forward the Executor's Done event — it would
                             // cause server.rs to break the event loop prematurely.
                             if matches!(&result, Ok(AgentEvent::Done { .. })) {
@@ -660,6 +667,12 @@ impl ManagedRunner {
                 }
 
                 // ── F7: Crash-pattern scan ──
+                // If the executor round aborted due to STOP, skip audit/archive and
+                // leave the main loop; the round-start cancel check confirms it.
+                if cancelled_flag.load(Ordering::SeqCst) {
+                    info!("[managed:{}] Executor round {} aborted by STOP", session, round + 1);
+                    break;
+                }
                 // Detect common agent/tool crash signatures in Executor output and
                 // escalate to a human-gate instead of silently looping.
                 {

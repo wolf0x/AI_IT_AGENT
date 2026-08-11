@@ -267,6 +267,19 @@ impl LlmAgentBuilder {
     }
 }
 
+/// Detect the predominant writing system of a user message so generation can align
+/// with the user actual language (Chinese vs English) instead of drifting.
+pub fn detect_user_language(text: &str) -> String {
+    if text.chars().any(|c| {
+        let cp = c as u32;
+        (0x4E00..=0x9FFF).contains(&cp) || (0x3400..=0x4DBF).contains(&cp)
+    }) {
+        "Chinese".to_string()
+    } else {
+        "English".to_string()
+    }
+}
+
 impl LlmAgent {
     pub fn builder() -> LlmAgentBuilder {
         LlmAgentBuilder::new()
@@ -327,6 +340,10 @@ impl LlmAgent {
             "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
 You have FULL ACCESS to the user's system via built-in tools.\n\
 **Current date: {today}**\n\n\
+## LANGUAGE RULE (STRICT)\n\
+Always reply in the SAME language as the user most recent message. If the user\n\
+writes in Chinese, reply entirely in Chinese; if in English, reply in English. Only\n\
+switch languages when the user explicitly asks. 中文问题请用中文回复，英文问题请用英文回复。\n\n\
 ## CRITICAL: User Identity\n\
 The user's name is **{user_name}**. You MUST always address the user by their given name \"{user_name}\" \
 when speaking to them directly. Never use generic terms like \"user\", \"hey\", or \"there\" — always use \"{user_name}\".\n\n\

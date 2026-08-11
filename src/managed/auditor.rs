@@ -267,7 +267,7 @@ impl Auditor {
             String::new()
         };
 
-        let system = "You are the Auditor role in a long-horizon incident response task.\n\
+        let mut system = String::from("You are the Auditor role in a long-horizon incident response task.\n\
             ROLE: READ-ONLY verification. You never modify anything.\n\
             HARD RULES:\n\
             1. You receive ONLY real file content — never accept agent claims.\n\
@@ -277,14 +277,16 @@ impl Auditor {
                integrity: clean|suspect|violation\n\
                reason: <one sentence>\n\
             4. NEVER fabricate evidence. If the provided data is insufficient, say so explicitly.\n\
-            5. If evidence contradicts the claim, integrity = violation.";
+            5. If evidence contradicts the claim, integrity = violation.");
+        let lang = crate::agent::llm_agent::detect_user_language(criteria);
+        system.push_str(&format!("\nLANGUAGE: The success criteria are in {lang}. Write the reason line in {lang}; keep status/integrity tokens exactly as specified."));
         let user = format!(
             "Evidence file: {}\n\nSuccess criteria: {}\n\nEvidence content (truncated to {} chars):\n{}{}\n\nOutput the verdict in the required format.",
             path, criteria, self.auditor_context_chars, truncated, truncated_note
         );
 
         let messages = vec![
-            crate::model::ChatMessage::system(system),
+            crate::model::ChatMessage::system(&system),
             crate::model::ChatMessage::user(&user),
         ];
 

@@ -61,36 +61,68 @@ use crate::tool::ToolRegistry;
 /// Extracted to workspace on first run only — existing files are never overwritten.
 const EMBEDDED_FILES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embedded_files.rs"));
 
+/// A tracing writer that mirrors every formatted line to both stdout and a file.
+/// Keeps live console output while persisting a copy under the workspace logs
+/// directory for debugging on machines without an attached console.
+struct TeeLogWriter {
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TeeLogWriter {
+    type Writer = TeeLogSink;
+    fn make_writer(&'a self) -> Self::Writer {
+        TeeLogSink { file: self.file.clone() }
+    }
+}
+struct TeeLogSink {
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+impl std::io::Write for TeeLogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), buf);
+        let _ = std::io::Write::write_all(&mut *self.file.lock().unwrap(), buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut *self.file.lock().unwrap());
+        Ok(())
+    }
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,chromiumoxide::handler=error")),
-        )
-        .init();
-
-    info!("Starting RustAgent...");
-
-    // Resolve exe directory for relative paths
+    // ---- Resolve exe + workspace dir first so logging can target workspace/logs/ ----
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    info!("Executable directory: {}", exe_dir.display());
-
-    // ── Resolve workspace directory (before config, using defaults) ──
     let workspace_dir = if let Ok(userprofile) = std::env::var("USERPROFILE") {
         format!("{}\\.RustAgent\\workspace", userprofile)
     } else {
         exe_dir.join(".workspace").to_string_lossy().to_string()
     };
-    // Create workspace directory and all subdirectories
     if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
         tracing::warn!("Failed to create workspace directory {}: {}", workspace_dir, e);
-    } else {
-        info!("Workspace directory: {}", workspace_dir);
     }
+
+    // Initialize logging: mirror to console AND workspace/logs/rustagent.log
+    let log_path = std::path::Path::new(&workspace_dir).join("logs").join("rustagent.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let log_file = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
+    let tee = TeeLogWriter { file: std::sync::Arc::new(std::sync::Mutex::new(log_file)) };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,chromiumoxide::handler=error")),
+        )
+        .with_writer(tee)
+        .with_ansi(false)
+        .init();
+
+    info!("Starting RustAgent...");
+    info!("Executable directory: {}", exe_dir.display());
+    info!("Workspace directory: {}", workspace_dir);
+    info!("Runtime log file: {}", log_path.display());
     let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output", "knowledge", "rules"];
     for sub in &ws_subdirs {
         let p = std::path::Path::new(&workspace_dir).join(sub);
