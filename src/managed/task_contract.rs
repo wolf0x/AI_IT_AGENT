@@ -86,10 +86,16 @@ pub struct VerifiedAction {
 pub struct OpenLead {
     /// Short description of the lead.
     pub description: String,
-    /// Current status: investigating, waiting, abandoned.
+    /// Current status: pending / investigating / resolved / abandoned.
     pub status: String,
     /// Evidence or context so far.
     pub context: String,
+    /// Round index of the lead's last activity.
+    #[serde(default)]
+    pub round_index: usize,
+    /// Why the lead was resolved or abandoned.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// The TaskContract — persistent state for a managed task.
@@ -115,6 +121,12 @@ pub struct TaskContract {
     pub verified_actions: Vec<VerifiedAction>,
     /// Open leads being investigated.
     pub open_leads: Vec<OpenLead>,
+    /// Index into open_leads of the lead currently being pursued (DFS focus).
+    #[serde(default)]
+    pub current_focus: Option<usize>,
+    /// Total number of times the runner backtracked off a dead-end lead.
+    #[serde(default)]
+    pub backtracks: usize,
     /// Current Manager round index (0-based).
     pub current_round: usize,
     /// Maximum rounds allowed.
@@ -145,6 +157,8 @@ impl TaskContract {
             verified_findings: Vec::new(),
             verified_actions: Vec::new(),
             open_leads: Vec::new(),
+            current_focus: None,
+            backtracks: 0,
             current_round: 0,
             max_rounds,
             created_at: now,
@@ -262,18 +276,49 @@ impl TaskContract {
             // Update context with latest failure reason
             existing.context = context.to_string();
             existing.status = "pending".to_string(); // Reset to pending for re-investigation
+            existing.round_index = self.current_round;
             self.updated_at = Utc::now();
         } else {
             self.open_leads.push(OpenLead {
                 description: description.to_string(),
                 status: "pending".to_string(),
                 context: context.to_string(),
+                round_index: self.current_round,
+                reason: None,
             });
             // Enforce limit: remove oldest if over 20
             if self.open_leads.len() > 20 {
                 self.open_leads.remove(0);
             }
             self.updated_at = Utc::now();
+        }
+    }
+
+    /// Abandon the current focus lead and switch to the next still-active lead
+    /// (backtracking). Returns true if a lead remains to pursue, false if the
+    /// frontier is exhausted (all leads resolved/abandoned). Bounded: each call
+    /// abandons at most one lead; callers cap the total via MAX_GLOBAL_BACKTRACKS.
+    pub fn try_backtrack(&mut self, round: usize) -> bool {
+        // Abandon the current focus (it made no progress).
+        if let Some(idx) = self.current_focus {
+            if let Some(l) = self.open_leads.get_mut(idx) {
+                if l.status == "pending" || l.status == "investigating" {
+                    l.status = "abandoned".to_string();
+                    l.reason = Some("no progress after consecutive rounds".to_string());
+                    l.round_index = round;
+                    self.backtracks += 1;
+                }
+            }
+            self.current_focus = None;
+        }
+        // Pick the next still-active lead, or none if the frontier is exhausted.
+        if let Some(idx) = self.open_leads.iter().position(|l| l.status == "pending" || l.status == "investigating") {
+            self.current_focus = Some(idx);
+            self.open_leads[idx].status = "investigating".to_string();
+            self.open_leads[idx].round_index = round;
+            true
+        } else {
+            false
         }
     }
 
@@ -292,13 +337,18 @@ impl TaskContract {
     /// Mark task as completed.
     pub fn complete(&mut self) {
         self.phase = IrPhase::Completed;
+        // Clear stale resume metadata so a completed contract is not resumable.
+        self.phase_before_block = None;
         self.updated_at = Utc::now();
     }
 
     /// Mark task as blocked.
     pub fn block(&mut self, reason: String) {
         // Save the current phase before blocking so it can be restored on unblock
-        self.phase_before_block = Some(self.phase);
+        // Guard against double-blocking overwriting a previously saved phase.
+        if self.phase != IrPhase::Blocked {
+            self.phase_before_block = Some(self.phase);
+        }
         self.phase = IrPhase::Blocked;
         self.blocked_reason = Some(reason);
         self.updated_at = Utc::now();

@@ -29,6 +29,12 @@ use crate::runner::Runner;
 use crate::skill::SkillManager;
 use crate::tool::ToolRegistry;
 
+/// Deadlock guardrails for the F10 backtrack gate.
+/// A single lead is abandoned after this many rounds even when progress is slow.
+const PER_LEAD_ROUND_CAP: usize = 6;
+/// Hard cap on total backtracks before escalating to a human instead of looping.
+const MAX_GLOBAL_BACKTRACKS: usize = 10;
+
 /// The ManagedRunner orchestrates long-horizon tasks using the Manager-Executor pattern.
 pub struct ManagedRunner {
     /// The underlying runner for Executor rounds.
@@ -66,6 +72,26 @@ pub struct ManagedRunner {
     share_blackboard_enabled: Arc<AtomicBool>,
     /// Whether to use LLM to simulate human intervention when blocked.
     human_intervention_enabled: Arc<AtomicBool>,
+}
+
+/// Compact signature of the most recent verified/active content.
+///
+/// Robust to FIFO caps on findings/leads: list lengths can saturate, but the
+/// round_index/id of the newest item still advances when real work happens.
+fn progress_marker(c: &TaskContract) -> String {
+    let find = c.verified_findings
+        .last()
+        .map(|f| format!("{}:{}", f.round_index, f.id))
+        .unwrap_or_default();
+    let act = c.verified_actions
+        .last()
+        .map(|a| format!("{}:{}", a.round_index, a.id))
+        .unwrap_or_default();
+    let lead = c.open_leads
+        .last()
+        .map(|l| format!("{}:{}", l.status, l.description))
+        .unwrap_or_default();
+    format!("{}/{}/{}", find, act, lead)
 }
 
 impl ManagedRunner {
@@ -277,10 +303,12 @@ impl ManagedRunner {
             // F10: human-gate tracking — consecutive rounds with no progress
             // (no new findings, actions, or lead changes) trigger intervention.
             let mut stale_rounds: usize = 0;
-            let mut last_finding_count: usize = contract.verified_findings.len() + contract.verified_actions.len();
-            let mut last_leads_count: usize = contract.open_leads.len();
+            // Signature of the most recent verified/active content. Robust to FIFO
+            // caps on findings/leads (lengths saturate; identity still advances).
+            let mut last_progress: String = progress_marker(&contract);
             // Track how many times LLM human intervention has been attempted
             let mut human_intervention_attempts: usize = 0;
+            let mut focus_rounds: usize = 0;
             // F5: per-round archive directory for audit trail.
             let archive_dir = std::path::Path::new(&workspace_dir)
                 .join("output").join("managed").join(&contract_id);
@@ -304,25 +332,37 @@ impl ManagedRunner {
                 // Check multiple progress indicators, not just verified_findings.
                 // Some tasks (e.g., CTF solving, report generation) may not produce findings
                 // but still make progress through actions or lead resolution.
-                let current_progress = contract.verified_findings.len() 
-                    + contract.verified_actions.len();
-                // Also consider open_leads changes as progress
-                let leads_progress = contract.open_leads.len();
-                
-                if current_progress == last_finding_count && leads_progress == last_leads_count {
+                let marker = progress_marker(&contract);
+                if marker == last_progress {
                     stale_rounds += 1;
                 } else {
                     stale_rounds = 0;
-                    last_finding_count = current_progress;
-                    last_leads_count = leads_progress;
+                    last_progress = marker;
                 }
-                if stale_rounds >= 3 {
+                focus_rounds += 1;
+                if stale_rounds >= 3 || (contract.current_focus.is_some() && focus_rounds >= PER_LEAD_ROUND_CAP) {
                     info!("[managed:{}] Human gate: {} consecutive rounds without progress (findings: {}, actions: {}, leads: {})", 
                           session, stale_rounds, 
                           contract.verified_findings.len(), 
                           contract.verified_actions.len(),
                           contract.open_leads.len());
                     
+                    // ---- Backtrack: abandon the current dead-end lead and switch
+                    //      to a still-active lead before escalating to a human.
+                    if contract.backtracks < MAX_GLOBAL_BACKTRACKS {
+                        if contract.try_backtrack(round) {
+                            info!("[managed:{}] Backtracked to next lead (backtracks={})", session, contract.backtracks);
+                            let _ = tx.send(Ok(AgentEvent::text(
+                                &format!("\n\n*[Backtrack] no progress on current branch, switched to next pending lead (backtrack #{})*\n\n", contract.backtracks),
+                                &contract_id, "manager"
+                            ))).await;
+                            persist_contract(&memory_store, &contract_id, &session, &contract);
+                            stale_rounds = 0;
+                            focus_rounds = 0;
+                            last_progress.clear();
+                            continue;
+                        }
+                    }
                     // Check if human intervention simulation is enabled and not exhausted
                     if human_intervention_enabled.load(std::sync::atomic::Ordering::SeqCst) 
                         && human_intervention_attempts < 2 {

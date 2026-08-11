@@ -26,21 +26,26 @@ fn resolve_path(ctx: &ToolContext, path: &str) -> PathBuf {
 /// - Absolute path → use as-is (user explicitly specified)
 /// - Relative path with directory component (contains / or \, but not just ./ or .\) → resolve against working_dir
 /// - Relative path, filename only (or ./filename, .\filename) → default to workspace/output/ (artifact convention)
-fn resolve_write_path(ctx: &ToolContext, path: &str) -> PathBuf {
+fn resolve_write_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     if p.is_absolute() {
-        return p;
+        // User explicitly specified an absolute path - use as-is.
+        return Ok(p);
     }
     // Strip leading ./ or .\ to treat as bare filename
     let stripped = path.strip_prefix("./").or_else(|| path.strip_prefix(".\\")).unwrap_or(path);
+    // Reject parent-directory traversal so relative writes can't escape the workspace.
+    if std::path::Path::new(stripped).components().any(|c| c == std::path::Component::ParentDir) {
+        return Err("Path must stay inside the workspace; '..' traversal is not allowed. Use an absolute path inside the workspace instead.".to_string());
+    }
     // Check if remaining path has a directory component
     let has_dir_component = stripped.contains('/') || stripped.contains('\\');
     if has_dir_component {
-        // User specified a relative path with directory — respect it
-        PathBuf::from(&ctx.working_dir).join(p)
+        // User specified a relative path with directory - respect it
+        Ok(PathBuf::from(&ctx.working_dir).join(stripped))
     } else {
-        // Just a filename (or ./filename) — default to workspace/output/
-        PathBuf::from(&ctx.workspace_dir).join("output").join(stripped)
+        // Just a filename (or ./filename) - default to workspace/output/
+        Ok(PathBuf::from(&ctx.workspace_dir).join("output").join(stripped))
     }
 }
 
@@ -160,7 +165,7 @@ impl Tool for FileWriteTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let path = args["path"].as_str().ok_or_else(|| "Missing 'path'".to_string())?;
         let content = args["content"].as_str().ok_or_else(|| "Missing 'content'".to_string())?;
-        let resolved = resolve_write_path(ctx, path);
+        let resolved = resolve_write_path(ctx, path)?;
         if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {}", e))?;
         }
