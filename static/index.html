@@ -1225,6 +1225,10 @@ function handleMsg(msg){
       hideTyping();finalizeThink();finalizeTextBlock();
       renderPermRequest(msg);
       break;
+    case 'expert_prompt':
+      hideTyping();finalizeThink();finalizeTextBlock();
+      showExpertPrompt(msg.has_expert, msg.has_instant);
+      break;
     case 'notification':
       hideTyping();finalizeThink();finalizeTextBlock();
       showNotification(msg.message, msg.timestamp);
@@ -1704,6 +1708,54 @@ function doSend(txt,imgs,atts){
   showTyping();
   setAgentRunning(true);
 }
+var lastUserLang='';
+function isChinese(s){return /[\u4e00-\u9fff]/.test(s||'');}
+function showExpertPrompt(hasExpert,hasInstant){
+  var zh = lastUserLang==='en'?false:true;
+  var conv=document.getElementById('convArea');
+  var agentMsg=document.createElement('div');
+  agentMsg.className='msg assistant';
+  var summary= zh?'检测到本会话存在之前的发现。':'Detected prior work in this session.';
+  if(hasExpert)summary+= zh?'<br>• 已有未完成的 Expert 任务（续接将保留其 findings/进度）。':'<br>• There is an unfinished Expert task (Continue keeps its findings and progress).';
+  if(hasInstant)summary+= zh?'<br>• 有最近一次 Instant 的进展可继承（续接将接管它）。':'<br>• There is a recent Instant run to take over (Continue picks it up).';
+  agentMsg.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+summary+'</div><div class="msg-time">'+nowTimeStr()+'</div></div>';
+  conv.appendChild(agentMsg);
+  var card=document.createElement('div');
+  card.className='perm-request';
+  var hdr= zh?'Expert 模式：续接还是开新？':'Expert Mode: Continue or start new?';
+  var body= zh?'请选择如何处理本会话之前的发现：':'How should I handle this session&#39;s previous discoveries?';
+  var btnC= zh?'续接（默认）':'Continue (default)';
+  var btnN= zh?'开新一轮':'Start new round';
+  var countdown=document.createElement('div');
+  countdown.style.cssText='margin-top:8px;font-size:12px;color:#8e44ad;font-weight:500;';
+  card.innerHTML=
+    '<div class="perm-req-hdr">&#129516; '+hdr+'</div>'+
+    '<div class="perm-req-body"><div>'+body+'</div></div>'+
+    '<div class="perm-req-actions">'+
+      '<button class="btn-allow" onclick="sendExpertChoice(&#39;continue&#39;)">&#8635; '+btnC+'</button>'+
+      '<button class="btn-deny" onclick="sendExpertChoice(&#39;new&#39;)">&#10133; '+btnN+'</button>'+
+    '</div>';
+  card.appendChild(countdown);
+  conv.appendChild(card);
+  scrollBottom();
+  var left=30;var fired=false;
+  var clearTimer=function(){fired=true;};
+  card.querySelectorAll('.btn-allow,.btn-deny').forEach(function(b){b.addEventListener('click',clearTimer);});
+  function tick(){
+    if(fired)return;
+    left--;
+    if(left<=0){fired=true;countdown.textContent= zh?'已自动续接…':'Auto-continuing now…';sendExpertChoice('continue');return;}
+    countdown.textContent= zh?('30 秒未应答，将在 '+left+' 秒后自动续接（默认）…'):('No response in 30s - continuing (default) in '+left+'s…');
+    setTimeout(tick,1000);
+  }
+  countdown.textContent= zh?'30 秒未应答，将在 30 秒后自动续接（默认）…':'No response in 30s - continuing (default) in 30s…';
+  setTimeout(tick,1000);
+}
+
+function sendExpertChoice(choice){
+  if(ws&&connected){ws.send(JSON.stringify({type:'expert_choice',choice:choice,session:SESSION_ID}));addLog('Expert choice: '+(choice==='new'?'开新一轮':'续接'),'info');}
+}
+
 function onSendClick(){
   if(agentRunning){stopAgent();}
   else{sendMsg();}
@@ -1739,6 +1791,7 @@ function updateSendState(){
   sendBtn.disabled=!connected||(agentRunning?false:!hasContent);
 }
 function showUserMsg(txt,imgsOrTime,time){
+  if(typeof txt==='string'){lastUserLang=isChinese(txt)?'zh':'en';}
   let imgs=null;
   if(Array.isArray(imgsOrTime)){imgs=imgsOrTime;}
   else if(typeof imgsOrTime==='string'){time=imgsOrTime;}

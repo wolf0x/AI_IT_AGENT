@@ -1056,6 +1056,18 @@ impl MemoryStore {
         );
     }
 
+    /// Clear all active (non-completed) TaskContracts for one session.
+    /// Used when the user chooses to start a NEW Expert round instead of resuming,
+    /// so the reset only wipes this session's residue (not other sessions).
+    pub fn clear_session_active_contracts(&self, session_id: &str) -> Result<usize, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM task_contracts WHERE session_id = ?1 AND phase != 'completed'",
+            params![session_id],
+        )
+        .map_err(|e| format!("Failed to clear session active contracts: {}", e))
+    }
+
     /// Clear the blocked_reason column for a contract (called on resume).
     pub fn clear_contract_stopped(&self, contract_id: &str) {
         let conn = self.conn.lock().unwrap();

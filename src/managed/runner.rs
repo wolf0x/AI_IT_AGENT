@@ -160,6 +160,8 @@ impl ManagedRunner {
         permissions: Arc<Mutex<std::collections::HashMap<String, bool>>>,
         permission_pending: PendingMap,
         cancelled: Arc<AtomicBool>,
+        instant_context: Option<String>,
+        force_new: bool,
     ) -> AgentResult<EventStream> {
         info!("[managed:{}] Starting managed task (max_rounds: {})", session_id, self.max_rounds);
 
@@ -167,7 +169,14 @@ impl ManagedRunner {
         // When the user clicks STOP and sends a new message, we resume the
         // previous contract instead of creating a blank one. This preserves
         // verified_findings, manager_notes, open_leads, and the round counter.
-        let (contract_id, mut contract, resumed) = match self.memory_store.get_latest_active_contract(session_id) {
+        let (contract_id, mut contract, resumed) = if force_new {
+            // force_new -> skip any stale/unrelated Expert contract and always start a
+            // fresh contract for the current task (new round, or take over recent Instant
+            // progress instead of an older unrelated Expert contract).
+            let new_id = uuid::Uuid::new_v4().to_string();
+            (new_id.clone(), TaskContract::new(new_id, user_message.to_string(), scope.to_string(), self.max_rounds), false)
+        } else {
+            match self.memory_store.get_latest_active_contract(session_id) {
             Ok(Some((id, json))) => {
                 match TaskContract::from_json(&json) {
                     Ok(mut c) => {
@@ -209,6 +218,7 @@ impl ManagedRunner {
                 );
                 (contract_id, contract, false)
             }
+            }
         };
 
         // ── Seed TaskContract from Blackboard (Instant-mode context) ──
@@ -236,6 +246,26 @@ impl ManagedRunner {
                         }
                     }
                 }
+            }
+        }
+
+        // --- Seed same-session Instant-mode work into the contract ---
+        // The server passes the session's own Instant conversation so Expert can
+        // inherit it regardless of the (off-by-default) share_blackboard toggle.
+        // Applied to both resumed and fresh contracts so the Manager sees what
+        // was already discovered before planning from scratch.
+        if let Some(ctx) = instant_context {
+            let ctx = ctx.trim();
+            if !ctx.is_empty() {
+                contract.manager_notes.push(format!(
+                    "[Instant Mode Pre-work History - prior discoveries from this session; continue from these, do not redo completed collection]\n{}",
+                    ctx
+                ));
+                if contract.manager_notes.len() > 20 {
+                    let overflow = contract.manager_notes.len() - 20;
+                    contract.manager_notes.drain(0..overflow);
+                }
+                info!("[managed:{}] Seeded Instant-mode context ({} chars)", session_id, ctx.len());
             }
         }
 
@@ -311,7 +341,7 @@ impl ManagedRunner {
             let mut focus_rounds: usize = 0;
             // F5: per-round archive directory for audit trail.
             let archive_dir = std::path::Path::new(&workspace_dir)
-                .join("output").join("managed").join(&contract_id);
+                .join("managed").join(&contract_id);
             let _ = std::fs::create_dir_all(&archive_dir);
 
             loop {
@@ -764,7 +794,7 @@ impl ManagedRunner {
 
                 // ── F5: Per-round archive (audit trail, re-playable) ──
                 // Each round writes plan / executor output / audit report / state
-                // snapshot to output/managed/<contract>/round_N/. SQLite remains
+                // snapshot to managed/<contract>/round_N/. SQLite remains
                 // the recovery source; this directory is the audit archive.
                 {
                     let round_dir = archive_dir.join(format!("round_{:03}", round + 1));

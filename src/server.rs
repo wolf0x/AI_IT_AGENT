@@ -202,11 +202,11 @@ async fn workspace_file_handler(State(state): State<Arc<AppState>>, Path(path): 
 
 /// List the most recent output artifacts in workspace/output/ (max 5).
 /// GET /api/managed/runs — list Expert-mode run archives (F9 Dashboard).
-/// Scans output/managed/<contract_id>/round_NN/ for plan / audit / state files
+/// Scans managed/<contract_id>/round_NN/ for plan / audit / state files
 /// and returns a structured per-round view for the Runs dashboard.
 async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
     let managed_dir = std::path::Path::new(&state.workspace_dir)
-        .join("output").join("managed");
+        .join("managed");
 
     let mut runs: Vec<(i64, Value)> = Vec::new();
     if let Ok(mut contracts) = tokio::fs::read_dir(&managed_dir).await {
@@ -1125,44 +1125,136 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
 
                             let run_result = if managed {
                                 info!("Expert mode requested for session {}", session_id);
-                                // Per-task cancellation flag: the connection-level `cancelled`
-                                // is reset to false by the next chat message, which would
-                                // un-cancel a still-winding-down Expert task and allow two
-                                // managed loops to run on the same contract. Register a
-                                // dedicated flag for this run instead.
-                                let task_cancel = Arc::new(AtomicBool::new(false));
-                                {
-                                    let mut tasks = state.expert_tasks.lock().unwrap();
-                                    if let Some(old) = tasks.get(&session_id) {
-                                        // Supersede any previous task for this session.
-                                        old.store(true, Ordering::SeqCst);
+                                // -- Instant -> Expert: inherit same-session Instant progress --
+                                // Build a compact pre-work summary from the session's own
+                                // history so Expert can continue from what Instant already found.
+                                let instant_context: Option<String> = {
+                                    let mut parts: Vec<String> = Vec::new();
+                                    let mut count = 0usize;
+                                    let mut chars = 0usize;
+                                    for m in history.iter().rev() {
+                                        if m.role == "system" { continue; }
+                                        let Some(text) = m.content_as_text() else { continue };
+                                        let text = text.trim();
+                                        if text.is_empty() { continue; }
+                                        let role = if m.role == "user" { "User" } else { "Assistant" };
+                                        parts.push(format!("[{}] {}", role, text));
+                                        count += 1;
+                                        chars += text.len();
+                                        if count >= 6 || chars >= 3000 { break; }
                                     }
-                                    tasks.insert(session_id.clone(), task_cancel.clone());
+                                    parts.reverse();
+                                    if parts.is_empty() { None } else { Some(parts.join("\n\n")) }
+                                };
+                                let has_expert_residue =
+                                    state.memory_store.get_latest_active_contract(&session_id)
+                                        .ok().flatten().is_some();
+                                let has_instant = instant_context
+                                    .as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+
+                                // Ask once whether to CONTINUE prior work (resume the Expert
+                                // contract if present, else take over the Instant progress) or
+                                // start a NEW round. Wait up to 30s; on no reply, default CONTINUE.
+                                let mut start_fresh = false;
+                                let mut aborted = false;
+                                if has_expert_residue || has_instant {
+                                    let prompt_event = serde_json::json!({
+                                        "type": "expert_prompt",
+                                        "has_expert": has_expert_residue,
+                                        "has_instant": has_instant,
+                                        "session": session_id,
+                                    });
+                                    {
+                                        let mut sink = ws_sink.lock().await;
+                                        let _ = sink.send(Message::Text(prompt_event.to_string().into())).await;
+                                    }
+                                    let mut choice: Option<String> = None;
+                                    let choice_timeout = std::time::Duration::from_secs(30);
+                                    loop {
+                                        let recv = ws_rx.recv();
+                                        match tokio::time::timeout(choice_timeout, recv).await {
+                                            Ok(Some(Message::Text(ref t))) => {
+                                                if let Ok(p) = serde_json::from_str::<Value>(t) {
+                                                    match p["type"].as_str() {
+                                                        Some("expert_choice") => {
+                                                            let c = p["choice"].as_str().unwrap_or("continue").to_string();
+                                                            if c == "continue" || c == "new" { choice = Some(c); }
+                                                        }
+                                                        Some("stop") => {
+                                                            cancelled.store(true, Ordering::SeqCst);
+                                                            aborted = true;
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                            Ok(Some(Message::Close(_))) => {
+                                                cancelled.store(true, Ordering::SeqCst);
+                                                aborted = true;
+                                            }
+                                            Ok(None) => { aborted = true; }
+                                            Err(_elapsed) => {
+                                                info!("[managed:{}] Expert choice prompt timed out (30s) - defaulting to CONTINUE", session_id);
+                                                choice = Some("continue".to_string());
+                                            }
+                                            _ => {}
+                                        }
+                                        if choice.is_some() || aborted { break; }
+                                    }
+                                    if !aborted && choice.as_deref() == Some("new") {
+                                        info!("[managed:{}] User chose NEW Expert round - clearing residue", session_id);
+                                        let _ = state.memory_store.clear_session_active_contracts(&session_id);
+                                        start_fresh = true;
+                                    }
                                 }
-                                let managed_runner = crate::managed::ManagedRunner::new(
-                                    state.runner.clone(),
-                                    state.provider.clone(),
-                                    model.clone(),
-                                    state.expert_max_managed_rounds, // max managed rounds (Expert mode)
-                                    state.memory_store.clone(),
-                                    state.tools.clone(),
-                                    ".".to_string(),
-                                    state.workspace_dir.clone(),
-                                    state.expert_max_iterations,
-                                    state.rabbit_hole_threshold,
-                                    ctx_window,
-                                    state.expert_tool_timeout_secs as u64,
-                                    state.expert_max_tool_retries,
-                                    state.skill_manager.clone(),
-                                    state.computer_use_enabled.clone(),
-                                    state.share_blackboard_enabled.clone(),
-                                    state.human_intervention_enabled.clone(),
-                                );
-                                managed_runner.run(
-                                    &content, &session_id, &model, &managed_scope,
-                                    state.permissions.clone(), state.permission_pending.clone(),
-                                    task_cancel,
-                                ).await
+
+                                if aborted {
+                                    info!("[managed:{}] Expert start cancelled (no choice)", session_id);
+                                    let stopped_stream: crate::agent::EventStream = Box::pin(futures::stream::iter(vec![
+                                        Ok(AgentEvent::text("\n\n*[Expert start cancelled - no choice received]*", &session_id, "system")),
+                                        Ok(AgentEvent::done(&session_id, "system")),
+                                    ]));
+                                    Ok(stopped_stream)
+                                } else {
+                                    let task_cancel = Arc::new(AtomicBool::new(false));
+                                    {
+                                        let mut tasks = state.expert_tasks.lock().unwrap();
+                                        if let Some(old) = tasks.get(&session_id) {
+                                            old.store(true, Ordering::SeqCst);
+                                        }
+                                        tasks.insert(session_id.clone(), task_cancel.clone());
+                                    }
+                                    let managed_runner = crate::managed::ManagedRunner::new(
+                                        state.runner.clone(),
+                                        state.provider.clone(),
+                                        model.clone(),
+                                        state.expert_max_managed_rounds,
+                                        state.memory_store.clone(),
+                                        state.tools.clone(),
+                                        ".".to_string(),
+                                        state.workspace_dir.clone(),
+                                        state.expert_max_iterations,
+                                        state.rabbit_hole_threshold,
+                                        ctx_window,
+                                        state.expert_tool_timeout_secs as u64,
+                                        state.expert_max_tool_retries,
+                                        state.skill_manager.clone(),
+                                        state.computer_use_enabled.clone(),
+                                        state.share_blackboard_enabled.clone(),
+                                        state.human_intervention_enabled.clone(),
+                                    );
+                                    let instant_ctx = if start_fresh { None } else { instant_context };
+                                    // Continue prioritizes the most recent Instant progress when
+                                    // present, so we do NOT blindly resume an older unrelated
+                                    // Expert contract. Only resume the Expert contract when there
+                                    // is no Instant work to take over.
+                                    let force_new_run = start_fresh || has_instant;
+                                    managed_runner.run(
+                                        &content, &session_id, &model, &managed_scope,
+                                        state.permissions.clone(), state.permission_pending.clone(),
+                                        task_cancel, instant_ctx, force_new_run,
+                                    ).await
+                                }
                             } else {
                                 state.runner.run(
                                     &content, &session_id, &model, max_iter, history.clone(),
