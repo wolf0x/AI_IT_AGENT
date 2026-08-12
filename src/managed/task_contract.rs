@@ -232,6 +232,11 @@ pub struct TaskContract {
     pub verified_actions: Vec<VerifiedAction>,
     /// Open leads being investigated.
     pub open_leads: Vec<OpenLead>,
+    /// Remaining work / unresolved requirements after the latest round. This
+    /// is the authoritative to-do list the Manager plans forward from (audit-report
+    /// style cross-round memory, per LongHorizon-Harness).
+    #[serde(default)]
+    pub remaining_work: Vec<String>,
     /// Index into open_leads of the lead currently being pursued (DFS focus).
     #[serde(default)]
     pub current_focus: Option<usize>,
@@ -288,6 +293,7 @@ impl TaskContract {
             manager_notes: Vec::new(),
             blocked_reason: None,
             phase_before_block: None,
+            remaining_work: Vec::new(),
 
             domain,
             records: Vec::new(),

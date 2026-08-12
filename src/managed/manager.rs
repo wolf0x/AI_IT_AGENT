@@ -30,6 +30,9 @@ pub struct ManagerPlan {
     pub phase: Option<IrPhase>,
     /// Execution channel: cli / gui / ask (default: cli).
     pub channel: String,
+    /// Remaining work / unresolved requirements after this subtask; persisted
+    /// into the TaskContract so the next round plans forward from it.
+    pub remaining_work: Vec<String>,
     /// Raw LLM output of the Manager (original reasoning + structured plan).
     /// Persisted to round_dir/plan_raw.md by the runner for audit replay.
     pub raw_output: String,
@@ -88,6 +91,7 @@ fn manager_system_prompt(lang: &str, domain: TaskDomain, tool_defs: &[ToolDefini
     prompt.push_str("Subtask: <clear, specific next step>\n\n");
     prompt.push_str("Success Criteria: <how to know this subtask is complete>\n\n");
     prompt.push_str("Expected Evidence: <one artifact file path per line>\n\n");
+    prompt.push_str("Remaining Work: <concise line per item still left after this subtask, e.g. connect to the discovered WebSocket terminal / decrypt the C2 traffic. Leave empty when nothing remains>\n\n");
     prompt.push_str(&format!("Phase: <{}>\n\n", phases));
     prompt.push_str("Route: <continue | done | blocked:reason>\n```\n\n");
     prompt.push_str("Rules:\n");
@@ -110,6 +114,7 @@ fn manager_system_prompt(lang: &str, domain: TaskDomain, tool_defs: &[ToolDefini
     prompt.push_str("14. Each subtask must be a clear step FORWARD. If the newest verified outcome enables one concrete next action (e.g., connect to a discovered WebSocket terminal, analyze a downloaded binary), the next subtask MUST perform that action, NOT re-collect the same pages/hints.\n");
     prompt.push_str("15. At least one Expected Evidence path MUST be NEW and distinct from any file verified in prior rounds. Committing a subtask that merely repeats an earlier round\'s objective or output filename is a planning failure.\n");
 
+    prompt.push_str("16. If Remaining Work (from the task state) is non-empty, the next subtask MUST be the first unaddressed item in Remaining Work. Treat Remaining Work as the authoritative to-do list for deciding the next step, NOT a suggestion.\n");
     prompt.push_str(&format!("\n{}\n", tool_ref));
     prompt.push_str(&format!("\nLANGUAGE: The original task is written in {lang}. Write all free-text fields (Subtask, Success Criteria, Expected Evidence, reason) in {lang}; keep structure and tool names in English.\n"));
     prompt
@@ -166,6 +171,14 @@ fn manager_user_prompt(contract: &TaskContract) -> String {
             prompt.push_str(&format!("- {} → {}\n", a.description, a.verification));
         }
         prompt.push('\n');
+    }
+
+    if !contract.remaining_work.is_empty() {
+        prompt.push_str("# Remaining Work (do THESE next, in order)\n");
+        for (i, rw) in contract.remaining_work.iter().enumerate() {
+            prompt.push_str(&format!("{}. {}\n", i + 1, rw));
+        }
+        prompt.push_str("\n");
     }
 
     if !contract.open_leads.is_empty() {
@@ -243,6 +256,7 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
     let mut route = ManagerRoute::Continue;
     let mut phase: Option<IrPhase> = None;
     let mut channel = "cli".to_string();
+    let mut remaining_work: Vec<String> = Vec::new();
 
     let mut current_section = "";
 
@@ -281,6 +295,12 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
                 else if ch.starts_with("ask") { "ask".to_string() }
                 else { "cli".to_string() };
             current_section = "";
+        } else if trimmed.starts_with("Remaining Work:") {
+            let item = trimmed.trim_start_matches("Remaining Work:").trim();
+            if !item.is_empty() { remaining_work.push(item.to_string()); }
+            current_section = "remaining";
+        } else if !trimmed.is_empty() && current_section == "remaining" {
+            remaining_work.push(trimmed.to_string());
         } else if !trimmed.is_empty() && current_section == "subtask" {
             subtask.push(' ');
             subtask.push_str(trimmed);
@@ -305,6 +325,7 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
         route,
         phase,
         channel,
+        remaining_work,
         raw_output: output.to_string(),
     }
 }

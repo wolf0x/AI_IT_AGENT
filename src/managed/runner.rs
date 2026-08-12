@@ -433,6 +433,10 @@ impl ManagedRunner {
                     round + 1, plan.subtask, plan.success_criteria, plan.route
                 );
                 let _ = tx.send(Ok(AgentEvent::text(&plan_event, &contract_id, "manager"))).await;
+                // Persist the Manager-declared Remaining Work into the contract so
+                // the next round plans forward from it (audit-report memory).
+                contract.remaining_work = plan.remaining_work.clone();
+                persist_contract(&memory_store, &contract_id, &session, &contract);
 
                 // Check route before executing
                 match &plan.route {
