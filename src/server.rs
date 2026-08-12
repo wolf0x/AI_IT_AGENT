@@ -202,6 +202,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/providers", post(providers_create_handler))
         .route("/api/providers/{name}", put(providers_update_handler))
         .route("/api/providers/{name}", delete(providers_delete_handler))
+        .route("/api/providers/{name}/test", post(providers_test_handler))
         .route("/api/health", get(health_handler))
         .route("/api/skills", get(skills_handler))
         .route("/api/skills", post(skills_create_handler))
@@ -647,7 +648,26 @@ async fn providers_delete_handler(
     Json(json!({"ok": true, "name": name}))
 }
 
+/// POST /api/providers/{name}/test - verify a provider/model is reachable and
+/// correctly configured by sending a tiny chat request and reporting latency.
+async fn providers_test_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    match state.provider.test_connection(&name).await {
+        Ok((latency_ms, reply)) => {
+            info!("Provider '{}' tested OK ({} ms)", name, latency_ms);
+            Json(json!({"ok": true, "name": name, "latency_ms": latency_ms, "reply": reply}))
+        }
+        Err(e) => {
+            warn!("Provider '{}' test failed: {}", name, e);
+            Json(json!({"ok": false, "name": name, "error": e}))
+        }
+    }
+}
+
 async fn skills_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+
     let skills = state.skill_manager.list();
     Json(json!({ "skills": skills, "count": skills.len() }))
 }

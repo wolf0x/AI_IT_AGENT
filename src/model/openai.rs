@@ -117,7 +117,57 @@ impl OpenAiProvider {
         models.iter().find(|m| m.name == name).cloned().or_else(|| models.first().cloned())
     }
 
+    /// Quick connectivity test for a configured model/provider. Sends a tiny
+    /// non-streaming chat request and reports latency + a short reply.
+    pub async fn test_connection(&self, model_name: &str) -> Result<(u64, String), String> {
+        let model = self.find_model(model_name).await
+            .ok_or_else(|| format!("No model configured with name '{model_name}'"))?;
+        let api_key = model.resolved_api_key();
+        let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
+
+        let mut body = serde_json::json!({
+            "model": model.name,
+            "messages": [{"role": "user", "content": "Reply with a single word: pong"}],
+            "stream": false,
+            "temperature": 0.0,
+        });
+        body[max_tokens_key(&model.name)] = serde_json::json!(16u32);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|e| format!("failed to build http client: {e}"))?;
+
+        let mut req = client.post(&url).header("Content-Type", "application/json");
+        if !api_key.is_empty() {
+            req = req.bearer_auth(&api_key);
+        }
+
+        let start = std::time::Instant::now();
+        let resp = req.json(&body).send().await
+            .map_err(|e| format!("connection failed: {e}"))?;
+        let status = resp.status();
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let text = resp.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            let preview: String = text.chars().take(300).collect();
+            return Err(format!("HTTP {status}: {preview}"));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("bad response JSON: {e}"))?;
+        let content = parsed["choices"][0]["message"]["content"]
+            .as_str().unwrap_or("").trim().to_string();
+        let reply = if content.is_empty() {
+            "(empty reply)".to_string()
+        } else {
+            content.chars().take(120).collect()
+        };
+        Ok((latency_ms, reply))
+    }
+
     /// Non-streaming LLM call for lightweight tasks (e.g. knowledge distillation).
+
     /// Returns the assistant's text content directly. No tool support, lower token limit.
     pub async fn chat_simple(
         &self,

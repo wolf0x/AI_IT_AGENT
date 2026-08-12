@@ -105,6 +105,11 @@ fn manager_system_prompt(lang: &str, domain: TaskDomain, tool_defs: &[ToolDefini
     prompt.push_str("\nCRITICAL — Evidence Discipline Rules:\n");
     prompt.push_str("11. Only entries recorded as Verified Findings/Outcomes have been independently checked. Treat everything else (prior session context, manager notes) as unverified leads to re-audit.\n");
     prompt.push_str("12. **MANDATORY OUTPUT LOCATION**: ALL artifacts and reports MUST be saved under the `workspace/output/` directory. Expected Evidence paths must be relative to workspace/output/ (e.g. \"output/result.json\").\n");
+    prompt.push_str("\nCRITICAL - STRICT ADVANCE RULE:\n");
+    prompt.push_str("13. If the previous round produced one or more VERIFIED findings/outcomes, the next subtask MUST be a strict advance from the most recent one: open the artifact already saved, call the endpoint already discovered, or act directly on the newest verified fact. NEVER re-fetch, re-capture, or re-derive a result whose artifact/outcome is already verified.\n");
+    prompt.push_str("14. Each subtask must be a clear step FORWARD. If the newest verified outcome enables one concrete next action (e.g., connect to a discovered WebSocket terminal, analyze a downloaded binary), the next subtask MUST perform that action, NOT re-collect the same pages/hints.\n");
+    prompt.push_str("15. At least one Expected Evidence path MUST be NEW and distinct from any file verified in prior rounds. Committing a subtask that merely repeats an earlier round\'s objective or output filename is a planning failure.\n");
+
     prompt.push_str(&format!("\n{}\n", tool_ref));
     prompt.push_str(&format!("\nLANGUAGE: The original task is written in {lang}. Write all free-text fields (Subtask, Success Criteria, Expected Evidence, reason) in {lang}; keep structure and tool names in English.\n"));
     prompt
@@ -140,6 +145,19 @@ fn manager_user_prompt(contract: &TaskContract) -> String {
             prompt.push_str(&format!("- [{}] {} — {}\n", f.severity.to_uppercase(), f.title, f.evidence_summary));
         }
         prompt.push('\n');
+    }
+
+    if let Some(last) = contract.verified_findings.last() {
+        prompt.push_str("# Most Recent Verified Outcome (plan the immediate next step from THIS)\n\n");
+        prompt.push_str(&format!(
+            "- [{}] {} - {}\n\n",
+            last.severity.to_uppercase(), last.title, last.evidence_summary
+        ));
+        prompt.push_str(
+            "STRICT ADVANCE: your next subtask MUST build directly on this outcome. \
+             Open/analyze the artifact already saved, call the endpoint already discovered, or act on this newest \
+             fact. Do NOT re-fetch, re-capture, or re-save anything already verified.\n\n"
+        );
     }
 
     if !contract.verified_actions.is_empty() {
