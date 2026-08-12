@@ -83,6 +83,23 @@ impl AuditResult {
     }
 }
 
+
+/// Round-level audit verdict produced by an INDEPENDENT, fresh-context reviewer.
+/// This is the only mechanism that may certify that a round's work is complete
+/// and clean; the executor's own claims never advance persistent state directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditReport {
+    /// Round completion: complete | incomplete | blocked.
+    pub completion: String,
+    /// Evidence integrity: clean | suspect | violation.
+    pub integrity: String,
+    /// One-sentence reviewer note.
+    pub note: String,
+    /// Facts the auditor independently corroborated.
+    pub supported_facts: Vec<String>,
+    /// Unmet requirements / open gaps.
+    pub gaps: Vec<String>,
+}
 /// Auditor for managed task execution.
 ///
 /// Hybrid design:
@@ -333,6 +350,77 @@ impl Auditor {
         }
     }
 
+    /// Independent, fresh-context assessment of an entire round. Receives only the
+    /// original task, the subtask contract, success criteria, expected evidence, and
+    /// a BOUNDED summary of the executor's output (never the raw trajectory). Returns
+    /// None when no LLM auditor is configured (caller then skips certification).
+    pub async fn audit_round(
+        &self,
+        original_task: &str,
+        subtask: &str,
+        success_criteria: &str,
+        expected_evidence: &str,
+        executor_summary: &str,
+        phase: &str,
+    ) -> Option<AuditReport> {
+        let provider = self.provider.as_ref()?;
+        let system = "You are the independent AUDITOR in a long-horizon task loop.\n\
+            ROLE: read-only. You never execute tools; you only reason about the evidence handed to you.\n\
+            The subtask is COMPLETE only if the acceptance criteria are met AND integrity is clean.\n\
+            An executor's own claim is NEVER sufficient; certify only what the provided evidence supports.\n\
+            Output EXACTLY the following format, one field per line:\n\
+            completion: complete|incomplete|blocked\n\
+            integrity: clean|suspect|violation\n\
+            note: <one sentence>\n\
+            facts: <semicolon-separated facts you corroborated, or none>\n\
+            gaps: <semicolon-separated unmet requirements, or none>";
+        let user = format!(
+            "Original task: {}\nPhase: {}\nThis round's subtask: {}\nSuccess criteria: {}\nExpected evidence: {}\nExecutor summary (bounded, NOT the full log): {}\n\nReturn the verdict.",
+            original_task, phase, subtask, success_criteria, expected_evidence, executor_summary
+        );
+        let messages = vec![
+            crate::model::ChatMessage::system(system),
+            crate::model::ChatMessage::user(&user),
+        ];
+        let output = match provider.chat_simple(&self.auditor_model, &messages).await {
+            Ok(o) => o,
+            Err(e) => {
+                return Some(AuditReport {
+                    completion: "incomplete".to_string(),
+                    integrity: "suspect".to_string(),
+                    note: format!("round audit call failed: {}", e),
+                    supported_facts: Vec::new(),
+                    gaps: Vec::new(),
+                });
+            }
+        };
+        let lower = output.to_lowercase();
+        let completion = if lower.contains("completion: complete") || lower.contains("completion:complete") {
+            "complete"
+        } else if lower.contains("completion: blocked") || lower.contains("completion:blocked") {
+            "blocked"
+        } else {
+            "incomplete"
+        };
+        let integrity = if lower.contains("integrity: clean") || lower.contains("integrity:clean") {
+            "clean"
+        } else if lower.contains("integrity: violation") || lower.contains("integrity:violation") {
+            "violation"
+        } else {
+            "suspect"
+        };
+        let note = output.lines()
+            .find(|l| l.trim_start().starts_with("note:"))
+            .map(|l| l.trim_start().trim_start_matches("note:").trim().to_string())
+            .unwrap_or_else(|| "no note".to_string());
+        Some(AuditReport {
+            completion: completion.to_string(),
+            integrity: integrity.to_string(),
+            note,
+            supported_facts: collect_audit_list(&output, "facts"),
+            gaps: collect_audit_list(&output, "gaps"),
+        })
+    }
     /// Verify a process is no longer running.
     async fn verify_process_gone(&self, action_desc: &str) -> AuditResult {
         // Extract process name from action description
@@ -418,4 +506,16 @@ fn extract_process_name(action_desc: &str) -> String {
     }
 
     String::new()
+}
+
+// Parse a semicolon-separated list from an audit field line (facts:/gaps:).
+fn collect_audit_list(output: &str, key: &str) -> Vec<String> {
+    if let Some(line) = output.lines().find(|l| l.trim_start().starts_with(key)) {
+        let val = line.trim_start().trim_start_matches(key).trim().trim_start_matches(':').trim().to_string();
+        if val.is_empty() || val.eq_ignore_ascii_case("none") {
+            return Vec::new();
+        }
+        return val.split(';').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+    }
+    Vec::new()
 }

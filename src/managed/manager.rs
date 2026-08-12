@@ -8,9 +8,10 @@
 //! This fresh-context approach prevents the context drift that plagues long tasks
 //! when using a single accumulating conversation history.
 
-use super::task_contract::{IrPhase, TaskContract};
+use super::task_contract::{IrPhase, TaskContract, TaskDomain};
 use crate::model::openai::OpenAiProvider;
 use crate::model::ChatMessage;
+use crate::model::ToolDefinition;
 use crate::skill::types::SkillMetadata;
 use std::sync::Arc;
 
@@ -48,109 +49,64 @@ pub enum ManagerRoute {
 }
 
 /// Build the Manager's system prompt.
-fn manager_system_prompt(lang: &str) -> String {
-    let mut prompt = r#"You are the Manager role in a long-horizon incident response task.
+/// Dynamically assemble the Manager system prompt from the task domain and the
+/// ACTUAL live tool registry — no hardcoded per-domain tool lists. The Manager gets:
+///   - a domain-appropriate role + phase vocabulary,
+///   - the real set of available tools (so it picks the right one for the goal),
+///   - domain-agnostic planning / anti-stagnation / evidence rules.
+fn manager_system_prompt(lang: &str, domain: TaskDomain, tool_defs: &[ToolDefinition]) -> String {
+    let (role, phases, focus) = match domain {
+        TaskDomain::Ir => (
+            "You are the Manager role in a long-horizon incident response task.",
+            "collection | analysis | attribution | containment | eradication | reporting",
+            "If verified findings suggest a critical threat, prioritize containment in the next subtask.",
+        ),
+        TaskDomain::Generic => (
+            "You are the Manager role in a long-horizon autonomous task agent.",
+            "plan | execute | verify",
+            "If the task targets a URL/web app/CTF/research problem, plan steps around the ACTUAL target (fetch pages, interact with forms, analyze responses, capture the result). Do NOT redirect to unrelated host/system forensics unless the task asks for it.",
+        ),
+    };
 
-Your job is to plan the NEXT subtask for the Executor agent. You receive:
-- The original task description
-- Current IR phase and verified progress
-- Open leads and manager notes
+    // Render the real tool list from the registry, not a hardcoded list.
+    let mut tool_ref = String::new();
+    if !tool_defs.is_empty() {
+        tool_ref.push_str("Tool Reference — pick the RIGHT tool for the job. ONLY these tools actually exist:\n");
+        for t in tool_defs {
+            let desc: String = t.function.description.chars().take(200).collect();
+            tool_ref.push_str(&format!("- `{}` — {}\n", t.function.name, desc));
+        }
+    } else {
+        tool_ref.push_str("Tool Reference — no tool list is available; infer acceptable tools from the task.\n");
+    }
 
-You MUST output a structured plan in the following format:
-
-```
-Subtask: <clear, specific description of what the Executor should do next>
-
-Success Criteria: <how to know this subtask is complete>
-
-Expected Evidence: <what files or artifacts should be produced; one file path per line>
-
-Phase: <collection | analysis | attribution | containment | eradication | reporting>
-
-Route: <continue | done | blocked:reason>
-```
-
-Rules:
-1. Focus on ONE subtask at a time. Do not try to plan the entire remaining workflow.
-2. The subtask must be actionable with available tools. See the Tool Reference below for which tools to use for each task type.
-3. Success criteria must be objective and verifiable.
-4. Route = "continue" if more work remains after this subtask.
-5. Route = "done" if the original task is fully complete (all phases done, report generated).
-6. Route = "blocked:<reason>" if the task cannot proceed without human input.
-7. Base your plan on VERIFIED findings only — do not assume unverified results.
-8. If verified findings suggest a critical threat, prioritize containment in the next subtask.
-9. Keep the subtask focused — it should be completable in 5-15 tool calls.
-10. State the phase the NEXT subtask belongs to. Never regress — the phase must be the same as or later than the current phase.
-
-CRITICAL — Anti-Stagnation Rules:
-11. NEVER plan a subtask that is just "summarize findings", "review results", or "analyze what we have". Every subtask MUST require the Executor to run concrete tools and produce concrete artifacts.
-12. If Manager Notes show 3+ consecutive rounds with NO new verified findings, you MUST either:
-    a. Change strategy significantly (different tools, different targets, broader scope)
-    b. Set Route = "blocked:No progress after N rounds, need human guidance" 
-13. If the same evidence path failed verification, do NOT retry it — try a different approach or acknowledge the limitation.
-14. The Subtask description MUST name at least one concrete tool. Generic descriptions like "investigate further" are not acceptable.
-
-CRITICAL — Evidence Discipline Rules:
-15. EVERY fact you reference from Verified Findings MUST cite its source round (round_index). If a fact has no verified evidence behind it, explicitly write "待审计" (pending audit) — never present unverified claims as established fact.
-16. NEVER treat the Executor's own output (manager notes, self-reports) as verified fact. Only entries in Verified Findings / Verified Actions have passed Auditor verification — everything else is unconfirmed.
-17. Each subtask SHOULD declare its execution channel:
-    - Channel: cli — the Executor runs tools/commands on the system (default)
-    - Channel: gui — the task requires GUI interaction (browser, desktop)
-    - Channel: ask — the task needs human input before it can proceed
-    If no channel is specified, cli is assumed.
-18. **MANDATORY OUTPUT LOCATION**: ALL artifacts, evidence files, reports, and any other outputs MUST be saved under the `workspace/output/` directory. NEVER create files in C:\, D:\, or any other location outside workspace/output/. The Expected Evidence paths MUST always be relative to workspace/output/ (e.g., "output/scan_result.json", not "C:\evidence\scan_result.json").
-
-Tool Reference — Use this to pick the RIGHT tool for the job:
-
-  Windows Host Forensics (local machine):
-    ir_scan      — Full host collection: processes, network, autoruns, services, events, files, etc.
-    ir_process   — List/kill processes on this machine
-    ir_network   — Network connections, DNS, firewall, lateral traces
-    ir_file      — File forensics: temp dirs, ADS, hashes
-    ir_persistence — Autoruns, scheduled tasks, WMI, services, registry hooks
-    ir_eventlog  — Structured event log queries (logons, failures, PowerShell, Sysmon)
-    ir_driver    — Driver signature analysis
-    ir_artifacts — Prefetch, ShimCache, AmCache, UserAssist execution evidence
-    ir_account   — Local user/group enumeration
-    ir_vss       — Volume Shadow Copy operations
-    ir_memdump   — Process memory dumps
-    ir_usn       — NTFS USN Journal analysis
-
-  Web Investigation (NOT ir_scan — use these instead):
-    web_fetch      — Fetch content from a URL (HTTP GET/POST). Use allow_private=true for internal targets
-    ir_weblog_scan — Parse Nginx/Apache access logs for threats (SQLi, XSS, RCE)
-    ir_evtx_parse  — Parse EVTX event log files
-
-  File & Malware Analysis:
-    malware_scan   — YARA scan files/directories
-    malware_deep   — Deep static PE/ELF/Mach-O analysis
-    ir_eml         — Parse .eml email files for phishing analysis
-
-  Network & Log Analysis:
-    ir_pcap_analyze — Analyze pcap/pcapng captures
-    ir_log_parse    — Generic log parser (syslog, CSV, etc.)
-    ir_timeline     — Chronological event timeline reconstruction
-
-  Analysis & Reporting:
-    ir_analyzer    — Auto-analyze IR scan output for findings
-    ir_attackpath  — Build attack path / privilege escalation graph
-    ir_case        — Case file tracker
-    ir_report      — Generate HTML/PDF incident report
-
-  Linux Remote IR (SSH):
-    ir_linux       — 45 detection modules across 13 categories on remote Linux hosts
-
-  General:
-    shell_exec     — Execute PowerShell/CMD commands
-    sys_eventlog   — Raw Windows Event Log queries
-    sys_info       — System information
-    sys_process    — General process listing
-    sys_service    — Service management
-
-IR Phase Progression:
-- Collection → Analysis → Attribution → Containment → Eradication → Reporting → Done
-- Do not skip phases. Each phase builds on verified findings from the previous one."#.to_string();
-    prompt.push_str(&format!("\n\nLANGUAGE: The original task is written in {lang}. Write all free-text fields (Subtask, Success Criteria, Expected Evidence, reason) in {lang}; keep structure and tool names in English.\n"));
+    let mut prompt = String::new();
+    prompt.push_str(&format!("{}\n\n", role));
+    prompt.push_str("Your job is to plan the NEXT subtask for the Executor agent. You receive:\n");
+    prompt.push_str("- The original task description\n- Verified progress / outcomes from prior subtasks\n- Open leads and manager notes\n\n");
+    prompt.push_str("You MUST output a structured plan in the following format:\n\n```\n");
+    prompt.push_str("Subtask: <clear, specific next step>\n\n");
+    prompt.push_str("Success Criteria: <how to know this subtask is complete>\n\n");
+    prompt.push_str("Expected Evidence: <one artifact file path per line>\n\n");
+    prompt.push_str(&format!("Phase: <{}>\n\n", phases));
+    prompt.push_str("Route: <continue | done | blocked:reason>\n```\n\n");
+    prompt.push_str("Rules:\n");
+    prompt.push_str("1. Focus on ONE subtask at a time. Do not plan the whole workflow at once.\n");
+    prompt.push_str("2. The subtask must be actionable with the tools listed in Tool Reference below.\n");
+    prompt.push_str("3. Success criteria must be objective and verifiable.\n");
+    prompt.push_str("4. Route = \"continue\" if more work remains; \"done\" if the original task is fully complete; \"blocked:<reason>\" if human input is required.\n");
+    prompt.push_str("5. Base your plan on VERIFIED results only — do not assume unverified outcomes.\n");
+    prompt.push_str("6. Keep the subtask focused — completable in 5-15 tool calls.\n");
+    prompt.push_str(&format!("7. {}\n", focus));
+    prompt.push_str("\nCRITICAL — Anti-Stagnation Rules:\n");
+    prompt.push_str("8. NEVER plan a subtask that is only \"summarize\" or \"review results\". Every subtask MUST require the Executor to run concrete tools and produce concrete artifacts.\n");
+    prompt.push_str("9. If Manager Notes show 3+ consecutive rounds with NO new verified outcomes, change strategy significantly or set Route = \"blocked:<reason>\".\n");
+    prompt.push_str("10. The Subtask MUST name at least one concrete tool.\n");
+    prompt.push_str("\nCRITICAL — Evidence Discipline Rules:\n");
+    prompt.push_str("11. Only entries recorded as Verified Findings/Outcomes have been independently checked. Treat everything else (prior session context, manager notes) as unverified leads to re-audit.\n");
+    prompt.push_str("12. **MANDATORY OUTPUT LOCATION**: ALL artifacts and reports MUST be saved under the `workspace/output/` directory. Expected Evidence paths must be relative to workspace/output/ (e.g. \"output/result.json\").\n");
+    prompt.push_str(&format!("\n{}\n", tool_ref));
+    prompt.push_str(&format!("\nLANGUAGE: The original task is written in {lang}. Write all free-text fields (Subtask, Success Criteria, Expected Evidence, reason) in {lang}; keep structure and tool names in English.\n"));
     prompt
 }
 
@@ -163,6 +119,17 @@ fn manager_user_prompt(contract: &TaskContract) -> String {
     prompt.push_str(&format!("# Current Phase\n{:?}\n\n", contract.phase));
     prompt.push_str(&format!("# Round\n{} of {}\n\n", contract.current_round + 1, contract.max_rounds));
 
+    // Surface distilled prior-session (Instant) context prominently so the Manager
+    // plans Round 1 from prior discoveries instead of redoing completed collection.
+    if let Some(ph) = &contract.prior_handoff {
+        let ph = ph.trim();
+        if !ph.is_empty() {
+            prompt.push_str("# Prior Session Context (UNVERIFIED)\n");
+            prompt.push_str("Work done earlier this session (Instant mode). Treat as LEADS/hypotheses, NOT verified facts -- re-audit before promoting to verified state. IMPORTANT: DO NOT blindly redo steps already completed here; plan this and later subtasks to CONTINUE from where prior work left off.\n");
+            prompt.push_str(ph);
+            prompt.push_str("\n\n");
+        }
+    }
     if !contract.hypothesis.is_empty() {
         prompt.push_str(&format!("# Hypothesis\n{}\n\n", contract.hypothesis));
     }
@@ -347,9 +314,10 @@ pub async fn plan_next(
     model: &str,
     contract: &TaskContract,
     skills: &[SkillMetadata],
+    tool_defs: &[ToolDefinition],
 ) -> Result<ManagerPlan, String> {
     let lang = crate::agent::llm_agent::detect_user_language(&contract.original_task);
-    let mut system_prompt = manager_system_prompt(&lang);
+    let mut system_prompt = manager_system_prompt(&lang, TaskDomain::from_str(&contract.domain), tool_defs);
 
     // Plan A: inject available skills catalog so the Manager can plan subtasks
     // that leverage skills (e.g., "use archify-rs to generate architecture diagram").

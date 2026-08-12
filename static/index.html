@@ -327,6 +327,9 @@ input:checked+.slider:before{transform:translateX(20px)}
 .perm-request .perm-resolved-msg{padding:10px 14px;font-size:12px;font-weight:700;text-align:center}
 .perm-request .perm-resolved-msg.allowed{color:#27ae60;background:#e8f8f0;border-top:1px solid #c8e6d5}
 .perm-request .perm-resolved-msg.denied{color:#e74c3c;background:#fdf0ed;border-top:1px solid #f5c6c0}
+.expert-prior{margin-top:10px;border:1px solid #d6c7e8;border-radius:6px;background:#f7f3fc;overflow:hidden}
+.expert-prior-hdr{padding:6px 10px;font-size:11px;font-weight:700;color:#6c3fa0;background:#efe7fa;border-bottom:1px solid #e0d3f2}
+.expert-prior-pre{margin:0;padding:8px 10px;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#4a3a63;max-height:200px;overflow-y:auto;font-family:inherit}
 
 /* Mode selector bar (Demo B) */
 .mode-bar{display:flex;align-items:center;gap:12px;padding:6px 20px;background:#f8f9fa;border-top:1px solid #ecf0f1;flex-shrink:0}
@@ -696,16 +699,6 @@ input:checked+.slider:before{transform:translateX(20px)}
             </div>
             <label class="perm-toggle">
               <input type="checkbox" id="cuToggle" onchange="toggleComputerUse(this.checked)">
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
-            <div>
-              <label style="margin-bottom:0">&#128221; Share Blackboard Context</label>
-              <small style="color:var(--t3)">Share Instant mode history with Expert mode (default: OFF)</small>
-            </div>
-            <label class="perm-toggle">
-              <input type="checkbox" id="shareBlackboardToggle" onchange="toggleShareBlackboard(this.checked)">
               <span class="slider"></span>
             </label>
           </div>
@@ -1227,7 +1220,7 @@ function handleMsg(msg){
       break;
     case 'expert_prompt':
       hideTyping();finalizeThink();finalizeTextBlock();
-      showExpertPrompt(msg.has_expert, msg.has_instant);
+      showExpertPrompt(msg.has_expert, msg.has_instant, msg.prior);
       break;
     case 'notification':
       hideTyping();finalizeThink();finalizeTextBlock();
@@ -1709,31 +1702,37 @@ function doSend(txt,imgs,atts){
   setAgentRunning(true);
 }
 var lastUserLang='';
+var expertOpenCard=null;
 function isChinese(s){return /[\u4e00-\u9fff]/.test(s||'');}
-function showExpertPrompt(hasExpert,hasInstant){
+function showExpertPrompt(hasExpert,hasInstant,prior){
   var zh = lastUserLang==='en'?false:true;
   var conv=document.getElementById('convArea');
   var agentMsg=document.createElement('div');
   agentMsg.className='msg assistant';
   var summary= zh?'检测到本会话存在之前的发现。':'Detected prior work in this session.';
-  if(hasExpert)summary+= zh?'<br>• 已有未完成的 Expert 任务（续接将保留其 findings/进度）。':'<br>• There is an unfinished Expert task (Continue keeps its findings and progress).';
-  if(hasInstant)summary+= zh?'<br>• 有最近一次 Instant 的进展可继承（续接将接管它）。':'<br>• There is a recent Instant run to take over (Continue picks it up).';
+  if(hasExpert)summary+= zh?'<br>• 有未完成的 Expert 任务（续接将保留进度并重新审计遗留线索）。':'<br>• There is an unfinished Expert task (Continue resumes it and re-audits outstanding leads).';
+  if(hasInstant)summary+= zh?'<br>• 最近一次 Instant 的进展会作为未验证线索带入（续接将重新审计；开新任务则忽略）。':'<br>• Recent Instant progress carries over as UNVERIFIED leads (Continue re-audits them; Start New Job ignores them).';
   agentMsg.innerHTML='<div class="msg-avatar">&#129302;</div><div class="msg-body"><div class="msg-role">Agent</div><div class="msg-content md-content">'+summary+'</div><div class="msg-time">'+nowTimeStr()+'</div></div>';
   conv.appendChild(agentMsg);
   var card=document.createElement('div');
   card.className='perm-request';
-  var hdr= zh?'Expert 模式：续接还是开新？':'Expert Mode: Continue or start new?';
-  var body= zh?'请选择如何处理本会话之前的发现：':'How should I handle this session&#39;s previous discoveries?';
+  card.id='expertChoiceCard';
+  expertOpenCard=card;
+  var hdr= zh?'Expert 模式：续接还是新建任务？':'Expert Mode: Continue or start a new job?';
+  var body= zh?'之前会话的发现已整理为线索但尚未验证，请选择如何处理：':'Prior discoveries are summarized as unverified leads. How should I proceed?';
   var btnC= zh?'续接（默认）':'Continue (default)';
-  var btnN= zh?'开新一轮':'Start new round';
+  var btnN= zh?'开启新任务':'Start New Job';
   var countdown=document.createElement('div');
+  countdown.className='expert-countdown';
   countdown.style.cssText='margin-top:8px;font-size:12px;color:#8e44ad;font-weight:500;';
   card.innerHTML=
     '<div class="perm-req-hdr">&#129516; '+hdr+'</div>'+
-    '<div class="perm-req-body"><div>'+body+'</div></div>'+
+    '<div class="perm-req-body"><div>'+body+'</div>'+
+      (prior?'<div class="expert-prior"><div class="expert-prior-hdr">'+(zh?'🧾 已跑轮次（未验证）':'🧾 Prior Rounds (unverified)')+'</div><pre class="expert-prior-pre">'+esc(prior)+'</pre></div>':'')+
+    '</div>'+
     '<div class="perm-req-actions">'+
-      '<button class="btn-allow" onclick="sendExpertChoice(&#39;continue&#39;)">&#8635; '+btnC+'</button>'+
-      '<button class="btn-deny" onclick="sendExpertChoice(&#39;new&#39;)">&#10133; '+btnN+'</button>'+
+      '<button class="btn-allow" onclick="sendExpertChoice(&#39;continue&#39;,this)">&#8635; '+btnC+'</button>'+
+      '<button class="btn-deny" onclick="sendExpertChoice(&#39;new&#39;,this)">&#10133; '+btnN+'</button>'+
     '</div>';
   card.appendChild(countdown);
   conv.appendChild(card);
@@ -1744,7 +1743,7 @@ function showExpertPrompt(hasExpert,hasInstant){
   function tick(){
     if(fired)return;
     left--;
-    if(left<=0){fired=true;countdown.textContent= zh?'已自动续接…':'Auto-continuing now…';sendExpertChoice('continue');return;}
+    if(left<=0){fired=true;sendExpertChoice('continue');return;}
     countdown.textContent= zh?('30 秒未应答，将在 '+left+' 秒后自动续接（默认）…'):('No response in 30s - continuing (default) in '+left+'s…');
     setTimeout(tick,1000);
   }
@@ -1752,8 +1751,39 @@ function showExpertPrompt(hasExpert,hasInstant){
   setTimeout(tick,1000);
 }
 
-function sendExpertChoice(choice){
-  if(ws&&connected){ws.send(JSON.stringify({type:'expert_choice',choice:choice,session:SESSION_ID}));addLog('Expert choice: '+(choice==='new'?'开新一轮':'续接'),'info');}
+function expertZh(){return !(lastUserLang==='en');}
+// Start New Job: remove previously rendered Manager Plan bubbles so the chat
+// shows a clean slate before the new Expert job is planned.
+function clearOldManagerPlans(){
+  var conv=document.getElementById('convArea');
+  if(!conv)return;
+  var kids=[].slice.call(conv.children);
+  kids.forEach(function(el){
+    var t=(el.textContent||'');
+    if(/Manager Plan/.test(t)){
+      el.remove();
+    }
+  });
+}
+function sendExpertChoice(choice,btn){
+  if(ws&&connected){ws.send(JSON.stringify({type:'expert_choice',choice:choice,session:SESSION_ID}));}
+  addLog('Expert choice: '+(choice==='new'?'开启新任务':'续接'),'info');
+  if(choice==='new'){clearOldManagerPlans();}
+  var zh=expertZh();
+  var card = btn ? btn.closest('.perm-request') : expertOpenCard;
+  if(card){
+    if(card.getAttribute('data-fired'))return;
+    card.setAttribute('data-fired','1');
+    card.classList.add('resolved');
+    var cd=card.querySelector('.expert-countdown');if(cd)cd.remove();
+    var acts=card.querySelector('.perm-req-actions');if(acts)acts.remove();
+    var msg=document.createElement('div');
+    msg.className='perm-resolved-msg '+(choice==='new'?'denied':'allowed');
+    msg.textContent= (choice==='new')
+      ? (zh?'已选择：开启新任务…':'Starting a new job…')
+      : (zh?'已选择：续接…':'Continuing…');
+    card.appendChild(msg);
+  }
 }
 
 function onSendClick(){
@@ -2520,22 +2550,6 @@ function toggleComputerUse(enabled){
     .then(d=>{if(d.success)addLog('Computer Use '+(enabled?'ENABLED':'DISABLED'),'info');else addLog('Computer Use toggle failed','error');})
     .catch(e=>addLog('Computer Use toggle error: '+e,'error'));
 }
-function toggleShareBlackboard(enabled){
-  fetch('/api/settings/share_blackboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enabled})})
-    .then(r=>r.json())
-    .then(d=>{
-      if(d.success){
-        addLog('Share Blackboard '+(enabled?'ENABLED':'DISABLED'),'info');
-        if(enabled){
-          addLog('WARNING: Instant mode history will be shared with Expert mode. This may cause context pollution if tasks are unrelated.','warn');
-        }
-      }else{
-        addLog('Share Blackboard toggle failed','error');
-      }
-    })
-    .catch(e=>addLog('Share Blackboard toggle error: '+e,'error'));
-}
-
 // ── Managed Mode (Long Tasks) ──
 function setManagedMode(on){
   managedMode=on;

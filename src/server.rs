@@ -16,7 +16,6 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::agent::AgentEvent;
-use crate::blackboard::{Blackboard, BlackboardEntry};
 use crate::log::ConversationLogger;
 use crate::memory::MemoryStore;
 use crate::model::ChatMessage;
@@ -32,6 +31,106 @@ use crate::tool::ToolRegistry;
 use crate::web::StaticServer;
 use crate::model::openai::OpenAiProvider;
 use crate::distill;
+
+/// Reduce the distilled handoff to a single concise line (<= 100 chars) for the
+/// Expert continue prompt, instead of showing the full raw findings dump.
+/// Picks the latest instruction, the original task, and the first descriptive
+/// finding line, then flattens + truncates to one line.
+/// Does the user message carry an actual task to run, or is it only a mode-switch /
+/// filler command (e.g. "go", "continues", "hello")? Used to decide whether a
+/// "Start new round" Expert choice should dispatch immediately or ask for the task.
+fn is_concrete_task(input: &str) -> bool {
+    let t = input.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_lowercase();
+    let fillers = [
+        "go", "hello", "hi", "hey", "ok", "okay", "yes", "yep", "retry", "again",
+        "new", "start", "开", "新", "开始", "继续", "继续吧", "好的", "好", "嗯", "在",
+    ];
+    if fillers.iter().any(|f| lower == *f) {
+        return false;
+    }
+    if lower.starts_with("continue") || lower.starts_with("continu") || lower.starts_with("接着") {
+        return false;
+    }
+    // Too short to be a concrete instruction.
+    if t.chars().count() < 6 {
+        return false;
+    }
+    true
+}
+/// Build a compact per-round summary ("Round 1 - <summary>; Round 2 - <summary>…")
+/// from an existing TaskContract JSON. Each line is capped at 50 chars (one sentence).
+fn rounds_summary_from_contract(json: &str) -> String {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return String::new(); };
+    let Some(notes) = v.get("manager_notes").and_then(|n| n.as_array()) else { return String::new(); };
+    let mut pairs: Vec<(u32, String)> = Vec::new();
+    for note in notes {
+        let s = note.as_str().unwrap_or("").trim();
+        if let Some(rest) = s.strip_prefix("Round ") {
+            if let Some(col) = rest.find(':') {
+                if let Ok(n) = rest[..col].trim().parse::<u32>() {
+                    let body = rest[col + 1..].trim();
+                    if !body.is_empty() {
+                        pairs.push((n, body.chars().take(50).collect::<String>()));
+                    }
+                }
+            }
+        }
+    }
+    // Keep only the most recent rounds.
+    if pairs.len() > 10 {
+        pairs = pairs[pairs.len() - 10..].to_vec();
+    }
+    pairs.iter().map(|(n, s)| format!("Round {} - {}", n, s)).collect::<Vec<_>>().join("; ")
+}
+fn compress_handoff_summary(handoff: &str) -> String {
+    const MAX: usize = 100;
+    let mut original = String::new();
+    let mut latest = String::new();
+    let mut gist = String::new();
+    let mut in_findings = false;
+    for line in handoff.lines() {
+        let l = line.trim();
+        if let Some(r) = l.strip_prefix("Original task:") {
+            original = r.trim().to_string();
+            continue;
+        }
+        if let Some(r) = l.strip_prefix("Latest instruction:") {
+            latest = r.trim().to_string();
+            continue;
+        }
+        if l.starts_with("Prior findings") || l.starts_with("Prior") {
+            in_findings = true;
+            continue;
+        }
+        if in_findings && gist.is_empty()
+            && !l.is_empty() && !l.starts_with('#') && !l.starts_with('|')
+            && !l.starts_with('-') && !l.starts_with('*') && !l.starts_with('`') && !l.starts_with("[") {
+            gist = l.to_string();
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if !latest.is_empty() && latest != original {
+        parts.push(latest.clone());
+    }
+    if !original.is_empty() {
+        parts.push(original.clone());
+    }
+    if !gist.is_empty() {
+        parts.push(gist.clone());
+    }
+    let joined = parts.join(" | ");
+    let flat: String = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= MAX {
+        return flat;
+    }
+    let cut: String = flat.chars().take(MAX.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
 
 /// Type alias for the broadcast channel used to push notifications to all WS clients.
 pub type NotifyTx = tokio::sync::broadcast::Sender<String>;
@@ -83,8 +182,6 @@ pub struct AppState {
     pub provider: Arc<OpenAiProvider>,
     /// Whether Computer Use (GUI control) tools are enabled
     pub computer_use_enabled: Arc<AtomicBool>,
-    /// Whether to share Instant mode context with Expert mode via Blackboard
-    pub share_blackboard_enabled: Arc<AtomicBool>,
     /// Whether to use LLM to simulate human intervention when Expert mode is blocked
     pub human_intervention_enabled: Arc<AtomicBool>,
     /// Primary model name (from config.toml)
@@ -140,7 +237,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/checkpoints", get(checkpoints_list_handler))
         .route("/api/checkpoints/{id}", delete(checkpoints_delete_handler))
         .route("/api/settings/computer_use", post(computer_use_toggle_handler))
-        .route("/api/settings/share_blackboard", post(share_blackboard_toggle_handler))
         .route("/api/settings/human_intervention", get(human_intervention_get_handler).post(human_intervention_toggle_handler))
         .route("/api/settings/agent", post(agent_settings_save_handler))
         .route("/api/settings/agent/extended", post(agent_settings_extended_save_handler))
@@ -1106,50 +1202,80 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             let managed = parsed["managed"].as_bool().unwrap_or(false);
                             let managed_scope = parsed["managed_scope"].as_str().unwrap_or("").to_string();
 
-                            // ── Blackboard: inject Expert-mode findings into Instant mode ──
-                            // The ManagedRunner reads the Blackboard directly for Expert mode
-                            // startup context (no need to pre-process here).
-                            if !managed && !history.is_empty() {
-                                if let Ok(Some(json)) = state.memory_store.load_blackboard(&session_id) {
-                                    if let Ok(bb) = Blackboard::from_json(&json) {
-                                        let entries = bb.get_entries_by_source("expert");
-                                        if !entries.is_empty() {
-                                            let ctx = bb.to_context_string(Some("expert"));
-                                            info!("[instant:{}] Injecting Expert-mode Blackboard context ({} entries, {} chars)",
-                                                  session_id, entries.len(), ctx.len());
-                                            history.insert(0, ChatMessage::system(&ctx));
-                                        }
-                                    }
-                                }
-                            }
-
                             let run_result = if managed {
                                 info!("Expert mode requested for session {}", session_id);
                                 // -- Instant -> Expert: inherit same-session Instant progress --
-                                // Build a compact pre-work summary from the session's own
-                                // history so Expert can continue from what Instant already found.
-                                let instant_context: Option<String> = {
+                                // Build a DISTILLED, evidence-indexed handoff of the session's
+                                // prior Instant work: original/latest instruction, a bounded capture
+                                // of the assistant's actual findings/analysis, and the evidence files
+                                // referenced. Tagged UNVERIFIED so the Manager treats it as leads to
+                                // continue AND re-audit -- but the substance is kept so the Expert does
+                                // not blindly redo collection that already happened.
+                                let handoff: Option<String> = {
                                     let mut parts: Vec<String> = Vec::new();
-                                    let mut count = 0usize;
-                                    let mut chars = 0usize;
-                                    for m in history.iter().rev() {
+                                    let mut original_task: Option<String> = None;
+                                    let mut latest_user: Option<String> = None;
+                                    let mut findings: Vec<String> = Vec::new();
+                                    let mut finding_chars = 0usize;
+                                    let mut evidence: Vec<String> = Vec::new();
+                                    const SUFFIXES: [&str; 11] = [".json", ".csv", ".txt", ".md", ".log", ".xml", ".html", ".png", ".evtx", ".zip", ".pdf"];
+                                    for m in history.iter() {
                                         if m.role == "system" { continue; }
                                         let Some(text) = m.content_as_text() else { continue };
                                         let text = text.trim();
                                         if text.is_empty() { continue; }
-                                        let role = if m.role == "user" { "User" } else { "Assistant" };
-                                        parts.push(format!("[{}] {}", role, text));
-                                        count += 1;
-                                        chars += text.len();
-                                        if count >= 6 || chars >= 3000 { break; }
+                                        if m.role == "user" {
+                                            let head: String = text.chars().take(300).collect();
+                                            if original_task.is_none() { original_task = Some(head.clone()); }
+                                            latest_user = Some(head);
+                                        } else {
+                                            // Keep substantive assistant findings (bounded), skip chatter,
+                                            // and harvest evidence file references.
+                                            if text.len() >= 40 && finding_chars < 2400 {
+                                                let seg: String = text.chars().take(700).collect();
+                                                finding_chars += seg.len();
+                                                findings.push(seg);
+                                            }
+                                            for tok in text.split_whitespace() {
+                                                let tok = tok.trim().trim_matches(|c: char| !(c.is_alphanumeric() || c == '.' || c == '\\' || c == '/' || c == '_' || c == '-'));
+                                                let low = tok.to_lowercase();
+                                                if tok.len() >= 6 && (tok.contains('\\') || tok.contains('/'))
+                                                    && SUFFIXES.iter().any(|s| low.ends_with(s))
+                                                    && !evidence.iter().any(|e| e == tok)
+                                                {
+                                                    evidence.push(tok.to_string());
+                                                    if evidence.len() >= 12 { break; }
+                                                }
+                                            }
+                                        }
                                     }
-                                    parts.reverse();
-                                    if parts.is_empty() { None } else { Some(parts.join("\n\n")) }
+                                    // Bound to the most recent findings.
+                                    while findings.len() > 4 && finding_chars > 2000 {
+                                        findings.remove(0);
+                                    }
+                                    if let Some(t) = original_task.as_deref() { parts.push(format!("Original task: {}", t)); }
+                                    if let Some(t) = latest_user.as_deref() {
+                                        if t != original_task.as_deref().unwrap_or("") { parts.push(format!("Latest instruction: {}", t)); }
+                                    }
+                                    if !findings.is_empty() {
+                                        parts.push("Prior findings/analysis (UNVERIFIED - use as leads; verify before trusting; DO NOT blindly redo this work):".to_string());
+                                        parts.extend(findings.iter().cloned());
+                                    }
+                                    if !evidence.is_empty() {
+                                        parts.push("Evidence files referenced earlier (RE-AUDIT before trusting):".to_string());
+                                        for e in evidence.iter().take(12) { parts.push(format!("- {}", e)); }
+                                    }
+                                    if parts.is_empty() { None } else { Some(parts.join("\n")) }
                                 };
-                                let has_expert_residue =
+
+                                let active_contract =
                                     state.memory_store.get_latest_active_contract(&session_id)
-                                        .ok().flatten().is_some();
-                                let has_instant = instant_context
+                                        .ok().flatten();
+                                let has_expert_residue = active_contract.is_some();
+                                let rounds_summary = active_contract.as_ref()
+                                    .map(|(_id, json)| rounds_summary_from_contract(json))
+                                    .unwrap_or_default();
+                                let has_instant = handoff
                                     .as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false);
 
                                 // Ask once whether to CONTINUE prior work (resume the Expert
@@ -1157,11 +1283,18 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 // start a NEW round. Wait up to 30s; on no reply, default CONTINUE.
                                 let mut start_fresh = false;
                                 let mut aborted = false;
+                                let mut ask_for_task = false;
                                 if has_expert_residue || has_instant {
-                                    let prompt_event = serde_json::json!({
+                                    let prior_preview = if !rounds_summary.is_empty() {
+                                        rounds_summary.clone()
+                                    } else {
+                                        handoff.as_ref().map(|h| compress_handoff_summary(h)).unwrap_or_default()
+                                    };
+                                let prompt_event = serde_json::json!({
                                         "type": "expert_prompt",
                                         "has_expert": has_expert_residue,
                                         "has_instant": has_instant,
+                                        "prior": prior_preview,
                                         "session": session_id,
                                     });
                                     {
@@ -1202,9 +1335,14 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         if choice.is_some() || aborted { break; }
                                     }
                                     if !aborted && choice.as_deref() == Some("new") {
-                                        info!("[managed:{}] User chose NEW Expert round - clearing residue", session_id);
-                                        let _ = state.memory_store.clear_session_active_contracts(&session_id);
-                                        start_fresh = true;
+                                        if !is_concrete_task(&content) {
+                                            info!("[managed:{}] User chose NEW but gave no concrete task - asking for task", session_id);
+                                            ask_for_task = true;
+                                        } else {
+                                            info!("[managed:{}] User chose NEW Expert round - clearing residue", session_id);
+                                            let _ = state.memory_store.clear_session_active_contracts(&session_id);
+                                            start_fresh = true;
+                                        }
                                     }
                                 }
 
@@ -1215,6 +1353,13 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         Ok(AgentEvent::done(&session_id, "system")),
                                     ]));
                                     Ok(stopped_stream)
+                                } else if ask_for_task {
+                                    info!("[managed:{}] Expert waiting for a concrete task (new round chosen)", session_id);
+                                    let ask_stream: crate::agent::EventStream = Box::pin(futures::stream::iter(vec![
+                                        Ok(AgentEvent::text("\n\n**你选择了「Start New Job（开新任务）」，但当前这条消息更像是模式切换（例如 continue / go），没有给出具体任务。** 请在 Expert 模式下描述你想解决的具体任务，例如：“try to solve this challenge: <URL>”。收到具体任务后，我会清空旧进度并开始新一轮。\n\n*[Expert 已暂停 —— 等待具体任务指令 / waiting for your task description]*", &session_id, "system")),
+                                        Ok(AgentEvent::done(&session_id, "system")),
+                                    ]));
+                                    Ok(ask_stream)
                                 } else {
                                     let task_cancel = Arc::new(AtomicBool::new(false));
                                     {
@@ -1240,19 +1385,20 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         state.expert_max_tool_retries,
                                         state.skill_manager.clone(),
                                         state.computer_use_enabled.clone(),
-                                        state.share_blackboard_enabled.clone(),
+                                        
                                         state.human_intervention_enabled.clone(),
                                     );
-                                    let instant_ctx = if start_fresh { None } else { instant_context };
-                                    // Continue prioritizes the most recent Instant progress when
-                                    // present, so we do NOT blindly resume an older unrelated
-                                    // Expert contract. Only resume the Expert contract when there
-                                    // is no Instant work to take over.
-                                    let force_new_run = start_fresh || has_instant;
+                                    let handoff = if start_fresh { None } else { handoff };
+                                    // On CONTINUE: if there is an unfinished Expert contract for this
+                                    // session, RESUME it (starts at its next round). Only force a fresh
+                                    // run when the user chose NEW, or when taking over recent Instant
+                                    // work with no Expert contract to resume. This matches the prompt
+                                    // copy (resume the Expert contract if present, else take over Instant).
+                                    let force_new_run = start_fresh || (has_instant && !has_expert_residue);
                                     managed_runner.run(
                                         &content, &session_id, &model, &managed_scope,
                                         state.permissions.clone(), state.permission_pending.clone(),
-                                        task_cancel, instant_ctx, force_new_run,
+                                        task_cancel, handoff, force_new_run,
                                     ).await
                                 }
                             } else {
@@ -1402,75 +1548,8 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
                                         let _ = state.memory_store.auto_summarize_date(&today);
 
-                                        // ── Instant mode: write summary to Blackboard ──
-                                        // This allows Expert mode to see what Instant mode
-                                        // discovered when it starts.
-                                        // P0: Only write significant responses (≥200 chars) to avoid
-                                        // filling the blackboard with short replies like "你好".
-                                        // P1: Extract smart summary (first 200 + last 300 chars)
-                                        // instead of raw truncation, preserving both context
-                                        // and key findings.
-                                        if !managed && assistant_text.trim().len() >= 200 {
-                                            let mut blackboard = Blackboard::new(&session_id);
-                                            // Load existing blackboard from SQLite (if any)
-                                            if let Ok(Some(json)) = state.memory_store.load_blackboard(&session_id) {
-                                                if let Ok(existing) = Blackboard::from_json(&json) {
-                                                    blackboard = existing;
-                                                }
-                                            }
-                                            // Write task_summary entry (user request + agent result)
-                                            // This provides complete context for Expert mode to reference.
-                                            let user_request = history.iter()
-                                                .rev()
-                                                .find(|m| m.role == "user")
-                                                .and_then(|m| m.content_as_text())
-                                                .unwrap_or_default();
-                                            
-                                            let agent_result = assistant_text.trim();
-                                            if !user_request.trim().is_empty() && !agent_result.is_empty() {
-                                                // Format: [User] request\n[Agent] result
-                                                let task_summary = format!(
-                                                    "[User] {}\n[Agent] {}",
-                                                    user_request.chars().take(100).collect::<String>(),
-                                                    if agent_result.len() > 400 {
-                                                        format!("{}...[truncated]", agent_result.chars().take(400).collect::<String>())
-                                                    } else {
-                                                        agent_result.to_string()
-                                                    }
-                                                );
-                                                
-                                                blackboard.add_entry(BlackboardEntry {
-                                                    source: "instant".to_string(),
-                                                    entry_type: "task_summary".to_string(),
-                                                    summary: task_summary,
-                                                    detail: None,
-                                                    phase: None,
-                                                    timestamp: chrono::Utc::now(),
-                                                });
-                                            }
-                                            
-                                            // Limit Instant mode entries to max 10 (FIFO eviction)
-                                            let instant_entries: Vec<_> = blackboard.entries.iter()
-                                                .filter(|e| e.source == "instant")
-                                                .collect();
-                                            if instant_entries.len() > 10 {
-                                                let to_remove = instant_entries.len() - 10;
-                                                // Remove oldest instant entries
-                                                for _ in 0..to_remove {
-                                                    if let Some(pos) = blackboard.entries.iter().position(|e| e.source == "instant") {
-                                                        blackboard.entries.remove(pos);
-                                                    }
-                                                }
-                                            }
-                                            // Persist
-                                            if let Ok(json) = blackboard.to_json() {
-                                                let _ = state.memory_store.save_blackboard(&session_id, &json);
-                                                info!("[instant:{}] Wrote Blackboard ({} entries)",
-                                                      session_id, blackboard.entries.len());
-                                            }
-                                        }
-                                    }
                                 }
+                            }
                                 Err(e) => {
                                     let err_event = AgentEvent::error(&e.to_string(), &session_id, "system");
                                     let msg_str = err_event.to_ws_message();
@@ -1900,24 +1979,7 @@ async fn computer_use_toggle_handler(
 }
 
 // ============================================================
-// Share Blackboard toggle
-// ============================================================
 
-async fn share_blackboard_toggle_handler(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<Value>,
-) -> Json<Value> {
-    let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-    let prev = state.share_blackboard_enabled.swap(enabled, Ordering::SeqCst);
-    
-    if prev != enabled {
-        info!("Share Blackboard {}", if enabled { "ENABLED" } else { "DISABLED" });
-    }
-    
-    Json(json!({ "success": true, "enabled": enabled }))
-}
-
-// ============================================================
 // Human Intervention Simulation toggle
 // ============================================================
 

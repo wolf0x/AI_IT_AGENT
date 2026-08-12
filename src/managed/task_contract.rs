@@ -36,6 +36,117 @@ impl Default for IrPhase {
     }
 }
 
+
+/// Executable knowledge domain for a managed task. The orchestration loop is
+/// domain-agnostic; each domain supplies a phase vocabulary, default phase, and
+/// terminal-phase semantics. IR is the first (and today only) built-in domain
+/// pack; a new domain can be added by introducing a variant here without
+/// touching the Manager/Executor/Auditor loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskDomain {
+    /// Incident Response (NIST SP 800-61 lifecycle).
+    Ir,
+    /// Fallback domain for non-IR long-horizon tasks.
+    Generic,
+}
+
+impl Default for TaskDomain {
+    fn default() -> Self {
+        TaskDomain::Ir
+    }
+}
+
+impl TaskDomain {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskDomain::Ir => "ir",
+            TaskDomain::Generic => "generic",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "ir" => TaskDomain::Ir,
+            _ => TaskDomain::Generic,
+        }
+    }
+    /// Heuristically choose a knowledge domain from the task text.
+    /// IR keywords -> Incident Response pack; otherwise use the generic
+    /// long-horizon pack (web/CTF/creative/research tasks should NOT be
+    /// framed as host forensics).
+    pub fn detect(text: &str) -> Self {
+        let t = text.to_lowercase();
+        let ir_keywords: &[&str] = &[
+            "incident", "应急", "malware", "恶意", "勒索", "ransom", "yara", "钓鱼", "phishing",
+            "威胁", "threat", "attacker", "攻击", "入侵", "intrusion", "取证", "forensic", "apt",
+            "告警", "alert", "病毒", "感染", "compromise", "data breach", "数据泄露", "应急响应",
+            "containment", "threat hunting", "ioc", "mitre", "triage", "snort", "suricata", "sigma",
+        ];
+        if ir_keywords.iter().any(|k| t.contains(k)) {
+            TaskDomain::Ir
+        } else {
+            TaskDomain::Generic
+        }
+    }
+    pub fn phases(&self) -> Vec<&'static str> {
+        match self {
+            TaskDomain::Ir => vec!["collection", "analysis", "attribution", "containment", "eradication", "reporting", "completed", "blocked"],
+            TaskDomain::Generic => vec!["plan", "execute", "verify", "completed", "blocked"],
+        }
+    }
+    pub fn default_phase(&self) -> &'static str {
+        match self {
+            TaskDomain::Ir => "collection",
+            TaskDomain::Generic => "plan",
+        }
+    }
+    pub fn is_terminal(&self, phase: &str) -> bool {
+        matches!(phase, "completed" | "blocked")
+    }
+}
+
+fn default_domain() -> String {
+    "ir".to_string()
+}
+
+/// A domain-agnostic task-state record (requirement / artifact / fact).
+/// This is the generic counterpart to IR-specific findings: a record is promoted
+/// into persistent state only when backed by audited evidence (completed + clean).
+/// Executor claims or handoffs are seeded as `untrusted` until independently audited.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRecord {
+    /// Stable identifier.
+    pub id: String,
+    /// Record kind: requirement | artifact | fact.
+    pub kind: String,
+    /// Short human description.
+    pub title: String,
+    /// Status: completed | pending | blocked | untrusted.
+    #[serde(default = "default_pending")]
+    pub status: String,
+    /// Evidence integrity: clean | suspect | violation.
+    #[serde(default = "default_clean")]
+    pub integrity: String,
+    /// Summary of the supporting evidence.
+    #[serde(default)]
+    pub evidence_summary: String,
+    /// Path to the evidence file (if applicable).
+    #[serde(default)]
+    pub evidence_path: Option<String>,
+    /// Domain phase this record belongs to.
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// Manager round that last touched this record.
+    #[serde(default)]
+    pub round_index: usize,
+    /// When this record was last verified.
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+fn default_pending() -> String {
+    "pending".to_string()
+}
 /// A verified finding — evidence that has passed Auditor verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiedFinding {
@@ -142,11 +253,22 @@ pub struct TaskContract {
     /// Original phase before blocking (used to restore on unblock).
     #[serde(default)]
     pub phase_before_block: Option<IrPhase>,
-}
+
+    /// Knowledge domain for this task ("ir" is the built-in domain pack).
+    #[serde(default = "default_domain")]
+    pub domain: String,
+    /// Domain-agnostic task-state records (requirement / artifact / fact).
+    #[serde(default)]
+    pub records: Vec<TaskRecord>,
+
+    /// Distilled, UNVERIFIED prior-session (Instant) context handed over to Expert.
+    #[serde(default)]
+    pub prior_handoff: Option<String>,}
 
 impl TaskContract {
     /// Create a new TaskContract for a managed task.
     pub fn new(id: String, original_task: String, scope: String, max_rounds: usize) -> Self {
+        let domain = TaskDomain::detect(&original_task).as_str().to_string();
         let now = Utc::now();
         Self {
             id,
@@ -166,7 +288,11 @@ impl TaskContract {
             manager_notes: Vec::new(),
             blocked_reason: None,
             phase_before_block: None,
-        }
+
+            domain,
+            records: Vec::new(),
+
+            prior_handoff: None,        }
     }
 
     /// Generate a condensed brief for the Executor.
@@ -183,6 +309,15 @@ impl TaskContract {
         brief.push_str(&format!("**Current Phase**: {:?}\n", self.phase));
         brief.push_str(&format!("**Round**: {} / {}\n\n", self.current_round + 1, self.max_rounds));
 
+        if let Some(ph) = &self.prior_handoff {
+            let ph = ph.trim();
+            if !ph.is_empty() {
+                brief.push_str("## Prior Session Context (UNVERIFIED)\n");
+                brief.push_str("Work done earlier in this session. Treat as LEADS/hypotheses, NOT verified facts. DO NOT blindly redo completed prior work; continue from where it left off and verify before trusting.\n");
+                brief.push_str(ph);
+                brief.push_str("\n\n");
+            }
+        }
         if !self.hypothesis.is_empty() {
             brief.push_str("## Hypothesis\n");
             brief.push_str(&self.hypothesis);
@@ -362,6 +497,49 @@ impl TaskContract {
         self.phase_before_block = None;
         self.blocked_reason = None;
         self.updated_at = Utc::now();
+    }
+
+    /// Add a domain-agnostic record (requirement / artifact / fact). Cap at 100.
+    pub fn add_record(&mut self, mut record: TaskRecord) {
+        record.round_index = self.current_round;
+        if record.updated_at.is_none() {
+            record.updated_at = Some(Utc::now());
+        }
+        self.records.push(record);
+        if self.records.len() > 100 {
+            self.records.remove(0);
+        }
+        self.updated_at = Utc::now();
+    }
+
+    /// Seed the contract with a distilled prior-work handoff as an UNTRUSTED
+    /// record plus a labelled manager note, so a resumed Expert task treats
+    /// earlier Instant findings as leads/hypotheses, not verified facts.
+    pub fn seed_untrusted_handoff(&mut self, handoff: &str) -> usize {
+        let h = handoff.trim();
+        if h.is_empty() {
+            return 0;
+        }
+        self.prior_handoff = Some(h.to_string());
+        self.manager_notes.push(
+            "[UNVERIFIED prior-session handoff seeded; see 'Prior Session Context'. Treat as leads, re-audit before promotion.]".to_string()
+        );        self.records.push(TaskRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: "fact".to_string(),
+            title: "Prior-session handoff (untrusted)".to_string(),
+            status: "untrusted".to_string(),
+            integrity: "suspect".to_string(),
+            evidence_summary: h.chars().take(800).collect(),
+            evidence_path: None,
+            phase: None,
+            round_index: self.current_round,
+            updated_at: Some(Utc::now()),
+        });
+        if self.records.len() > 100 {
+            self.records.remove(0);
+        }
+        self.updated_at = Utc::now();
+        1
     }
 
     /// Serialize to JSON for storage.

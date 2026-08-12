@@ -406,22 +406,6 @@ impl MemoryStore {
             info!("Schema v5 migration: task_contracts table created");
         }
 
-        // ── Schema v6: Blackboard for Instant ↔ Expert mode information exchange ──
-        if version < 6 {
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS blackboard (
-                    session_id TEXT PRIMARY KEY,
-                    data_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );"
-            ).map_err(|e| format!("Blackboard table creation failed: {}", e))?;
-
-            conn.execute("INSERT INTO schema_version(version) VALUES(6)", [])
-                .map_err(|e| format!("Version 6 insert failed: {}", e))?;
-
-            info!("Schema v6 migration: blackboard table created");
-        }
-
         // ── Schema v7: blocked_reason column for task_contracts ──
         // Used to mark contracts as user-stopped ('[USER_STOPPED]') so the resume
         // query can find them even if they are in 'blocked' phase.
@@ -1094,50 +1078,6 @@ impl MemoryStore {
             "DELETE FROM task_contracts WHERE phase NOT IN ('completed')",
             [],
         ).map_err(|e| format!("Failed to clear active task contracts: {}", e))
-    }
-
-    // ── Blackboard CRUD (Instant ↔ Expert mode information exchange) ──
-
-    /// Save or update a Blackboard (INSERT OR REPLACE).
-    pub fn save_blackboard(&self, session_id: &str, data_json: &str) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR REPLACE INTO blackboard (session_id, data_json, updated_at) VALUES (?1, ?2, ?3)",
-            params![session_id, data_json, now],
-        ).map_err(|e| format!("Failed to save blackboard: {}", e))?;
-        Ok(())
-    }
-
-    /// Load a Blackboard by session_id. Returns None if not found.
-    pub fn load_blackboard(&self, session_id: &str) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().unwrap();
-        let result = conn.query_row(
-            "SELECT data_json FROM blackboard WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get::<_, String>(0),
-        );
-        match result {
-            Ok(json) => Ok(Some(json)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(format!("Blackboard load failed: {}", e)),
-        }
-    }
-
-    /// Delete blackboard entries older than the specified number of days.
-    /// Returns the number of rows deleted.
-    pub fn cleanup_old_blackboards(&self, older_than_days: u64) -> Result<usize, String> {
-        let conn = self.conn.lock().unwrap();
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(older_than_days as i64);
-        let cutoff_str = cutoff.to_rfc3339();
-        let deleted = conn.execute(
-            "DELETE FROM blackboard WHERE updated_at < ?1",
-            params![cutoff_str],
-        ).map_err(|e| format!("Failed to cleanup old blackboards: {}", e))?;
-        if deleted > 0 {
-            info!("Cleaned up {} old blackboard entries (older than {} days)", deleted, older_than_days);
-        }
-        Ok(deleted)
     }
 
     /// Record a token usage entry.

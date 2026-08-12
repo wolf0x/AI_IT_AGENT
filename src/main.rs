@@ -1,7 +1,6 @@
 #[allow(dead_code)]
 mod agent;
 #[allow(dead_code)]
-mod blackboard;
 #[allow(dead_code)]
 mod callbacks;
 mod checkpoint;
@@ -63,6 +62,10 @@ const EMBEDDED_FILES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embe
 
 /// Shared per-process log state: the workspace logs directory, file prefix, and
 /// the currently open per-day file together with the day it belongs to.
+/// Shared per-process log state: the workspace logs directory, file prefix, and
+/// the currently open per-run file (one file per program launch,
+/// `rustagent-YYYY-MM-DD.N.log`) plus a stable dated alias
+/// (`rustagent-YYYY-MM-DD.log`) that always holds only the current run.
 struct DailyLogShared {
     log_dir: std::path::PathBuf,
     prefix: String,
@@ -71,43 +74,78 @@ struct DailyLogShared {
 struct DailyLogState {
     day: String,
     file: Option<std::fs::File>,
+    alias: Option<std::fs::File>,
+    run: u32,
 }
 impl DailyLogShared {
     fn new(log_dir: std::path::PathBuf, prefix: String) -> Self {
         Self {
             log_dir,
             prefix,
-            state: std::sync::Mutex::new(DailyLogState { day: String::new(), file: None }),
+            state: std::sync::Mutex::new(DailyLogState { day: String::new(), file: None, alias: None, run: 0 }),
         }
     }
     fn today() -> String {
         chrono::Local::now().format("%Y-%m-%d").to_string()
     }
-    fn todays_path(&self, day: &str) -> std::path::PathBuf {
+    /// Highest existing run index for the day, plus one (i.e. the next per-run file number).
+    fn next_run_index(dir: &std::path::Path, prefix: &str, day: &str) -> u32 {
+        let stem = format!("{}-{}.", prefix, day);
+        let mut max: u32 = 0;
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Some(rest) = name.strip_prefix(&stem) {
+                    if let Some(num) = rest.strip_suffix(".log") {
+                        if let Ok(n) = num.parse::<u32>() {
+                            if n > max { max = n; }
+                        }
+                    }
+                }
+            }
+        }
+        max + 1
+    }
+    fn run_path(&self, day: &str, n: u32) -> std::path::PathBuf {
+        self.log_dir.join(format!("{}-{}.{}.log", self.prefix, day, n))
+    }
+    fn alias_path(&self, day: &str) -> std::path::PathBuf {
         self.log_dir.join(format!("{}-{}.log", self.prefix, day))
     }
-    /// Open today's file if the date changed or none is open yet, and (best-effort)
-    /// fall back to console-only when the file cannot be opened instead of aborting.
+    /// Path of the current run's log file (valid once the first log line is flushed).
+    fn current_run_path(&self, today: &str) -> std::path::PathBuf {
+        let run = self.state.lock()
+            .map(|g| g.run)
+            .unwrap_or_else(|e| e.into_inner().run);
+        self.run_path(today, run)
+    }
+
+    /// Open a fresh per-run file (and its stable dated alias) for the day. Each
+    /// call picks the next run index, so a re-launched process never appends to
+    /// an earlier run's file. The stable alias is truncated so it holds only the
+    /// current run (helpers that read the dated name still see this run).
     fn rotate(&self, st: &mut DailyLogState, today: &str) {
         if st.day == today && st.file.is_some() {
             return;
         }
-        match std::fs::OpenOptions::new().create(true).append(true).open(self.todays_path(today)) {
-            Ok(f) => {
-                st.day = today.to_string();
-                st.file = Some(f);
-            }
-            Err(_) => {
-                st.day = today.to_string();
-                st.file = None;
-            }
-        }
+        let n = Self::next_run_index(&self.log_dir, &self.prefix, today);
+        let run_file = std::fs::OpenOptions::new()
+            .create(true).write(true).truncate(true)
+            .open(self.run_path(today, n)).ok();
+        let alias_file = std::fs::OpenOptions::new()
+            .create(true).write(true).truncate(true)
+            .open(self.alias_path(today)).ok();
+        st.day = today.to_string();
+        st.file = run_file;
+        st.alias = alias_file;
+        st.run = n;
     }
 }
 
-/// A tracing writer that mirrors every formatted line to stdout and a per-day log
-/// file, creating a fresh rustagent-YYYY-MM-DD.log each day. Keeps live console
-/// output while persisting a copy under workspace/logs/ for headless machines.
+/// A tracing writer that mirrors every formatted line to stdout, a fresh per-run
+/// file (`rustagent-YYYY-MM-DD.N.log`), and a stable dated alias. Keeps live
+/// console output while persisting a copy under workspace/logs/, with one log
+/// file per program launch.
 struct TeeLogWriter {
     shared: std::sync::Arc<DailyLogShared>,
 }
@@ -123,8 +161,7 @@ struct TeeLogSink {
 }
 impl std::io::Write for TeeLogSink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Recover from a poisoned lock instead of panicking (a panicked holder must
-        // not take down the logging path / process).
+        // Recover from a poisoned lock instead of panicking.
         let mut st = match self.shared.state.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
@@ -134,6 +171,9 @@ impl std::io::Write for TeeLogSink {
         self.shared.rotate(&mut st, &today);
         if let Some(f) = st.file.as_mut() {
             let _ = std::io::Write::write_all(f, buf);
+        }
+        if let Some(a) = st.alias.as_mut() {
+            let _ = std::io::Write::write_all(a, buf);
         }
         Ok(buf.len())
     }
@@ -145,6 +185,9 @@ impl std::io::Write for TeeLogSink {
         };
         if let Some(f) = st.file.as_mut() {
             let _ = std::io::Write::flush(f);
+        }
+        if let Some(a) = st.alias.as_mut() {
+            let _ = std::io::Write::flush(a);
         }
         Ok(())
     }
@@ -178,12 +221,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_ansi(false)
         .init();
 
-    info!("Starting RustAgent...");
+    info!("Starting RustAgent (pid {})", std::process::id());
     info!("Executable directory: {}", exe_dir.display());
     info!("Workspace directory: {}", workspace_dir);
     info!(
         "Runtime log file: {}",
-        log_shared.todays_path(&DailyLogShared::today()).display()
+        log_shared.current_run_path(&DailyLogShared::today()).display()
     );
     let ws_subdirs = ["memory", "tools", "skills", "logs", "static", "output", "knowledge", "rules"];
     for sub in &ws_subdirs {
@@ -364,8 +407,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clean up stale checkpoints (older than 24 hours) on startup
     let _ = memory_store.cleanup_stale_checkpoints(24);
 
-    // Clean up old blackboard entries (older than 7 days) on startup
-    let _ = memory_store.cleanup_old_blackboards(7);
 
     // Build task checkpointer for crash recovery (断点续跑)
     let checkpointer = Arc::new(TaskCheckpointer::new(memory_store.clone()));
@@ -488,8 +529,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Computer Use tools registered (enabled in config)");
     }
     
-    // Share Blackoard switch (default: false)
-    let share_blackboard_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     
     // Human intervention simulation switch (default: false)
     let human_intervention_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -525,7 +564,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_dir,
         provider: provider_for_state,
         computer_use_enabled,
-        share_blackboard_enabled,
         human_intervention_enabled,
         primary_model: config.agent.primary_model.clone(),
         fallback_model: config.agent.fallback_model.clone(),

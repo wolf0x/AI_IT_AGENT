@@ -336,14 +336,37 @@ impl LlmAgent {
             self.user_given_name.clone()
         };
         
+        // Per-turn language detection. Policy:
+        //  1) Explicit request wins (e.g. "全中文回复" / "用中文" / "Reply in English").
+        //  2) Else follow the user's most recent message language (Chinese -> Chinese, English -> English).
+        //  3) Neutral messages (no clear language) fall back to the default language in USER.md.
+        let msg_lower = user_message.to_lowercase();
+        let explicit_cn = user_message.contains("中文");
+        let explicit_en = user_message.contains("英文")
+            || (msg_lower.contains("english")
+                && (msg_lower.contains("reply") || msg_lower.contains("respond") || msg_lower.contains("use")));
+        let lang_rule: String = if explicit_cn {
+            "The user explicitly asked you to reply in Chinese. Write your ENTIRE reply in Chinese (headings, bullets, table cells, greetings and closings included). Do not switch to English or mix languages."
+                .to_string()
+        } else if explicit_en {
+            "The user explicitly asked you to reply in English. Write your ENTIRE reply in English (headings, bullets, table cells, greetings and closings included). Do not switch to Chinese or mix languages."
+                .to_string()
+        } else if user_message.chars().any(|ch| ('\u{4E00}'..='\u{9FFF}').contains(&ch) || ('\u{3400}'..='\u{4DBF}').contains(&ch)) {
+            "Your user's most recent message is in Chinese, so write your ENTIRE reply in Chinese (headings, bullets, table cells, greetings and closings included). Do not switch to English or mix languages."
+                .to_string()
+        } else if user_message.chars().any(|ch| ch.is_ascii_alphabetic()) {
+            "Your user's most recent message is in English, so write your ENTIRE reply in English (headings, bullets, table cells, greetings and closings included). Do not switch to Chinese or mix languages."
+                .to_string()
+        } else {
+            "Your user's most recent message has no clear language. Reply in the DEFAULT language defined in your user profile (USER.md) and do not mix languages."
+                .to_string()
+        };
         let mut prompt = format!(
             "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
 You have FULL ACCESS to the user's system via built-in tools.\n\
 **Current date: {today}**\n\n\
-## LANGUAGE RULE (STRICT)\n\
-Always reply in the SAME language as the user most recent message. If the user\n\
-writes in Chinese, reply entirely in Chinese; if in English, reply in English. Only\n\
-switch languages when the user explicitly asks. 中文问题请用中文回复，英文问题请用英文回复。\n\n\
+## LANGUAGE RULE (STRICT - THIS message)\n\
+{lang_rule}\n\n\
 ## CRITICAL: User Identity\n\
 The user's name is **{user_name}**. You MUST always address the user by their given name \"{user_name}\" \
 when speaking to them directly. Never use generic terms like \"user\", \"hey\", or \"there\" — always use \"{user_name}\".\n\n\

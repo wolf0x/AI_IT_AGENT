@@ -18,9 +18,8 @@ use tracing::{info, warn, error};
 use super::auditor::Auditor;
 use super::manager::{self, ManagerRoute};
 use super::permission_profile::PermissionProfile;
-use super::task_contract::{IrPhase, TaskContract, VerifiedFinding};
+use super::task_contract::{IrPhase, TaskContract, TaskRecord, VerifiedFinding};
 use crate::agent::{AgentEvent, EventStream};
-use crate::blackboard::{Blackboard, BlackboardEntry};
 use crate::error::AgentResult;
 use crate::memory::MemoryStore;
 use crate::model::openai::OpenAiProvider;
@@ -68,8 +67,6 @@ pub struct ManagedRunner {
     /// Computer Use availability flag (shared with server; used for GUI-channel
     /// auto-enable with a user opt-in window).
     computer_use_enabled: Arc<AtomicBool>,
-    /// Whether to share Instant mode context with Expert mode via Blackboard.
-    share_blackboard_enabled: Arc<AtomicBool>,
     /// Whether to use LLM to simulate human intervention when blocked.
     human_intervention_enabled: Arc<AtomicBool>,
 }
@@ -112,7 +109,6 @@ impl ManagedRunner {
         max_tool_retries: usize,
         skill_manager: Arc<SkillManager>,
         computer_use_enabled: Arc<AtomicBool>,
-        share_blackboard_enabled: Arc<AtomicBool>,
         human_intervention_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -131,7 +127,6 @@ impl ManagedRunner {
             max_tool_retries,
             skill_manager,
             computer_use_enabled,
-            share_blackboard_enabled,
             human_intervention_enabled,
         }
     }
@@ -147,10 +142,7 @@ impl ManagedRunner {
     ///    d. TaskContract updated with verified findings + manager notes
     /// 3. Return final results
     ///
-    /// The ManagedRunner reads the Blackboard directly to seed the TaskContract
-    /// with Instant-mode context (original task + work summary). This replaces
-    /// the old seed_context parameter that required the caller to pre-process
-    /// session history.
+    /// with a distilled, evidence-indexed handoff of prior session work.
     pub async fn run(
         &self,
         user_message: &str,
@@ -160,7 +152,7 @@ impl ManagedRunner {
         permissions: Arc<Mutex<std::collections::HashMap<String, bool>>>,
         permission_pending: PendingMap,
         cancelled: Arc<AtomicBool>,
-        instant_context: Option<String>,
+        handoff: Option<String>,
         force_new: bool,
     ) -> AgentResult<EventStream> {
         info!("[managed:{}] Starting managed task (max_rounds: {})", session_id, self.max_rounds);
@@ -221,51 +213,16 @@ impl ManagedRunner {
             }
         };
 
-        // ── Seed TaskContract from Blackboard (Instant-mode context) ──
-        // Only for NEW contracts — resumed contracts already have this context.
-        // Note: We use the current user_message as original_task, NOT the Blackboard's
-        // original_task (which may be stale from previous Instant mode conversations).
-        // Blackboard context is added as manager_notes for additional context only.
-        // Only inject if share_blackboard_enabled is true.
-        if !resumed && self.share_blackboard_enabled.load(std::sync::atomic::Ordering::SeqCst) {
-            if let Ok(Some(json)) = self.memory_store.load_blackboard(session_id) {
-                if let Ok(bb) = crate::blackboard::Blackboard::from_json(&json) {
-                    let entries = bb.get_entries_by_source("instant");
-                    if !entries.is_empty() {
-                        let context_summary = bb.to_context_string(Some("instant"));
-                        if !context_summary.trim().is_empty() {
-                            info!("[managed:{}] Seeded TaskContract from Blackboard ({} entries, {} chars)",
-                                  session_id, entries.len(), context_summary.len());
-                            // DO NOT overwrite original_task — keep the current user_message
-                            // contract.original_task = original_task.to_string(); // REMOVED
-                            // Add clear warning that this context may not be relevant
-                            contract.manager_notes.push(format!(
-                                "[Pre-Expert Mode Work History — WARNING: This is Instant mode history, may NOT be relevant to current task. Use your own judgment.]\n{}", 
-                                context_summary
-                            ));
-                        }
-                    }
-                }
-            }
-        }
 
-        // --- Seed same-session Instant-mode work into the contract ---
-        // The server passes the session's own Instant conversation so Expert can
-        // inherit it regardless of the (off-by-default) share_blackboard toggle.
-        // Applied to both resumed and fresh contracts so the Manager sees what
-        // was already discovered before planning from scratch.
-        if let Some(ctx) = instant_context {
-            let ctx = ctx.trim();
-            if !ctx.is_empty() {
-                contract.manager_notes.push(format!(
-                    "[Instant Mode Pre-work History - prior discoveries from this session; continue from these, do not redo completed collection]\n{}",
-                    ctx
-                ));
-                if contract.manager_notes.len() > 20 {
-                    let overflow = contract.manager_notes.len() - 20;
-                    contract.manager_notes.drain(0..overflow);
-                }
-                info!("[managed:{}] Seeded Instant-mode context ({} chars)", session_id, ctx.len());
+        // ── Seed distilled prior-work handoff (Instant -> Expert) ──
+        // The server passes a distilled, evidence-indexed handoff of the session's
+        // earlier Instant work. It is seeded as UNTRUSTED records plus a labelled
+        // manager note, so the Manager treats it as leads/hypotheses to re-audit,
+        // never as verified facts. This is the only continuation bridge between modes.
+        if let Some(h) = handoff {
+            let added = contract.seed_untrusted_handoff(&h);
+            if added > 0 {
+                info!("[managed:{}] Seeded distilled Instant handoff ({} chars, untrusted)", session_id, h.len());
             }
         }
 
@@ -454,7 +411,8 @@ impl ManagedRunner {
                 // ── Manager Round ──
                 // Plan A: pass skills catalog so Manager knows which skills exist
                 let skills = skill_manager.list();
-                let plan = match manager::plan_next(&provider, &manager_model, &contract, &skills).await {
+                let tool_defs = tools.read().await.definitions();
+                let plan = match manager::plan_next(&provider, &manager_model, &contract, &skills, &tool_defs).await {
                     Ok(plan) => plan,
                     Err(e) => {
                         error!("[managed:{}] Manager planning failed: {}", session, e);
@@ -725,6 +683,33 @@ impl ManagedRunner {
                 // Verify each expected evidence path; verified artifacts become
                 // findings, failed ones become structured open leads + notes.
                 let mut round_audits = Vec::new();
+                // ── Independent round audit (fresh context, read-only) ──
+                // The Auditor certifies whether this round's work is complete & clean.
+                // Only evidence under a COMPLETE + non-violation verdict may be promoted
+                // into verified state; otherwise it is recorded as untrusted / a lead.
+                let executor_summary_bounded: String = executor_output.chars().take(1500).collect();
+                let round_report = auditor.audit_round(
+                    &contract.original_task,
+                    &plan.subtask,
+                    &plan.success_criteria,
+                    &plan.expected_evidence,
+                    &executor_summary_bounded,
+                    &format!("{:?}", contract.phase),
+                ).await;
+                let round_ok = round_report.as_ref()
+                    .map(|r| r.completion == "complete" && r.integrity != "violation")
+                    .unwrap_or(true); // no LLM auditor configured -> do not block
+                if let Some(rp) = &round_report {
+                    round_audits.push(serde_json::json!({
+                        "type": "round_audit",
+                        "completion": rp.completion,
+                        "integrity": rp.integrity,
+                        "note": rp.note,
+                        "supported_facts": rp.supported_facts,
+                        "gaps": rp.gaps,
+                    }));
+                    info!("[managed:{}] Independent round audit: completion={}, integrity={}", session, rp.completion, rp.integrity);
+                }
                 if !plan.expected_evidence.trim().is_empty() {
                     for item in plan.expected_evidence.split(|c| c == ',' || c == '\n') {
                         let mut path = item.trim();
@@ -744,24 +729,50 @@ impl ManagedRunner {
                             "evidence": audit.evidence.chars().take(300).collect::<String>(),
                             "failure_reason": audit.failure_reason,
                         }));
-                        if audit.verified {
+                        if audit.verified && round_ok {
                             contract.add_finding(VerifiedFinding {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 title: format!("Evidence collected: {}", path),
                                 severity: "info".to_string(),
                                 status: audit.status.clone(),
                                 integrity_status: audit.integrity.clone(),
-                                evidence_summary: audit.evidence,
+                                evidence_summary: audit.evidence.clone(),
                                 evidence_path: Some(path.to_string()),
                                 mitre_technique: None,
                                 verified_at: chrono::Utc::now(),
                                 round_index: round,
                             });
+                            contract.add_record(TaskRecord {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                kind: "artifact".to_string(),
+                                title: format!("Evidence collected: {}", path),
+                                status: "completed".to_string(),
+                                integrity: audit.integrity.clone(),
+                                evidence_summary: audit.evidence.clone(),
+                                evidence_path: Some(path.to_string()),
+                                phase: Some(format!("{:?}", contract.phase).to_lowercase()),
+                                round_index: round,
+                                updated_at: Some(chrono::Utc::now()),
+                            });
                         } else {
-                            let reason = audit.failure_reason
-                                .unwrap_or_else(|| "verification failed".to_string());
-                            // F3: failed evidence becomes a structured open lead (pending)
-                            // so the Manager sees an actionable unresolved item.
+                            // Not promoted to verified state: keep as untrusted/pending record.
+                            contract.add_record(TaskRecord {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                kind: "artifact".to_string(),
+                                title: format!("Evidence collected: {}", path),
+                                status: if audit.verified { "untrusted".to_string() } else { "pending".to_string() },
+                                integrity: audit.integrity.clone(),
+                                evidence_summary: audit.evidence.clone(),
+                                evidence_path: Some(path.to_string()),
+                                phase: Some(format!("{:?}", contract.phase).to_lowercase()),
+                                round_index: round,
+                                updated_at: Some(chrono::Utc::now()),
+                            });
+                            let reason = if audit.verified {
+                                "round not independently certified (auditor verdict not complete/clean)".to_string()
+                            } else {
+                                audit.failure_reason.unwrap_or_else(|| "verification failed".to_string())
+                            };
                             contract.add_lead(
                                 &format!("Evidence '{}' not verified", path),
                                 &reason,
@@ -770,8 +781,7 @@ impl ManagedRunner {
                                 "Round {}: evidence '{}' not verified: {}",
                                 round + 1, path, reason
                             ));
-                        }
-                    }
+                        }                    }
                 }
 
                 // Record a bounded summary of the Executor's output as a manager note
@@ -827,80 +837,6 @@ impl ManagedRunner {
 
                 // ── Persist TaskContract after each round (crash recovery) ──
                 persist_contract(&memory_store, &contract_id, &session, &contract);
-
-                // ── Write Expert mode findings to Blackboard ──
-                // This allows Instant mode to see what Expert mode discovered.
-                let mut blackboard = Blackboard::new(&session);
-                // Load existing blackboard from SQLite (if any)
-                if let Ok(Some(json)) = memory_store.load_blackboard(&session) {
-                    if let Ok(existing) = Blackboard::from_json(&json) {
-                        blackboard = existing;
-                    }
-                }
-                // Write verified findings (include audit status + integrity for Instant visibility)
-                for f in &contract.verified_findings {
-                    let summary: String = f.title.chars().take(100).collect();
-                    // Include status/integrity in detail so Instant users see audit verdict
-                    let detail = format!(
-                        "[status: {}, integrity: {}] {}",
-                        f.status, f.integrity_status,
-                        f.evidence_summary.chars().take(180).collect::<String>()
-                    );
-                    blackboard.add_entry(BlackboardEntry {
-                        source: "expert".to_string(),
-                        entry_type: "finding".to_string(),
-                        summary,
-                        detail: Some(detail),
-                        phase: Some(format!("{:?}", contract.phase).to_lowercase()),
-                        timestamp: chrono::Utc::now(),
-                    });
-                }
-                // Write latest manager notes (up to 3) as summary entries
-                // Filter out executor trajectory summaries ("Round N: ...") — same rule as F2
-                let start = if contract.manager_notes.len() > 3 { contract.manager_notes.len() - 3 } else { 0 };
-                for note in contract.manager_notes.iter().skip(start) {
-                    // Skip executor trajectory notes (consistent with F2 Manager input isolation)
-                    if note.starts_with("Round ") && !note.starts_with("[Audit Guard]")
-                        && !note.starts_with("[User Resume]") && !note.starts_with("[Pre-Expert") {
-                        continue;
-                    }
-                    let summary: String = note.chars().take(100).collect();
-                    blackboard.add_entry(BlackboardEntry {
-                        source: "expert".to_string(),
-                        entry_type: "summary".to_string(),
-                        summary,
-                        detail: None,
-                        phase: Some(format!("{:?}", contract.phase).to_lowercase()),
-                        timestamp: chrono::Utc::now(),
-                    });
-                }
-                // Write phase change if applicable
-                if let Some(p) = plan.phase {
-                    blackboard.add_entry(BlackboardEntry {
-                        source: "expert".to_string(),
-                        entry_type: "phase_change".to_string(),
-                        summary: format!("Phase: {:?}", p),
-                        detail: None,
-                        phase: Some(format!("{:?}", p).to_lowercase()),
-                        timestamp: chrono::Utc::now(),
-                    });
-                }
-                // Write open leads (unresolved items) so Instant users see what Expert hasn't solved
-                for lead in &contract.open_leads {
-                    let summary: String = lead.description.chars().take(100).collect();
-                    blackboard.add_entry(BlackboardEntry {
-                        source: "expert".to_string(),
-                        entry_type: "open_lead".to_string(),
-                        summary,
-                        detail: Some(format!("[{}] {}", lead.status, lead.context)),
-                        phase: Some(format!("{:?}", contract.phase).to_lowercase()),
-                        timestamp: chrono::Utc::now(),
-                    });
-                }
-                // Persist blackboard
-                if let Ok(json) = blackboard.to_json() {
-                    let _ = memory_store.save_blackboard(&session, &json);
-                }
 
                 round += 1;
             }
