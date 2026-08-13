@@ -433,6 +433,9 @@ input:checked+.slider:before{transform:translateX(20px)}
   border-radius:50%; background:inherit;
   animation:wolfRipple 2s ease-out infinite;
 }
+.grok-send.expert{background:linear-gradient(135deg,#8e44ad 0%,#6c3483 100%)}
+.grok-send.expert:not(:disabled):not(.running){animation:breatheGrokPurple 2.2s ease-in-out infinite}
+@keyframes breatheGrokPurple{0%,100%{box-shadow:0 0 0 0 rgba(142,68,173,.5)}50%{box-shadow:0 0 0 8px rgba(142,68,173,0)}}
 @keyframes breatheGrok{0%,100%{box-shadow:0 0 0 0 rgba(52,152,219,.5)}50%{box-shadow:0 0 0 8px rgba(52,152,219,0)}}
 @keyframes wolfPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
 @keyframes wolfRipple{0%{transform:scale(1);opacity:0.6}100%{transform:scale(1.8);opacity:0}}
@@ -2595,6 +2598,8 @@ function setManagedMode(on){
   const modeBtn=document.getElementById('modeBtn');
   if(label)label.textContent=on?'Expert':'Instant';
   if(modeBtn)modeBtn.classList.toggle('expert',on);
+  const sendBtn=document.getElementById('sendBtn');
+  if(sendBtn)sendBtn.classList.toggle('expert',on);
   const menu=document.getElementById('modeMenu');
   if(menu)menu.querySelectorAll('.grok-item').forEach(function(it){
     it.classList.toggle('sel',(on&&it.dataset.mode==='managed')||(!on&&it.dataset.mode==='normal'));
