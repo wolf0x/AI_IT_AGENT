@@ -101,9 +101,6 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .nav-tab:hover{background:#34495e;color:white}
 .nav-tab.active{background:#3498db;color:#fff}
 .sidebar-ftr{padding:12px 16px;border-top:1px solid #34495e;margin-top:auto;font-size:12px;color:#95a5a6;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.managed-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:.3px;background:#34495e;color:#95a5a6;transition:all .2s}
-.managed-badge.active{background:#8e44ad;color:#fff;animation:managedPulse 3s infinite}
-@keyframes managedPulse{0%,100%{box-shadow:0 0 0 0 rgba(142,68,173,.3)}50%{box-shadow:0 0 0 4px rgba(142,68,173,0)}}
 .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:6px;animation:pulse 3s ease-in-out infinite}
 .status-dot.ok{background:var(--green);animation:none}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.9)}}
@@ -614,7 +611,6 @@ input:checked+.slider:before{transform:translateX(20px)}
     <div class="sidebar-ftr">
       <span class="status-dot" id="statusDot"></span>
       <span id="statusText">Disconnected</span>
-      <span class="managed-badge" id="managedBadge">INSTANT</span>
     </div>
   </div>
 
@@ -2584,9 +2580,6 @@ function setManagedMode(on){
   const hint=document.getElementById('modeHint');
   if(hint){hint.textContent=on?'Expert mode active — Loop for long-horizon tasks':'Instant mode active — single turn execution';hint.classList.toggle('active',on);}
   // Show/hide managed banner (removed — using hint text only)
-  // Update sidebar badge
-  const badge=document.getElementById('managedBadge');
-  if(badge){badge.textContent=on?'EXPERT':'INSTANT';badge.classList.toggle('active',on);}
   // Sync Settings toggle
   const globalToggle=document.getElementById('globalManagedToggle');
   if(globalToggle)globalToggle.checked=on;
