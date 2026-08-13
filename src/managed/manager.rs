@@ -13,10 +13,11 @@ use crate::model::openai::OpenAiProvider;
 use crate::model::ChatMessage;
 use crate::model::ToolDefinition;
 use crate::skill::types::SkillMetadata;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Result of a Manager planning round.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagerPlan {
     /// The subtask for the Executor to work on.
     pub subtask: String,
@@ -39,7 +40,7 @@ pub struct ManagerPlan {
 }
 
 /// What happens after the Executor completes a subtask.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ManagerRoute {
     /// Continue to next round (more work to do).
     Continue,
@@ -49,6 +50,51 @@ pub enum ManagerRoute {
     Blocked(String),
     /// Manager output was invalid — retry planning.
     Invalid(String),
+}
+
+
+/// Compact, persistable snapshot of an in-flight Manager plan. Stored on the
+/// TaskContract so a STOP'd round can be resumed EXACTLY (bare "continue")
+/// instead of being re-planned from scratch (which yields a divergent 6B).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingPlan {
+    pub subtask: String,
+    pub success_criteria: String,
+    pub expected_evidence: String,
+    pub route: ManagerRoute,
+    pub channel: String,
+    pub remaining_work: Vec<String>,
+}
+
+impl PendingPlan {
+    pub fn from_plan(p: &ManagerPlan) -> Self {
+        Self {
+            subtask: p.subtask.clone(),
+            success_criteria: p.success_criteria.clone(),
+            expected_evidence: p.expected_evidence.clone(),
+            route: p.route.clone(),
+            channel: p.channel.clone(),
+            remaining_work: p.remaining_work.clone(),
+        }
+    }
+    pub fn to_plan(&self) -> ManagerPlan {
+        ManagerPlan {
+            subtask: self.subtask.clone(),
+            success_criteria: self.success_criteria.clone(),
+            expected_evidence: self.expected_evidence.clone(),
+            route: self.route.clone(),
+            phase: None,
+            channel: self.channel.clone(),
+            remaining_work: self.remaining_work.clone(),
+            raw_output: String::new(),
+        }
+    }
+    pub fn to_json(&self) -> Result<String, String> {
+        serde_json::to_string(self).map_err(|e| format!("PendingPlan serialize: {}", e))
+    }
+    pub fn from_json(s: &str) -> Result<Self, String> {
+        serde_json::from_str(s).map_err(|e| format!("PendingPlan deserialize: {}", e))
+    }
 }
 
 /// Build the Manager's system prompt.
@@ -354,6 +400,7 @@ pub async fn plan_next(
     contract: &TaskContract,
     skills: &[SkillMetadata],
     tool_defs: &[ToolDefinition],
+    anchor: Option<&str>,
 ) -> Result<ManagerPlan, String> {
     let lang = crate::agent::llm_agent::detect_user_language(&contract.original_task);
     let mut system_prompt = manager_system_prompt(&lang, TaskDomain::from_str(&contract.domain), tool_defs);
@@ -383,8 +430,16 @@ pub async fn plan_next(
         }
     }
 
-    let user_prompt = manager_user_prompt(contract);
-
+    let mut user_prompt = manager_user_prompt(contract);
+    if let Some(a) = anchor {
+        let a = a.trim();
+        if !a.is_empty() {
+            user_prompt.push_str("\n\n# Interrupted plan to align with (user resumed; not yet executed)\n");
+            user_prompt.push_str("A prior round was interrupted and its plan was never committed. Incorporate the user's newest instruction, but keep this anchor in mind \u{2014} avoid redoing completed/accepted work and advance where possible. Previously planned subtask:\n");
+            user_prompt.push_str(a);
+            user_prompt.push('\n');
+        }
+    }
     let messages = vec![
         ChatMessage::system(&system_prompt),
         ChatMessage::user(&user_prompt),
@@ -405,4 +460,45 @@ pub async fn plan_next(
         .map_err(|e| format!("Manager LLM call failed: {}", e))?;
 
     Ok(parse_manager_plan(&content))
+}
+
+
+/// Condense Expert-mode prior rounds / Instant handoff into a short digest
+/// (at most WORDS words) for the "Prior Rounds (unverified)" continue prompt.
+pub async fn summarize_prior(
+    provider: &Arc<OpenAiProvider>,
+    model: &str,
+    input: &str,
+) -> Result<String, String> {
+    const WORDS: usize = 100;
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(String::new());
+    }
+    let lang = crate::agent::llm_agent::detect_user_language(input);
+    let lang_note = if lang == "zh" {
+        "用中文回复。"
+    } else {
+        "Reply in the same language as the content (default English)."
+    };
+    let sys = format!(
+        "You condense long-horizon agent prior work into a short digest for the user's continue prompt.\n\
+         Summarize the following prior-round notes/findings into at most {} words, as ONE plain-text paragraph, no markdown, no lists.\n\
+         Cover: (1) the core objective, (2) what was already verified/done, (3) the single most relevant next lead.\n\
+         Do NOT invent facts or add actions not stated. {}",
+        WORDS, lang_note
+    );
+    let messages = vec![
+        ChatMessage::system(&sys),
+        ChatMessage::user(input),
+    ];
+    let (dummy_tx, mut dummy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        while dummy_rx.recv().await.is_some() {}
+    });
+    let (content, _, _, _) = provider
+        .chat_stream(model, &messages, &[], dummy_tx, "prior-summary", "manager")
+        .await
+        .map_err(|e| format!("Prior summary LLM call failed: {}", e))?;
+    Ok(content.trim().to_string())
 }

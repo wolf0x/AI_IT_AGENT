@@ -1305,10 +1305,26 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 let mut aborted = false;
                                 let mut ask_for_task = false;
                                 if has_expert_residue || has_instant {
-                                    let prior_preview = if !rounds_summary.is_empty() {
+                                    // Summarize prior rounds into a short (<=100 word) digest for the
+                                    // continue prompt instead of showing char-truncated raw notes. Falls
+                                    // back to the concise summaries if the LLM call fails.
+                                    let prior_source = if !rounds_summary.is_empty() {
                                         rounds_summary.clone()
                                     } else {
-                                        handoff.as_ref().map(|h| compress_handoff_summary(h)).unwrap_or_default()
+                                        handoff.clone().unwrap_or_default()
+                                    };
+                                    let prior_preview = if prior_source.trim().is_empty() {
+                                        String::new()
+                                    } else {
+                                        crate::managed::manager::summarize_prior(&state.provider, &model, &prior_source)
+                                            .await
+                                            .unwrap_or_else(|_| {
+                                                if !rounds_summary.is_empty() {
+                                                    rounds_summary.clone()
+                                                } else {
+                                                    compress_handoff_summary(&prior_source)
+                                                }
+                                            })
                                     };
                                 let prompt_event = serde_json::json!({
                                         "type": "expert_prompt",

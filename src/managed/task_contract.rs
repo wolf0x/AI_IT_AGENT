@@ -268,7 +268,13 @@ pub struct TaskContract {
 
     /// Distilled, UNVERIFIED prior-session (Instant) context handed over to Expert.
     #[serde(default)]
-    pub prior_handoff: Option<String>,}
+    pub prior_handoff: Option<String>,
+    /// Serialized in-flight Manager plan (job). When a round is STOP'd mid-
+    /// execution it is persisted here so a bare "continue" resumes the EXACT
+    /// same subtask instead of re-planning a divergent one.
+    #[serde(default)]
+    pub pending_plan: Option<String>,
+}
 
 impl TaskContract {
     /// Create a new TaskContract for a managed task.
@@ -298,7 +304,9 @@ impl TaskContract {
             domain,
             records: Vec::new(),
 
-            prior_handoff: None,        }
+            prior_handoff: None,
+            pending_plan: None,
+        }
     }
 
     /// Generate a condensed brief for the Executor.

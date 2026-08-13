@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn, error};
 
 use super::auditor::Auditor;
-use super::manager::{self, ManagerRoute};
+use super::manager::{self, ManagerPlan, ManagerRoute, PendingPlan};
 use super::permission_profile::PermissionProfile;
 use super::task_contract::{IrPhase, TaskContract, TaskRecord, VerifiedFinding};
 use crate::agent::{AgentEvent, EventStream};
@@ -26,7 +26,56 @@ use crate::model::openai::OpenAiProvider;
 use crate::permission::PendingMap;
 use crate::runner::Runner;
 use crate::skill::SkillManager;
+
 use crate::tool::ToolRegistry;
+
+/// Does the resumed message express ONLY "continue" intent (no new substantive
+/// content)? Used to decide whether to reuse the persisted in-flight plan
+/// verbatim (bare resume) vs re-plan anchored on it (new context / redirect).
+/// Biases toward `false` so user instructions are never silently ignored.
+fn is_bare_resume(msg: &str) -> bool {
+    let raw = msg.trim();
+    if raw.is_empty() {
+        return true;
+    }
+    let mut rest: &str = raw;
+    // Strip ONE leading resume/filler prefix (longest first so "继续任务" wins
+    // over "继续").
+    const PREFIXES: [&str; 16] = [
+        "continue the task", "continues", "continue", "resume", "go", "okay", "ok",
+        "yes", "yep", "retry", "again", "继续任务", "继续", "接着", "再来", "好的",
+    ];
+    let mut stripped = false;
+    for prefix in PREFIXES {
+        // Use str::get so a non-char-boundary slice returns None instead of panicking.
+        let Some(head) = rest.get(..prefix.len()) else { continue };
+        if head.eq_ignore_ascii_case(prefix) {
+            rest = &rest[prefix.len()..];
+            stripped = true;
+            break;
+        }
+    }
+    if stripped {
+        rest = rest.trim_start_matches(
+            |c: char| matches!(c, ',' | '.' | '!' | '?' | ' ' | '\t' | '\n' | '。' | '，' | '！' | '？' | '；'),
+        );
+        rest = rest.trim();
+    }
+    if rest.is_empty() {
+        return true;
+    }
+    let meaningful: String = rest.chars().filter(|c| c.is_alphanumeric()).collect();
+    if meaningful.is_empty() {
+        return true;
+    }
+    let ack = ["please", "pls", "yes", "ok", "okay", "thetask", "task", "ahead", "thanks",
+               "continue", "继续", "接着", "好的", "嗯", "吧", "ok", "going"];
+    let m = meaningful.to_lowercase();
+    if ack.iter().any(|a| *a == m.as_str()) {
+        return true;
+    }
+    false
+}
 
 /// Deadlock guardrails for the F10 backtrack gate.
 /// A single lead is abandoned after this many rounds even when progress is slow.
@@ -285,6 +334,7 @@ impl ManagedRunner {
         // Fix 3: cancelled flag is checked at every round start so STOP
         // propagates from the WebSocket handler into the spawned task.
         let cancelled_flag = cancelled.clone();
+        let resume_msg = user_message.to_string();
         tokio::spawn(async move {
             let mut round = if resumed { contract.current_round } else { 0usize };
             // F10: human-gate tracking — consecutive rounds with no progress
@@ -412,17 +462,44 @@ impl ManagedRunner {
                 // Plan A: pass skills catalog so Manager knows which skills exist
                 let skills = skill_manager.list();
                 let tool_defs = tools.read().await.definitions();
-                let plan = match manager::plan_next(&provider, &manager_model, &contract, &skills, &tool_defs).await {
-                    Ok(plan) => plan,
-                    Err(e) => {
-                        error!("[managed:{}] Manager planning failed: {}", session, e);
-                        let _ = tx.send(Ok(AgentEvent::text(
-                            &format!("\n\n*[Manager planning failed: {}]*\n\n", e),
-                            &contract_id, "manager"
-                        ))).await;
-                        break;
+                // ── Resume gating (persisted in-flight plan) ──
+                // If a round was STOP'd mid-execution its plan is persisted on the
+                // contract. A bare "continue" reuses that EXACT plan (no re-plan, no
+                // 6A->6B drift). If the user added NEW context/redirect on resume, we
+                // re-plan but anchor the Manager on the pending subtask so the new plan
+                // stays aligned and does not redo completed work.
+                let pending_json = contract.pending_plan.clone();
+                let pending_opt = pending_json
+                    .as_deref()
+                    .and_then(|j| PendingPlan::from_json(j).ok());
+                let msg_is_bare = is_bare_resume(&resume_msg);
+                let plan: ManagerPlan = if resumed && msg_is_bare && pending_opt.is_some() {
+                    let p = pending_opt.clone().unwrap();
+                    info!("[managed:{}] Resuming stopped round {} with exact pending plan", session, round + 1);
+                    p.to_plan()
+                } else {
+                    let anchor = if resumed && pending_opt.is_some() {
+                        Some(pending_opt.as_ref().unwrap().subtask.as_str())
+                    } else {
+                        None
+                    };
+                    match manager::plan_next(&provider, &manager_model, &contract, &skills, &tool_defs, anchor).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("[managed:{}] Manager planning failed: {}", session, e);
+                            let _ = tx.send(Ok(AgentEvent::text(
+                                &format!("\n\n*[Manager planning failed: {}]*\n\n", e),
+                                &contract_id, "manager"
+                            ))).await;
+                            break;
+                        }
                     }
                 };
+
+                // Persist the in-flight plan right away so a STOP later in this round
+                // can resume the exact same subtask on the next "continue".
+                contract.pending_plan = PendingPlan::from_plan(&plan).to_json().ok();
+                persist_contract(&memory_store, &contract_id, &session, &contract);
 
                 info!("[managed:{}] Manager plan: route={:?}, subtask={}", session, plan.route, 
                       plan.subtask.chars().take(100).collect::<String>());
@@ -477,6 +554,7 @@ impl ManagedRunner {
                         ))).await;
                         contract.complete();
                         contract.remaining_work = Vec::new();
+                        contract.pending_plan = None;
                         // Persist the final state but do NOT delete — the user may
                         // want to resume or review the contract later.
                         persist_contract(&memory_store, &contract_id, &session, &contract);
@@ -848,6 +926,7 @@ impl ManagedRunner {
                 // list so unfinished items are not dropped.
                 if round_ok {
                     contract.remaining_work = planned_remaining;
+                    contract.pending_plan = None;
                 }
 
                 contract.current_round = round + 1;
