@@ -433,10 +433,11 @@ impl ManagedRunner {
                     round + 1, plan.subtask, plan.success_criteria, plan.route
                 );
                 let _ = tx.send(Ok(AgentEvent::text(&plan_event, &contract_id, "manager"))).await;
-                // Persist the Manager-declared Remaining Work into the contract so
-                // the next round plans forward from it (audit-report memory).
-                contract.remaining_work = plan.remaining_work.clone();
-                persist_contract(&memory_store, &contract_id, &session, &contract);
+                // G2: the Manager forecasts Remaining Work AFTER this subtask. Keep it
+                // local here; only commit it to the contract once the round is actually
+                // audited & verified (see reconcile step below), so a failed/partial
+                // round never drops unfinished items.
+                let planned_remaining: Vec<String> = plan.remaining_work.clone();
 
                 // Check route before executing
                 match &plan.route {
@@ -464,6 +465,7 @@ impl ManagedRunner {
                             &contract_id, "manager"
                         ))).await;
                         contract.complete();
+                        contract.remaining_work = Vec::new();
                         // Persist the final state but do NOT delete — the user may
                         // want to resume or review the contract later.
                         persist_contract(&memory_store, &contract_id, &session, &contract);
@@ -724,6 +726,22 @@ impl ManagedRunner {
                     }));
                     info!("[managed:{}] Independent round audit: completion={}, integrity={}", session, rp.completion, rp.integrity);
                 }
+                // G0: never let a round appear "independently verified" when the auditor
+                // could not run. Warn the user and record it as an Audit Guard note so
+                // evidence is kept as leads/pending rather than silently trusted.
+                if let Some(rp) = &round_report {
+                    if rp.note.contains("round audit call failed") {
+                        warn!("[managed:{}] Independent auditor call failed; evidence NOT promoted to verified", session);
+                        let _ = tx.send(Ok(AgentEvent::text(
+                            "\n\n*[Audit warning] The independent Auditor check failed this round, so this round's work was NOT promoted to verified state.*\n\n",
+                            &contract_id, "manager"
+                        ))).await;
+                        contract.manager_notes.push(format!(
+                            "[Audit Guard] Round {}: independent auditor call failed - evidence kept as leads/pending",
+                            round + 1
+                        ));
+                    }
+                }
                 if !plan.expected_evidence.trim().is_empty() {
                     for item in plan.expected_evidence.split(|c| c == ',' || c == '\n') {
                         let mut path = item.trim();
@@ -814,6 +832,13 @@ impl ManagedRunner {
                 // NEXT round instead of re-running the just-completed one. current_round
                 // is a count of finished rounds (also drives the Manager/Executor
                 // "Round N" display via current_round + 1).
+                // G2: reconcile Remaining Work - only advance it when this round was
+                // audited & verified. On a failed/partial round, keep the prior to-do
+                // list so unfinished items are not dropped.
+                if round_ok {
+                    contract.remaining_work = planned_remaining;
+                }
+
                 contract.current_round = round + 1;
 
                 // ── F5: Per-round archive (audit trail, re-playable) ──
