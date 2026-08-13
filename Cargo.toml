@@ -1,6 +1,6 @@
 ﻿[package]
 name = "RustAgent"
-version = "0.33.2"
+version = "0.33.3"
 edition = "2021"
 description = "Local AI agent with WebSocket gateway, multi-model support, and Windows system tools"
 
@@ -88,5 +88,6 @@ tempfile = "3"
 strip = true
 opt-level = 3
 lto = true
+
 
 
