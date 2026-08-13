@@ -634,9 +634,9 @@ impl ManagedRunner {
                         ensure_gui_channel(&tx, &contract_id, &session, &computer_use_enabled, &tools, &cancelled_flag).await;
                         let mut b = brief;
                         if brief_lang_cn {
-                            b.push_str("\n\n## Execution Channel: GUI\n本轮任务必须通过 GUI 工具完成——优先使用 browser_skill（用户真实浏览器）或 computer_use 工具（cu_screenshot / cu_mouse / cu_keyboard 等界面控制）。不要尝试用 shell_exec 或 curl 代替 GUI 交互。");
+                            b.push_str("\n\n## Execution Channel: GUI\n本轮任务必须通过 GUI 工具完成——优先使用浏览器/技能工具（用户真实浏览器）或 computer_use 工具（cu_screenshot / cu_mouse / cu_keyboard 等界面控制）。不要尝试用 shell_exec 或 curl 代替 GUI 交互。");
                         } else {
-                            b.push_str("\n\n## Execution Channel: GUI\nThis round MUST be completed through GUI tools - prefer browser_skill (real user browser) or computer_use tools (cu_screenshot / cu_mouse / cu_keyboard). Do not try shell_exec or curl to replace GUI interaction.");
+                            b.push_str("\n\n## Execution Channel: GUI\nThis round MUST be completed through GUI tools - prefer a browser/skill tool (real user browser) or computer_use tools (cu_screenshot / cu_mouse / cu_keyboard). Do not try shell_exec or curl to replace GUI interaction.");
                         }
                         b
                     }

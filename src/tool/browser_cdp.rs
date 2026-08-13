@@ -211,7 +211,7 @@ impl Tool for BrowserCdpTool {
         "Headless browser automation via CDP (Chrome DevTools Protocol). \
          Runs in headless mode (no visible window) — fast and reliable for automated tasks. \
          Use this for: screenshots, web scraping, checking URLs, extracting page content. \
-         For tasks requiring the user's login sessions or interactive browsing, use 'browser_skill' instead.\n\
+         Runs headless, so it does not carry your logged-in sessions.\n\
          Actions:\n\
          - 'navigate': Go to a URL. Provide 'url'.\n\
          - 'get_text': Get page text or element text. Optional 'selector' (CSS).\n\

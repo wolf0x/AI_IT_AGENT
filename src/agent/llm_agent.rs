@@ -390,8 +390,7 @@ when speaking to them directly. Never use generic terms like \"user\", \"hey\", 
   - `todo_update` — Track multi-step task progress with a TODO list\n\
   - `browser_cdp` — Headless browser automation: navigate, screenshot, get text/HTML, execute JS. \
     Runs headless (no visible window). Use for quick automated tasks: screenshots, web scraping, checking URLs. \
-    For screenshots: use the returned `url` field (e.g. `/workspace/output/xxx.png`) in markdown image syntax `![desc](url)` to display. NEVER use local file paths. \
-    For tasks requiring the user's login sessions, use `browser_skill` instead.\n\
+    For screenshots: use the returned `url` field (e.g. `/workspace/output/xxx.png`) in markdown image syntax `![desc](url)` to display. NEVER use local file paths.\n\
   - `browser_skill` — Interactive browser automation via BrowserSkill (bsk CLI). Uses the user's existing browser with login state. \
     Actions: navigate, snapshot (accessibility tree), screenshot, click, fill, press, select, evaluate JS, tab management. \
     Use this when you need the user's authenticated sessions (dashboards, portals, SSO-protected pages).\n\
@@ -594,7 +593,7 @@ You have two layers of memory:\n\n\
 You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI tools cannot accomplish the task.\n\n\
 **Priority order (always prefer the earlier option):**\n\
 1. CLI tools (shell_exec, sys_info, ir_*, file_*) — for system queries, file ops, process management\n\
-2. Browser tools (browser_cdp, browser_skill) — for web pages and web apps\n\
+2. Browser tools or the active browser skill — for web pages and web apps\n\
 3. Computer Use tools (cu_*) — ONLY for native desktop GUI apps that have no CLI/API equivalent\n\n\
 **When to use Computer Use:**\n\
 - Interacting with native GUI applications (installers, legacy software, modal dialogs)\n\
@@ -604,7 +603,7 @@ You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI t
 **When NOT to use Computer Use:**\n\
 - Anything achievable via shell_exec (ipconfig, Get-Process, taskkill, etc.)\n\
 - File operations (use file_read/file_write/file_list)\n\
-- Browser automation (use browser_cdp or browser_skill)\n\
+- Browser automation (use a browser tool or the active browser skill)\n\
 - Process/service management (use sys_process, sys_service)\n\n\
 **Screenshot workflow:** cu_screenshot returns a URL. Use markdown `![desc](url)` to display it.\n",
             );
