@@ -427,11 +427,22 @@ impl ManagedRunner {
                 info!("[managed:{}] Manager plan: route={:?}, subtask={}", session, plan.route, 
                       plan.subtask.chars().take(100).collect::<String>());
 
-                // Send Manager plan to UI
-                let plan_event = format!(
-                    "\n\n## 🧭 Manager Plan (Round {})\n**Subtask**: {}\n**Success Criteria**: {}\n**Route**: {:?}\n\n",
-                    round + 1, plan.subtask, plan.success_criteria, plan.route
+                // Send Manager plan to UI, split into labeled sections for readability
+                // (mirrors the Executor's Subtask Complete report structure).
+                let mut plan_event = format!(
+                    "\n\n## 🧭 Manager Plan (Round {})\n\n**Subtask**\n{}\n\n**Success Criteria**\n{}",
+                    round + 1, plan.subtask, plan.success_criteria
                 );
+                if !plan.expected_evidence.trim().is_empty() {
+                    plan_event.push_str(&format!(
+                        "\n\n**Expected Evidence**\n{}",
+                        plan.expected_evidence
+                    ));
+                }
+                plan_event.push_str(&format!(
+                    "\n\n**Route**: {:?} \u{00b7} **Channel**: {}\n\n",
+                    plan.route, plan.channel
+                ));
                 let _ = tx.send(Ok(AgentEvent::text(&plan_event, &contract_id, "manager"))).await;
                 // G2: the Manager forecasts Remaining Work AFTER this subtask. Keep it
                 // local here; only commit it to the contract once the round is actually
