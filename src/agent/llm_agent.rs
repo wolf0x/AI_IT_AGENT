@@ -317,24 +317,36 @@ impl LlmAgent {
         None
     }
 
+    /// Resolve the user's address name.
+    /// Priority: any non-placeholder value in USER.md (hand-written / explicit
+    /// request / previously-resolved given name) > system-detected real given
+    /// name > placeholder "Master". System/reserved account names never resolve
+    /// to a real given name unless the user declared one in USER.md.
+    fn resolve_user_name(&self) -> String {
+        // 1) USER.md explicit (non-placeholder) declaration wins.
+        if !self.workspace_dir.is_empty() {
+            let user_md_path = std::path::Path::new(&self.workspace_dir).join("USER.md");
+            if let Ok(content) = std::fs::read_to_string(&user_md_path) {
+                if let Some(v) = Self::extract_preferred_name(&content) {
+                    if !v.eq_ignore_ascii_case("master") {
+                        return v;
+                    }
+                }
+            }
+        }
+        // 2) Placeholder/absent: use the detected real given name, else "Master".
+        if crate::config::is_real_given_name(&self.user_given_name) {
+            self.user_given_name.clone()
+        } else {
+            "Master".to_string()
+        }
+    }
+
     fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage]) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
         
-        // Determine user's preferred name: USER.md takes priority over whoami-detected name
-        let user_name = if !self.workspace_dir.is_empty() {
-            let user_md_path = std::path::Path::new(&self.workspace_dir).join("USER.md");
-            if let Ok(content) = std::fs::read_to_string(&user_md_path) {
-                if let Some(preferred) = Self::extract_preferred_name(&content) {
-                    preferred
-                } else {
-                    self.user_given_name.clone()
-                }
-            } else {
-                self.user_given_name.clone()
-            }
-        } else {
-            self.user_given_name.clone()
-        };
+        // Determine user's preferred name: USER.md explicit > detected given name > Master
+        let user_name = self.resolve_user_name();
         
         // Per-turn language detection. Policy:
         //  1) Explicit request wins (e.g. "全中文回复" / "用中文" / "Reply in English").

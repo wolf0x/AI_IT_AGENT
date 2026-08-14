@@ -222,6 +222,27 @@ pub fn detect_user_given_name() -> String {
     "User".to_string()
 }
 
+/// System / reserved account names that must NOT be treated as a real given name.
+/// When detection returns one of these, the caller should fall back to the
+/// placeholder "Master" unless the user explicitly declared a different name.
+pub const SYSTEM_ACCOUNT_NAMES: &[&str] = &[
+    "admin", "administrator", "guest", "user", "wdagutilityaccount",
+    "defaultaccount", "defaultuser0", "system", "localsystem", "local system",
+    "network", "localservice", "local service", "networkservice", "network service",
+    "homeuser",
+];
+
+/// Whether a detected name is a real given name (non-empty and not a system/
+/// reserved account name). Fallbacks returned by `detect_user_given_name`
+/// ("User", "Admin") are covered by the system-name set.
+pub fn is_real_given_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    !SYSTEM_ACCOUNT_NAMES.iter().any(|s| *s == lower)
+}
 /// Extract Given Name from a FullName string.
 /// 
 /// Handles common formats:

@@ -789,7 +789,7 @@ input:checked+.slider:before{transform:translateX(20px)}
         <div class="settings-section gs-session">
           <h3>&#128190; Session</h3>
           <div style="display:flex;flex-direction:column;gap:8px">
-            <button class="btn btn-d" onclick="clearChat()">Clear Chat</button>
+            <button class="btn btn-d" onclick="clearChat()">Clear Conversation</button>
             <button class="btn btn-s" onclick="exportChat()">Export Conversation</button>
             <button class="btn btn-d" onclick="resetManagedPlans()" title="Clear unfinished Expert mode tasks and start fresh">Reset Managed Plans</button>
           </div>
@@ -1970,7 +1970,7 @@ async function loadProviders(){
           '<td>'+Math.round(p.context_window/1000)+'K</td>'+
           '<td style="text-align:right;white-space:nowrap">'+
             '<a href="#" onclick="editProvider(\''+esc(p.name)+'\');return false" style="color:var(--accent);margin-right:8px">Edit</a>'+
-            '<a href="#" onclick="testProvider(\''+esc(p.name)+'\');return false" style="color:var(--accent);margin-right:8px">Test</a>'+
+            '<a href="#" onclick="testProvider(\''+esc(p.name)+'\', this);return false" style="color:var(--accent);margin-right:8px">Test</a>'+
             '<a href="#" onclick="deleteProvider(\''+esc(p.name)+'\');return false" style="color:var(--red)">Delete</a>'+
           '</td></tr>';
       }).join('')+'</tbody></table>';
@@ -2047,18 +2047,18 @@ async function deleteProvider(name){
     addLog('Provider deleted: '+name,'info');
   }catch(e){addLog('Delete provider failed','error')}
 }
-async function testProvider(name){
+async function testProvider(name, btn){
   try{
     const r=await fetch('/api/providers/'+encodeURIComponent(name)+'/test',{method:'POST'});
     const d=await r.json();
     if(d.ok){
-      alert('Provider \"'+name+'\" OK ('+d.latency_ms+'ms).\nReply: '+d.reply);
+      if(btn){btn.textContent='Connected';btn.style.color='var(--green)';}
       addLog('Provider test OK: '+name+' ('+d.latency_ms+'ms)','info');
     }else{
-      alert('Provider \"'+name+'\" FAILED:\n'+(d.error||'unknown error'));
+      if(btn){btn.textContent='Failed';btn.style.color='var(--red)';}
       addLog('Provider test FAILED: '+name+' - '+(d.error||'unknown error'),'error');
     }
-  }catch(e){addLog('Provider test error: '+e,'error')}
+  }catch(e){if(btn){btn.textContent='Failed';btn.style.color='var(--red)';}addLog('Provider test error: '+e,'error')}
 }
 function resetProviderForm(){
   ['provName','provApiBase','provApiKey','provApiKeyEnv'].forEach(id=>document.getElementById(id).value='');
