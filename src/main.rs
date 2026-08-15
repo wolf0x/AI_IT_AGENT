@@ -36,6 +36,7 @@ mod tool;
 mod web;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::sync::Mutex;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -545,15 +546,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         password: password.clone(),
         model_configs: shared_models.clone(),
         model_store_path: model_store_path.to_str().unwrap_or("models.json").to_string(),
-        max_iterations: config.agent.max_iterations,
-        rabbit_hole_threshold: config.agent.rabbit_hole_threshold,
-        context_window_threshold: config.agent.context_window_threshold,
-        tool_timeout_secs: config.agent.tool_timeout_secs,
-        max_tool_retries: config.agent.max_tool_retries,
-        expert_max_iterations: config.agent.expert_max_iterations,
-        expert_tool_timeout_secs: config.agent.expert_tool_timeout_secs,
-        expert_max_tool_retries: config.agent.expert_max_tool_retries,
-        expert_max_managed_rounds: config.agent.expert_max_managed_rounds,
+        max_iterations: Arc::new(AtomicUsize::new(config.agent.max_iterations)),
+        rabbit_hole_threshold: Arc::new(AtomicUsize::new(config.agent.rabbit_hole_threshold)),
+        context_window_threshold: Arc::new(AtomicUsize::new(config.agent.context_window_threshold)),
+        tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.tool_timeout_secs)),
+        max_tool_retries: Arc::new(AtomicUsize::new(config.agent.max_tool_retries)),
+        expert_max_iterations: Arc::new(AtomicUsize::new(config.agent.expert_max_iterations)),
+        expert_tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.expert_tool_timeout_secs)),
+        expert_max_tool_retries: Arc::new(AtomicUsize::new(config.agent.expert_max_tool_retries)),
+        expert_max_managed_rounds: Arc::new(AtomicUsize::new(config.agent.expert_max_managed_rounds)),
         sessions: Mutex::new(std::collections::HashMap::new()),
         permissions,
         permission_resolver,
@@ -565,9 +566,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         provider: provider_for_state,
         computer_use_enabled,
         human_intervention_enabled,
-        primary_model: config.agent.primary_model.clone(),
-        fallback_model: config.agent.fallback_model.clone(),
-        timezone_offset: config.agent.timezone_offset,
+        primary_model: Arc::new(std::sync::RwLock::new(config.agent.primary_model.clone())),
+        fallback_model: Arc::new(std::sync::RwLock::new(config.agent.fallback_model.clone())),
+        timezone_offset: Arc::new(std::sync::RwLock::new(config.agent.timezone_offset)),
     });
 
     // Create router and start server

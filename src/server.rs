@@ -11,7 +11,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
@@ -149,16 +149,17 @@ pub struct AppState {
     pub model_configs: Arc<tokio::sync::RwLock<Vec<crate::config::ModelConfig>>>,
     /// Path to models.json persistence file
     pub model_store_path: String,
-    pub max_iterations: usize,
-    pub rabbit_hole_threshold: usize,
-    pub context_window_threshold: usize,
-    pub tool_timeout_secs: usize,
-    pub max_tool_retries: usize,
-    /// Expert mode settings (used when managed=true)
-    pub expert_max_iterations: usize,
-    pub expert_tool_timeout_secs: usize,
-    pub expert_max_tool_retries: usize,
-    pub expert_max_managed_rounds: usize,
+    pub max_iterations: Arc<AtomicUsize>,
+    pub rabbit_hole_threshold: Arc<AtomicUsize>,
+    pub context_window_threshold: Arc<AtomicUsize>,
+    pub tool_timeout_secs: Arc<AtomicUsize>,
+    pub max_tool_retries: Arc<AtomicUsize>,
+    /// Expert mode settings (used when managed=true) — AtomicUsize so settings
+    /// can be hot-reloaded from the UI without restarting the process.
+    pub expert_max_iterations: Arc<AtomicUsize>,
+    pub expert_tool_timeout_secs: Arc<AtomicUsize>,
+    pub expert_max_tool_retries: Arc<AtomicUsize>,
+    pub expert_max_managed_rounds: Arc<AtomicUsize>,
     /// Per-session conversation history for multi-turn context
     pub sessions: Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>,
     /// Permission settings (category -> allowed), shared across connections
@@ -184,12 +185,12 @@ pub struct AppState {
     pub computer_use_enabled: Arc<AtomicBool>,
     /// Whether to use LLM to simulate human intervention when Expert mode is blocked
     pub human_intervention_enabled: Arc<AtomicBool>,
-    /// Primary model name (from config.toml)
-    pub primary_model: Option<String>,
-    /// Fallback model name (from config.toml)
-    pub fallback_model: Option<String>,
-    /// Timezone offset in hours (from config.toml)
-    pub timezone_offset: i8,
+    /// Primary model name (from config.toml) — RwLock for hot-reload from UI
+    pub primary_model: Arc<std::sync::RwLock<Option<String>>>,
+    /// Fallback model name (from config.toml) — RwLock for hot-reload from UI
+    pub fallback_model: Arc<std::sync::RwLock<Option<String>>>,
+    /// Timezone offset in hours (from config.toml) — RwLock for hot-reload from UI
+    pub timezone_offset: Arc<std::sync::RwLock<i8>>,
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -537,14 +538,14 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
 
     Json(json!({
         "models": list,
-        "context_window_threshold": state.context_window_threshold,
-        "max_iterations": state.max_iterations,
-        "rabbit_hole_threshold": state.rabbit_hole_threshold,
-        "tool_timeout_secs": state.tool_timeout_secs,
-        "max_tool_retries": state.max_tool_retries,
-        "primary_model": state.primary_model,
-        "fallback_model": state.fallback_model,
-        "timezone_offset": state.timezone_offset,
+        "context_window_threshold": state.context_window_threshold.load(Ordering::SeqCst),
+        "max_iterations": state.max_iterations.load(Ordering::SeqCst),
+        "rabbit_hole_threshold": state.rabbit_hole_threshold.load(Ordering::SeqCst),
+        "tool_timeout_secs": state.tool_timeout_secs.load(Ordering::SeqCst),
+        "max_tool_retries": state.max_tool_retries.load(Ordering::SeqCst),
+        "primary_model": state.primary_model.read().unwrap().clone(),
+        "fallback_model": state.fallback_model.read().unwrap().clone(),
+        "timezone_offset": *state.timezone_offset.read().unwrap(),
         "tool_permissions": tool_permissions,
     }))
 }
@@ -1070,7 +1071,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             let max_iter = parsed["max_iterations"]
                                 .as_u64()
                                 .map(|v| v as usize)
-                                .unwrap_or(state.max_iterations);
+                                .unwrap_or(state.max_iterations.load(Ordering::SeqCst));
                             let fallback_model = parsed["fallback_model"]
                                 .as_str()
                                 .filter(|s| !s.is_empty())
@@ -1078,19 +1079,19 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             let rabbit_hole = parsed["rabbit_hole_threshold"]
                                 .as_u64()
                                 .map(|v| v as usize)
-                                .unwrap_or(state.rabbit_hole_threshold);
+                                .unwrap_or(state.rabbit_hole_threshold.load(Ordering::SeqCst));
                             let ctx_window_threshold = parsed["context_window_threshold"]
                                 .as_u64()
                                 .map(|v| v as usize)
-                                .unwrap_or(state.context_window_threshold);
+                                .unwrap_or(state.context_window_threshold.load(Ordering::SeqCst));
                             let tool_timeout = parsed["tool_timeout_secs"]
                                 .as_u64()
                                 .map(|v| v as usize)
-                                .unwrap_or(state.tool_timeout_secs);
+                                .unwrap_or(state.tool_timeout_secs.load(Ordering::SeqCst));
                             let max_retries = parsed["max_tool_retries"]
                                 .as_u64()
                                 .map(|v| v as usize)
-                                .unwrap_or(state.max_tool_retries);
+                                .unwrap_or(state.max_tool_retries.load(Ordering::SeqCst));
                             let ctx_window = {
                                 let mc = state.model_configs.read().await;
                                 mc.iter().find(|m| m.name == model).map(|m| m.context_window).unwrap_or(128000)
@@ -1409,16 +1410,16 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         state.runner.clone(),
                                         state.provider.clone(),
                                         model.clone(),
-                                        state.expert_max_managed_rounds,
+                                        state.expert_max_managed_rounds.load(Ordering::SeqCst),
                                         state.memory_store.clone(),
                                         state.tools.clone(),
                                         ".".to_string(),
                                         state.workspace_dir.clone(),
-                                        state.expert_max_iterations,
-                                        state.rabbit_hole_threshold,
+                                        state.expert_max_iterations.load(Ordering::SeqCst),
+                                        state.rabbit_hole_threshold.load(Ordering::SeqCst),
                                         ctx_window,
-                                        state.expert_tool_timeout_secs as u64,
-                                        state.expert_max_tool_retries,
+                                        state.expert_tool_timeout_secs.load(Ordering::SeqCst) as u64,
+                                        state.expert_max_tool_retries.load(Ordering::SeqCst),
                                         state.skill_manager.clone(),
                                         state.computer_use_enabled.clone(),
                                         
@@ -1663,14 +1664,14 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             cancelled.store(false, Ordering::SeqCst);
 
                             match state.runner.run(
-                                &cp.user_message, &session_id, &model, state.max_iterations,
+                                &cp.user_message, &session_id, &model, state.max_iterations.load(Ordering::SeqCst),
                                 vec![],  // empty base history — resume_state provides it
                                 state.permissions.clone(), state.permission_pending.clone(),
                                 None, // no pre-authorization profile (checkpoint resume)
-                                None, state.rabbit_hole_threshold,
-                                ctx_window, state.context_window_threshold,
-                                state.tool_timeout_secs as u64,
-                                state.max_tool_retries,
+                                None, state.rabbit_hole_threshold.load(Ordering::SeqCst),
+                                ctx_window, state.context_window_threshold.load(Ordering::SeqCst),
+                                state.tool_timeout_secs.load(Ordering::SeqCst) as u64,
+                                state.max_tool_retries.load(Ordering::SeqCst),
                                 vec![],  // no images
                                 Some(new_cp_id),
                                 Some(resume_state),
@@ -2049,23 +2050,23 @@ async fn agent_settings_save_handler(
     let max_iterations = body.get("max_iterations")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
-        .unwrap_or(state.max_iterations);
+        .unwrap_or(state.max_iterations.load(Ordering::SeqCst));
     let rabbit_hole_threshold = body.get("rabbit_hole_threshold")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
-        .unwrap_or(state.rabbit_hole_threshold);
+        .unwrap_or(state.rabbit_hole_threshold.load(Ordering::SeqCst));
     let context_window_threshold = body.get("context_window_threshold")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
-        .unwrap_or(state.context_window_threshold);
+        .unwrap_or(state.context_window_threshold.load(Ordering::SeqCst));
     let tool_timeout_secs = body.get("tool_timeout_secs")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
-        .unwrap_or(state.tool_timeout_secs);
+        .unwrap_or(state.tool_timeout_secs.load(Ordering::SeqCst));
     let max_tool_retries = body.get("max_tool_retries")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
-        .unwrap_or(state.max_tool_retries);
+        .unwrap_or(state.max_tool_retries.load(Ordering::SeqCst));
 
     // Save to config.toml
     let workspace_dir = &state.workspace_dir;
@@ -2078,20 +2079,15 @@ async fn agent_settings_save_handler(
         max_tool_retries,
     ) {
         Ok(()) => {
-            // Update in-memory state
-            // Note: These fields are not behind a lock, so we use unsafe interior mutability
-            // via the Arc<AppState>. Since these are primitive types read infrequently,
-            // we use a simple approach: store them in a way that can be updated.
-            // For now, we'll use a workaround by re-creating the state values.
-            // A cleaner approach would be to wrap these in Arc<RwLock<>> but that requires
-            // more refactoring. For now, the config.toml persistence is the key fix.
-            info!("Agent settings saved to config.toml: max_iterations={}, rabbit_hole={}, ctx_threshold={}, tool_timeout={}, max_retries={}",
-                max_iterations, rabbit_hole_threshold, context_window_threshold, tool_timeout_secs, max_tool_retries);
+            // Hot-reload in-memory values so the next run picks them up immediately
+            state.max_iterations.store(max_iterations, Ordering::SeqCst);
+            state.rabbit_hole_threshold.store(rabbit_hole_threshold, Ordering::SeqCst);
+            state.context_window_threshold.store(context_window_threshold, Ordering::SeqCst);
+            state.tool_timeout_secs.store(tool_timeout_secs, Ordering::SeqCst);
+            state.max_tool_retries.store(max_tool_retries, Ordering::SeqCst);
 
-            // Note: The in-memory AppState fields are set at startup from config.toml.
-            // After saving, new sessions will use the updated values from config.
-            // The current session's values are updated via the WebSocket message handler
-            // which reads these values per-message.
+            info!("Agent settings saved and hot-reloaded: max_iterations={}, rabbit_hole={}, ctx_threshold={}, tool_timeout={}, max_retries={}",
+                max_iterations, rabbit_hole_threshold, context_window_threshold, tool_timeout_secs, max_tool_retries);
             Json(json!({
                 "success": true,
                 "max_iterations": max_iterations,
@@ -2141,7 +2137,16 @@ async fn agent_settings_extended_save_handler(
         tool_permissions.clone(),
     ) {
         Ok(()) => {
-            info!("Extended settings saved: primary_model={:?}, fallback_model={:?}, timezone={}, permissions={:?}",
+            // Hot-reload in-memory values
+            if let Some(ref m) = primary_model {
+                *state.primary_model.write().unwrap() = Some(m.clone());
+            }
+            if let Some(ref m) = fallback_model {
+                *state.fallback_model.write().unwrap() = Some(m.clone());
+            }
+            *state.timezone_offset.write().unwrap() = timezone_offset;
+
+            info!("Extended settings saved and hot-reloaded: primary_model={:?}, fallback_model={:?}, timezone={}, permissions={:?}",
                 primary_model, fallback_model, timezone_offset, tool_permissions);
             Json(json!({
                 "success": true,
@@ -2189,6 +2194,12 @@ async fn agent_settings_expert_save_handler(
         expert_max_managed_rounds,
     ) {
         Ok(()) => {
+            // Hot-reload in-memory values so the next Expert run picks them up
+            state.expert_max_iterations.store(expert_max_iterations, Ordering::SeqCst);
+            state.expert_tool_timeout_secs.store(expert_tool_timeout_secs, Ordering::SeqCst);
+            state.expert_max_tool_retries.store(expert_max_tool_retries, Ordering::SeqCst);
+            state.expert_max_managed_rounds.store(expert_max_managed_rounds, Ordering::SeqCst);
+
             info!("Expert settings saved: max_iter={}, timeout={}, retries={}, rounds={}",
                 expert_max_iterations, expert_tool_timeout_secs, expert_max_tool_retries, expert_max_managed_rounds);
             Json(json!({

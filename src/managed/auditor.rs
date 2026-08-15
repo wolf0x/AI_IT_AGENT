@@ -7,9 +7,9 @@
 //! # Verification Scope
 //!
 //! The Auditor verifies:
-//! - **Actions**: Containment/eradication steps (e.g., "killed process X" → verify process gone)
+//! - **Actions**: Containment/modification steps (e.g., "killed process X" → verify process gone)
 //! - **Artifacts**: Report files (e.g., "generated report" → verify file exists, non-empty, valid)
-//! - **Collection completeness**: All required IR tools ran successfully
+//! - **Collection completeness**: All required tools ran successfully
 //!
 //! The Auditor does NOT verify:
 //! - **Analysis judgments**: "This process is suspicious" is subjective
@@ -284,7 +284,7 @@ impl Auditor {
             String::new()
         };
 
-        let mut system = String::from("You are the Auditor role in a long-horizon incident response task.\n\
+        let mut system = String::from("You are the Auditor role in a long-horizon autonomous task.\n\
             ROLE: READ-ONLY verification. You never modify anything.\n\
             HARD RULES:\n\
             1. You receive ONLY real file content — never accept agent claims.\n\
