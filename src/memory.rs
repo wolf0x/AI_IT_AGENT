@@ -1026,6 +1026,24 @@ impl MemoryStore {
         }
     }
 
+    /// Load the latest active (non-completed) TaskContract across all sessions.
+    /// Returns the contract JSON or None.
+    pub fn get_latest_active_contract_global(&self) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT contract_json FROM task_contracts \
+             WHERE phase != 'completed' \
+             ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(json) => Ok(Some(json)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("Task contract query failed: {}", e)),
+        }
+    }
+
     /// Mark a contract as explicitly stopped by the user.
     /// This allows the resume query to find it even if it would otherwise be excluded.
     pub fn set_contract_stopped(&self, session_id: &str) {

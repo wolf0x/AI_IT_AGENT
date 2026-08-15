@@ -473,13 +473,30 @@ impl ManagedRunner {
                     .as_deref()
                     .and_then(|j| PendingPlan::from_json(j).ok());
                 let msg_is_bare = is_bare_resume(&resume_msg);
-                let plan: ManagerPlan = if resumed && msg_is_bare && pending_opt.is_some() {
-                    let p = pending_opt.clone().unwrap();
-                    info!("[managed:{}] Resuming stopped round {} with exact pending plan", session, round + 1);
-                    p.to_plan()
+                let plan: ManagerPlan = if resumed && msg_is_bare {
+                    // Bare resume with pending plan: reuse exact plan
+                    if let Some(p) = pending_opt.clone() {
+                        info!("[managed:{}] Resuming stopped round {} with exact pending plan", session, round + 1);
+                        p.to_plan()
+                    } else {
+                        // No pending plan, fall through to re-plan
+                        let anchor = None;
+                        match manager::plan_next(&provider, &manager_model, &contract, &skills, &tool_defs, anchor).await {
+                            Ok(p) => p,
+                            Err(e) => {
+                                error!("[managed:{}] Manager planning failed: {}", session, e);
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("\n\n*[Manager planning failed: {}]*\n\n", e),
+                                    &contract_id, "manager"
+                                ))).await;
+                                break;
+                            }
+                        }
+                    }
                 } else {
-                    let anchor = if resumed && pending_opt.is_some() {
-                        Some(pending_opt.as_ref().unwrap().subtask.as_str())
+                    // New context or redirect: re-plan with optional anchor
+                    let anchor = if resumed {
+                        pending_opt.as_ref().map(|p| p.subtask.as_str())
                     } else {
                         None
                     };
@@ -569,6 +586,18 @@ impl ManagedRunner {
                         // Persist the blocked state so it survives a restart for resume.
                         persist_contract(&memory_store, &contract_id, &session, &contract);
                         break;
+                    }
+                    ManagerRoute::Clarify { question, default_action } => {
+                        // Non-blocking clarification: send question to user but continue with default
+                        let _ = tx.send(Ok(AgentEvent::text(
+                            &format!("\n\n*[Manager needs clarification]* {}\n\nDefault action: {}\n", question, default_action),
+                            &contract_id, "manager"
+                        ))).await;
+                        // Record the clarification request so user can respond in next round
+                        contract.manager_notes.push(format!("[Clarify] {} (default: {})", question, default_action));
+                        // Persist immediately so the clarification survives a crash during executor round
+                        persist_contract(&memory_store, &contract_id, &session, &contract);
+                        // Continue execution — do NOT break
                     }
                     ManagerRoute::Invalid(reason) => {
                         warn!("[managed:{}] Invalid manager plan: {}", session, reason);
@@ -768,10 +797,16 @@ impl ManagedRunner {
                 }
                 // Detect common agent/tool crash signatures in Executor output and
                 // escalate to a human-gate instead of silently looping.
+                // Use specific patterns to avoid false positives from file content analysis.
                 {
                     let lower = executor_output.to_lowercase();
-                    let crash_markers = ["traceback", "agent_exit", "connection error", "panic:", "segmentation fault"];
-                    if crash_markers.iter().any(|m| lower.contains(m)) {
+                    let crash_patterns = [
+                        "traceback (most recent call last)",  // Python traceback
+                        "panic: runtime error",                // Go panic
+                        "segmentation fault (core dumped)",    // C/C++ segfault
+                        "agent_exit",                          // Custom agent exit marker
+                    ];
+                    if crash_patterns.iter().any(|m| lower.contains(m)) {
                         warn!("[managed:{}] Crash pattern detected in Executor output (round {})", session, round + 1);
                         let _ = tx.send(Ok(AgentEvent::text(
                             "\n\n⚠️ *[崩溃检测] Executor 输出包含崩溃特征（Traceback/Connection error 等）。\
@@ -793,6 +828,53 @@ impl ManagedRunner {
                 // Only evidence under a COMPLETE + non-violation verdict may be promoted
                 // into verified state; otherwise it is recorded as untrusted / a lead.
                 let executor_summary_bounded: String = executor_output.chars().take(1500).collect();
+                
+                // Parse Final State Declaration from executor output (case-insensitive)
+                // Use lowercased version for both search and extraction to avoid index mismatch
+                let lower_output = executor_output.to_lowercase();
+                let final_state_block = if let Some(idx) = lower_output.find("final state:") {
+                    let block = &lower_output[idx..];
+                    let done = block.lines()
+                        .find(|l| l.trim_start().starts_with("done:"))
+                        .map(|l| l.trim_start()[5..].trim().to_string())
+                        .unwrap_or_default();
+                    let pending = block.lines()
+                        .find(|l| l.trim_start().starts_with("pending:"))
+                        .map(|l| l.trim_start()[8..].trim().to_string())
+                        .unwrap_or_default();
+                    let artifacts = block.lines()
+                        .find(|l| l.trim_start().starts_with("artifacts:"))
+                        .map(|l| l.trim_start()[10..].trim().to_string())
+                        .unwrap_or_default();
+                    format!("DONE: {}\nPENDING: {}\nARTIFACTS: {}", done, pending, artifacts)
+                } else {
+                    warn!("[managed:{}] Executor did not produce FINAL STATE declaration (round {})", session, round + 1);
+                    String::new()
+                };
+                
+                // Construct recent verified state summary for cross-round consistency check
+                let recent_verified = {
+                    let mut s = String::new();
+                    if !contract.verified_findings.is_empty() {
+                        s.push_str("Verified Findings:\n");
+                        for f in contract.verified_findings.iter().rev().take(10).rev() {
+                            let summary: String = f.evidence_summary.chars().take(100).collect();
+                            s.push_str(&format!("- [{}] {} — {}\n", f.severity, f.title, summary));
+                        }
+                    }
+                    if !contract.verified_actions.is_empty() {
+                        s.push_str("Verified Actions:\n");
+                        for a in contract.verified_actions.iter().rev().take(5).rev() {
+                            let verification: String = a.verification.chars().take(100).collect();
+                            s.push_str(&format!("- {} → {}\n", a.description, verification));
+                        }
+                    }
+                    if s.is_empty() {
+                        s.push_str("(none yet)");
+                    }
+                    s
+                };
+                
                 let round_report = auditor.audit_round(
                     &contract.original_task,
                     &plan.subtask,
@@ -800,6 +882,8 @@ impl ManagedRunner {
                     &plan.expected_evidence,
                     &executor_summary_bounded,
                     &format!("{:?}", contract.phase),
+                    &recent_verified,
+                    &final_state_block,
                 ).await;
                 let round_ok = round_report.as_ref()
                     .map(|r| r.completion == "complete" && r.integrity != "violation")

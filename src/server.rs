@@ -247,6 +247,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/output/download/{filename}", get(output_download_handler))
         .route("/api/output/open", post(output_open_handler))
         .route("/api/managed/runs", get(managed_runs_handler))
+        .route("/api/managed/status", get(managed_status_handler))
         .route("/api/todos", get(todos_handler))
         .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
@@ -401,6 +402,38 @@ async fn managed_runs_handler(State(state): State<Arc<AppState>>) -> Json<Value>
     runs.sort_by(|a, b| b.0.cmp(&a.0));
     let runs: Vec<Value> = runs.into_iter().map(|(_, v)| v).collect();
     Json(json!({ "runs": runs }))
+}
+
+/// GET /api/managed/status — return current active Expert-mode task contract.
+/// Returns round progress, findings, actions, and last 3 verified findings.
+async fn managed_status_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    match state.memory_store.get_latest_active_contract_global() {
+        Ok(Some(json_str)) => {
+            match serde_json::from_str::<Value>(&json_str) {
+                Ok(c) => {
+                    let findings = c["verified_findings"].as_array().cloned().unwrap_or_default();
+                    let actions = c["verified_actions"].as_array().cloned().unwrap_or_default();
+                    let open_leads = c["open_leads"].as_array().cloned().unwrap_or_default();
+                    let remaining_work = c["remaining_work"].as_array().cloned().unwrap_or_default();
+                    let last_3: Vec<Value> = findings.iter().rev().take(3).rev().cloned().collect();
+                    Json(json!({
+                        "active": true,
+                        "task": c["original_task"].as_str().unwrap_or("").chars().take(80).collect::<String>(),
+                        "phase": c["phase"].as_str().unwrap_or("unknown"),
+                        "current_round": c["current_round"].as_u64().unwrap_or(0),
+                        "max_rounds": c["max_rounds"].as_u64().unwrap_or(0),
+                        "findings_count": findings.len(),
+                        "actions_count": actions.len(),
+                        "open_leads_count": open_leads.len(),
+                        "remaining_work": remaining_work,
+                        "last_findings": last_3,
+                    }))
+                }
+                Err(_) => Json(json!({ "active": false })),
+            }
+        }
+        _ => Json(json!({ "active": false })),
+    }
 }
 
 async fn output_list_handler(State(state): State<Arc<AppState>>) -> Json<Value> {

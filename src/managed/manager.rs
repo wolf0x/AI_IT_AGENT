@@ -48,6 +48,8 @@ pub enum ManagerRoute {
     Done,
     /// Task is blocked — waiting for human input.
     Blocked(String),
+    /// Manager needs clarification — ask user but continue with default action.
+    Clarify { question: String, default_action: String },
     /// Manager output was invalid — retry planning.
     Invalid(String),
 }
@@ -139,28 +141,30 @@ fn manager_system_prompt(lang: &str, domain: TaskDomain, tool_defs: &[ToolDefini
     prompt.push_str("Expected Evidence: <one artifact file path per line>\n\n");
     prompt.push_str("Remaining Work: <concise line per item still left after this subtask, e.g. connect to the discovered WebSocket terminal / decrypt the C2 traffic. Leave empty when nothing remains>\n\n");
     prompt.push_str(&format!("Phase: <{}>\n\n", phases));
-    prompt.push_str("Route: <continue | done | blocked:reason>\n```\n\n");
+    prompt.push_str("Route: <continue | done | blocked:reason | clarify:question|default_action>\n```\n\n");
     prompt.push_str("Rules:\n");
     prompt.push_str("1. Focus on ONE subtask at a time. Do not plan the whole workflow at once.\n");
     prompt.push_str("2. The subtask must be actionable with the tools listed in Tool Reference below.\n");
     prompt.push_str("3. Success criteria must be objective and verifiable.\n");
-    prompt.push_str("4. Route = \"continue\" if more work remains; \"done\" if the original task is fully complete; \"blocked:<reason>\" if human input is required.\n");
-    prompt.push_str("5. Base your plan on VERIFIED results only — do not assume unverified outcomes.\n");
-    prompt.push_str("6. Keep the subtask focused — completable in 5-15 tool calls.\n");
-    prompt.push_str(&format!("7. {}\n", focus));
+    prompt.push_str("4. Route = \"continue\" if more work remains; \"done\" if the original task is fully complete; \"blocked:<reason>\" if the task is truly stuck and cannot continue; \"clarify:<question>|<default_action>\" if you need user input but can continue with a best-effort default.\n");
+    prompt.push_str("5. Use \"clarify\" instead of \"blocked\" when you can proceed with a reasonable default — the task should not stop for minor clarification needs.\n");
+    prompt.push_str("6. Base your plan on VERIFIED results only — do not assume unverified outcomes.\n");
+    prompt.push_str("7. Keep the subtask focused — completable in 5-15 tool calls.\n");
+    prompt.push_str(&format!("8. {}\n", focus));
     prompt.push_str("\nCRITICAL — Anti-Stagnation Rules:\n");
-    prompt.push_str("8. NEVER plan a subtask that is only \"summarize\" or \"review results\". Every subtask MUST require the Executor to run concrete tools and produce concrete artifacts.\n");
-    prompt.push_str("9. If Manager Notes show 3+ consecutive rounds with NO new verified outcomes, change strategy significantly or set Route = \"blocked:<reason>\".\n");
-    prompt.push_str("10. The Subtask MUST name at least one concrete tool.\n");
+    prompt.push_str("9. NEVER plan a subtask that is only \"summarize\" or \"review results\". Every subtask MUST require the Executor to run concrete tools and produce concrete artifacts.\n");
+    prompt.push_str("10. If Manager Notes show 3+ consecutive rounds with NO new verified outcomes, change strategy significantly or set Route = \"blocked:<reason>\".\n");
+    prompt.push_str("11. The Subtask MUST name at least one concrete tool.\n");
     prompt.push_str("\nCRITICAL — Evidence Discipline Rules:\n");
-    prompt.push_str("11. Only entries recorded as Verified Findings/Outcomes have been independently checked. Treat everything else (prior session context, manager notes) as unverified leads to re-audit.\n");
-    prompt.push_str("12. **MANDATORY OUTPUT LOCATION**: ALL artifacts and reports MUST be saved under the `workspace/output/` directory. Expected Evidence paths must be relative to workspace/output/ (e.g. \"output/result.json\").\n");
+    prompt.push_str("12. Only entries recorded as Verified Findings/Outcomes have been independently checked. Treat everything else (prior session context, manager notes) as unverified leads to re-audit.\n");
+    prompt.push_str("13. **MANDATORY OUTPUT LOCATION**: ALL artifacts and reports MUST be saved under the `workspace/output/` directory. Expected Evidence paths must be relative to workspace/output/ (e.g. \"output/result.json\").\n");
     prompt.push_str("\nCRITICAL - STRICT ADVANCE RULE:\n");
-    prompt.push_str("13. If the previous round produced one or more VERIFIED findings/outcomes, the next subtask MUST be a strict advance from the most recent one: open the artifact already saved, call the endpoint already discovered, or act directly on the newest verified fact. NEVER re-fetch, re-capture, or re-derive a result whose artifact/outcome is already verified.\n");
-    prompt.push_str("14. Each subtask must be a clear step FORWARD. If the newest verified outcome enables one concrete next action (e.g., connect to a discovered WebSocket terminal, analyze a downloaded binary), the next subtask MUST perform that action, NOT re-collect the same pages/hints.\n");
-    prompt.push_str("15. At least one Expected Evidence path MUST be NEW and distinct from any file verified in prior rounds. Committing a subtask that merely repeats an earlier round\'s objective or output filename is a planning failure.\n");
+    prompt.push_str("14. If the previous round produced one or more VERIFIED findings/outcomes, the next subtask MUST be a strict advance from the most recent one: open the artifact already saved, call the endpoint already discovered, or act directly on the newest verified fact. NEVER re-fetch, re-capture, or re-derive a result whose artifact/outcome is already verified.\n");
+    prompt.push_str("15. Each subtask must be a clear step FORWARD. If the newest verified outcome enables one concrete next action (e.g., connect to a discovered WebSocket terminal, analyze a downloaded binary), the next subtask MUST perform that action, NOT re-collect the same pages/hints.\n");
+    prompt.push_str("16. At least one Expected Evidence path MUST be NEW and distinct from any file verified in prior rounds. Committing a subtask that merely repeats an earlier round\'s objective or output filename is a planning failure.\n");
 
-    prompt.push_str("16. If Remaining Work (from the task state) is non-empty, the next subtask MUST be the first unaddressed item in Remaining Work. Treat Remaining Work as the authoritative to-do list for deciding the next step, NOT a suggestion.\n");
+    prompt.push_str("17. If Remaining Work (from the task state) is non-empty, the next subtask MUST be the first unaddressed item in Remaining Work. Treat Remaining Work as the authoritative to-do list for deciding the next step, NOT a suggestion.\n");
+    prompt.push_str("\n18. BUDGET AWARENESS: If remaining rounds ≤ 20% of max_rounds, focus on completing existing items in Remaining Work rather than opening new leads. In the final rounds, prioritize wrapping up over exploration.\n");
     prompt.push_str(&format!("\n{}\n", tool_ref));
     prompt.push_str(&format!("\nLANGUAGE: The original task is written in {lang}. Write all free-text fields (Subtask, Success Criteria, Expected Evidence, reason) in {lang}; keep structure and tool names in English.\n"));
     prompt
@@ -275,6 +279,23 @@ fn manager_user_prompt(contract: &TaskContract) -> String {
         prompt.push('\n');
     }
 
+    // ── Budget awareness: warn when remaining rounds are low ──
+    let remaining = contract.max_rounds.saturating_sub(contract.current_round + 1);
+    let budget_pct = if contract.max_rounds > 0 {
+        (remaining as f64 / contract.max_rounds as f64) * 100.0
+    } else {
+        100.0
+    };
+    if budget_pct <= 20.0 {
+        prompt.push_str(&format!(
+            "\n⚠️ BUDGET WARNING: Only {} round{} remaining ({:.0}% of budget). \
+             Focus on completing existing Remaining Work items. Do NOT open new leads.\n\n",
+            remaining,
+            if remaining == 1 { "" } else { "s" },
+            budget_pct
+        ));
+    }
+
     // If user sent a resume message, surface it prominently
     let user_resume_notes: Vec<&String> = contract.manager_notes.iter()
         .filter(|n| n.starts_with("[User Resume]"))
@@ -323,13 +344,26 @@ pub fn parse_manager_plan(output: &str) -> ManagerPlan {
             phase = parse_phase(&phase_str);
             current_section = "";
         } else if trimmed.starts_with("Route:") {
-            let route_str = trimmed.trim_start_matches("Route:").trim().to_lowercase();
-            if route_str == "done" {
+            let route_str = trimmed.trim_start_matches("Route:").trim();
+            let route_lower = route_str.to_lowercase();
+            if route_lower == "done" {
                 route = ManagerRoute::Done;
-            } else if route_str.starts_with("blocked") {
-                let reason = route_str.trim_start_matches("blocked").trim_start_matches(':').trim().to_string();
+            } else if route_lower.starts_with("blocked") {
+                let reason = route_lower.trim_start_matches("blocked").trim_start_matches(':').trim().to_string();
                 route = ManagerRoute::Blocked(if reason.is_empty() { "Unknown reason".to_string() } else { reason });
-            } else if route_str == "continue" {
+            } else if route_lower.starts_with("clarify") {
+                // Format: clarify:question|default_action
+                let content = route_str.trim_start_matches("clarify").trim_start_matches(':').trim();
+                let (question, default_action) = if let Some(idx) = content.find('|') {
+                    (content[..idx].trim().to_string(), content[idx+1..].trim().to_string())
+                } else {
+                    (content.to_string(), "continue with current strategy".to_string())
+                };
+                route = ManagerRoute::Clarify {
+                    question: if question.is_empty() { "Need clarification".to_string() } else { question },
+                    default_action: if default_action.is_empty() { "continue with current strategy".to_string() } else { default_action },
+                };
+            } else if route_lower == "continue" {
                 route = ManagerRoute::Continue;
             } else {
                 route = ManagerRoute::Invalid(format!("Unknown route: {}", route_str));

@@ -352,8 +352,11 @@ impl Auditor {
 
     /// Independent, fresh-context assessment of an entire round. Receives only the
     /// original task, the subtask contract, success criteria, expected evidence, and
-    /// a BOUNDED summary of the executor's output (never the raw trajectory). Returns
-    /// None when no LLM auditor is configured (caller then skips certification).
+    /// a BOUNDED summary of the executor's output (never the raw trajectory). Also
+    /// receives a summary of recently verified state to detect cross-round
+    /// contradictions, and the executor's final-state declaration (if present) to
+    /// anchor verification. Returns None when no LLM auditor is configured (caller
+    /// then skips certification).
     pub async fn audit_round(
         &self,
         original_task: &str,
@@ -362,22 +365,32 @@ impl Auditor {
         expected_evidence: &str,
         executor_summary: &str,
         phase: &str,
+        recent_verified: &str,
+        final_state_block: &str,
     ) -> Option<AuditReport> {
         let provider = self.provider.as_ref()?;
         let system = "You are the independent AUDITOR in a long-horizon task loop.\n\
             ROLE: read-only. You never execute tools; you only reason about the evidence handed to you.\n\
             The subtask is COMPLETE only if the acceptance criteria are met AND integrity is clean.\n\
             An executor's own claim is NEVER sufficient; certify only what the provided evidence supports.\n\
+            CROSS-ROUND CONSISTENCY: You also receive a summary of recently verified findings/actions. \
+            If the current round's evidence contradicts any previously verified state, \
+            mark integrity = violation and note the contradiction in the note field.\n\
             Output EXACTLY the following format, one field per line:\n\
             completion: complete|incomplete|blocked\n\
             integrity: clean|suspect|violation\n\
             note: <one sentence>\n\
             facts: <semicolon-separated facts you corroborated, or none>\n\
             gaps: <semicolon-separated unmet requirements, or none>";
-        let user = format!(
-            "Original task: {}\nPhase: {}\nThis round's subtask: {}\nSuccess criteria: {}\nExpected evidence: {}\nExecutor summary (bounded, NOT the full log): {}\n\nReturn the verdict.",
-            original_task, phase, subtask, success_criteria, expected_evidence, executor_summary
+        let mut user = format!(
+            "Original task: {}\nPhase: {}\nThis round's subtask: {}\nSuccess criteria: {}\nExpected evidence: {}\nExecutor summary (bounded, NOT the full log): {}\n\nRecently verified state:\n{}\n",
+            original_task, phase, subtask, success_criteria, expected_evidence, executor_summary, recent_verified
         );
+        if !final_state_block.is_empty() {
+            user.push_str(&format!("\nExecutor's Final State Declaration:\n{}\n", final_state_block));
+            user.push_str("\nVerify that the DONE items are actually supported by the evidence and artifacts listed.\n");
+        }
+        user.push_str("\nReturn the verdict.");
         let messages = vec![
             crate::model::ChatMessage::system(system),
             crate::model::ChatMessage::user(&user),
