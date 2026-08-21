@@ -189,6 +189,9 @@ pub struct AppState {
     pub primary_model: Arc<std::sync::RwLock<Option<String>>>,
     /// Fallback model name (from config.toml) — RwLock for hot-reload from UI
     pub fallback_model: Arc<std::sync::RwLock<Option<String>>>,
+    /// Expert-mode per-role model overrides (Manager/Auditor/Executor) and their
+    /// optional fallbacks. Hot-reloadable from Settings UI.
+    pub expert_role_models: Arc<std::sync::RwLock<crate::config::RoleModelsConfig>>,
     /// Timezone offset in hours (from config.toml) — RwLock for hot-reload from UI
     pub timezone_offset: Arc<std::sync::RwLock<i8>>,
 }
@@ -201,9 +204,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/models", get(models_handler))
         .route("/api/providers", get(providers_handler))
         .route("/api/providers", post(providers_create_handler))
-        .route("/api/providers/{name}", put(providers_update_handler))
-        .route("/api/providers/{name}", delete(providers_delete_handler))
-        .route("/api/providers/{name}/test", post(providers_test_handler))
+        .route("/api/providers/{title}", put(providers_update_handler))
+        .route("/api/providers/{title}", delete(providers_delete_handler))
+        .route("/api/providers/{title}/test", post(providers_test_handler))
         .route("/api/health", get(health_handler))
         .route("/api/skills", get(skills_handler))
         .route("/api/skills", post(skills_create_handler))
@@ -578,6 +581,7 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "max_tool_retries": state.max_tool_retries.load(Ordering::SeqCst),
         "primary_model": state.primary_model.read().unwrap().clone(),
         "fallback_model": state.fallback_model.read().unwrap().clone(),
+        "expert_role_models": serde_json::to_value(state.expert_role_models.read().unwrap().clone()).unwrap_or(json!({})),
         "timezone_offset": *state.timezone_offset.read().unwrap(),
         "tool_permissions": tool_permissions,
     }))
@@ -592,6 +596,7 @@ async fn providers_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
             else { String::new() }
         });
         json!({
+            "title": m.title,
             "name": m.name,
             "api_base": m.api_base,
             "api_key": masked_key,
@@ -613,7 +618,14 @@ async fn providers_create_handler(
     if name.is_empty() || api_base.is_empty() {
         return Json(json!({"error": "name and api_base are required"}));
     }
+    let title_raw = body["title"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        .unwrap_or_else(|| name.clone());
+    let mut models = state.model_configs.write().await;
+    if models.iter().any(|m| m.title == title_raw) {
+        return Json(json!({"error": format!("Provider title '{}' already exists", title_raw)}));
+    }
     let new_config = crate::config::ModelConfig {
+        title: title_raw.clone(),
         name: name.clone(),
         api_base,
         api_key: body["api_key"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty()),
@@ -623,25 +635,21 @@ async fn providers_create_handler(
         temperature: body["temperature"].as_f64().unwrap_or(0.7),
         supports_vision: body["supports_vision"].as_bool().unwrap_or(false),
     };
-    let mut models = state.model_configs.write().await;
-    if models.iter().any(|m| m.name == name) {
-        return Json(json!({"error": format!("Model '{}' already exists", name)}));
-    }
     models.push(new_config);
     crate::model_store::save_configs(&models, std::path::Path::new(&state.model_store_path));
-    info!("Provider '{}' added via API", name);
-    Json(json!({"ok": true, "name": name}))
+    info!("Provider '{}' (title {}) added via API", name, title_raw);
+    Json(json!({"ok": true, "name": name, "title": title_raw}))
 }
 
 async fn providers_update_handler(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(title): Path<String>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
     let mut models = state.model_configs.write().await;
-    let idx = match models.iter().position(|m| m.name == name) {
+    let idx = match models.iter().position(|m| m.title == title) {
         Some(i) => i,
-        None => return Json(json!({"error": format!("Model '{}' not found", name)})),
+        None => return Json(json!({"error": format!("Provider title '{}' not found", title)})),
     };
     let existing = &models[idx];
     // Preserve existing api_key if the incoming one is empty or looks like a masked value
@@ -651,8 +659,15 @@ async fn providers_update_handler(
     } else {
         Some(incoming_key)
     };
+    let fallback_title = models[idx].title.clone();
+    let new_title = body["title"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or(fallback_title);
+    if new_title != title && models.iter().position(|m| m.title == new_title).is_some() {
+        return Json(json!({"error": format!("Provider title '{}' already exists", new_title)}));
+    }
+    let fallback_name = models[idx].name.clone();
     models[idx] = crate::config::ModelConfig {
-        name: body["name"].as_str().map(|s| s.to_string()).unwrap_or(name.clone()),
+        title: new_title.clone(),
+        name: body["name"].as_str().map(|s| s.to_string()).unwrap_or(fallback_name),
         api_base: body["api_base"].as_str().map(|s| s.to_string()).unwrap_or_else(|| existing.api_base.clone()),
         api_key,
         api_key_env: body["api_key_env"].as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
@@ -663,39 +678,41 @@ async fn providers_update_handler(
         supports_vision: body["supports_vision"].as_bool().unwrap_or(existing.supports_vision),
     };
     crate::model_store::save_configs(&models, std::path::Path::new(&state.model_store_path));
-    info!("Provider '{}' updated via API", name);
-    Json(json!({"ok": true, "name": name}))
+    info!("Provider title '{}' updated via API", title);
+    Json(json!({"ok": true, "name": models[idx].name.clone(), "title": new_title}))
 }
 
 async fn providers_delete_handler(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(title): Path<String>,
 ) -> Json<Value> {
     let mut models = state.model_configs.write().await;
     let len_before = models.len();
-    models.retain(|m| m.name != name);
+    models.retain(|m| m.title != title);
     if models.len() == len_before {
-        return Json(json!({"error": format!("Model '{}' not found", name)}));
+        return Json(json!({"error": format!("Provider title '{}' not found", title)}));
     }
     crate::model_store::save_configs(&models, std::path::Path::new(&state.model_store_path));
-    info!("Provider '{}' deleted via API", name);
-    Json(json!({"ok": true, "name": name}))
+    info!("Provider title '{}' deleted via API", title);
+    Json(json!({"ok": true, "title": title}))
 }
 
-/// POST /api/providers/{name}/test - verify a provider/model is reachable and
+/// POST /api/providers/{title}/test - verify a provider/model is reachable and
 /// correctly configured by sending a tiny chat request and reporting latency.
 async fn providers_test_handler(
     State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
+    Path(title): Path<String>,
 ) -> Json<Value> {
-    match state.provider.test_connection(&name).await {
+    let model = { let models = state.model_configs.read().await; models.iter().find(|m| m.title == title).cloned() };
+    let Some(model) = model else { return Json(json!({"ok": false, "error": format!("Provider title '{}' not found", title)})); };
+    match state.provider.test_connection_for(&model).await {
         Ok((latency_ms, reply)) => {
-            info!("Provider '{}' tested OK ({} ms)", name, latency_ms);
-            Json(json!({"ok": true, "name": name, "latency_ms": latency_ms, "reply": reply}))
+            info!("Provider '{}' (title {}) tested OK ({} ms)", model.name, title, latency_ms);
+            Json(json!({"ok": true, "name": model.name, "title": title, "latency_ms": latency_ms, "reply": reply}))
         }
         Err(e) => {
-            warn!("Provider '{}' test failed: {}", name, e);
-            Json(json!({"ok": false, "name": name, "error": e}))
+            warn!("Provider '{}' (title {}) test failed: {}", model.name, title, e);
+            Json(json!({"ok": false, "name": model.name, "title": title, "error": e}))
         }
     }
 }
@@ -1456,6 +1473,8 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                         state.skill_manager.clone(),
                                         state.computer_use_enabled.clone(),
                                         
+                                        state.fallback_model.read().unwrap().clone(),
+                                        state.expert_role_models.read().unwrap().clone(),
                                         state.human_intervention_enabled.clone(),
                                     );
                                     let handoff = if start_fresh { None } else { handoff };
@@ -1482,6 +1501,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                     max_retries,
                                     images,
                                     None, None,  // normal chat — no checkpoint resume
+                                    None,        // no per-round output override (Instant mode)
                                 ).await
                             };
                             match run_result {
@@ -1708,6 +1728,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 vec![],  // no images
                                 Some(new_cp_id),
                                 Some(resume_state),
+                                None, // no per-round output override (checkpoint resume)
                             ).await {
                                 Ok(mut event_stream) => {
                                     let mut assistant_text = String::new();
@@ -2196,7 +2217,8 @@ async fn agent_settings_extended_save_handler(
     }
 }
 
-/// Save Expert mode settings to config.toml.
+/// Save Expert mode settings to config.toml (iterations/timeout/retries/rounds)
+/// plus per-role model overrides for Manager/Auditor/Executor and their fallbacks.
 async fn agent_settings_expert_save_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<Value>,
@@ -2218,36 +2240,55 @@ async fn agent_settings_expert_save_handler(
         .map(|v| v as usize)
         .unwrap_or(50);
 
+    // Per-role model overrides (optional). Empty/missing => role uses the primary model.
+    let str_opt = |k: &str| body.get(k)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let role_models = crate::config::RoleModelsConfig {
+        manager: str_opt("role_manager"),
+        manager_fallback: str_opt("role_manager_fallback"),
+        auditor: str_opt("role_auditor"),
+        auditor_fallback: str_opt("role_auditor_fallback"),
+        executor: str_opt("role_executor"),
+        executor_fallback: str_opt("role_executor_fallback"),
+    };
+
     let workspace_dir = &state.workspace_dir;
-    match crate::config::Config::save_expert_settings(
+    let save_main = crate::config::Config::save_expert_settings(
         workspace_dir,
         expert_max_iterations,
         expert_tool_timeout_secs,
         expert_max_tool_retries,
         expert_max_managed_rounds,
-    ) {
-        Ok(()) => {
-            // Hot-reload in-memory values so the next Expert run picks them up
-            state.expert_max_iterations.store(expert_max_iterations, Ordering::SeqCst);
-            state.expert_tool_timeout_secs.store(expert_tool_timeout_secs, Ordering::SeqCst);
-            state.expert_max_tool_retries.store(expert_max_tool_retries, Ordering::SeqCst);
-            state.expert_max_managed_rounds.store(expert_max_managed_rounds, Ordering::SeqCst);
-
-            info!("Expert settings saved: max_iter={}, timeout={}, retries={}, rounds={}",
-                expert_max_iterations, expert_tool_timeout_secs, expert_max_tool_retries, expert_max_managed_rounds);
-            Json(json!({
-                "success": true,
-                "expert_max_iterations": expert_max_iterations,
-                "expert_tool_timeout_secs": expert_tool_timeout_secs,
-                "expert_max_tool_retries": expert_max_tool_retries,
-                "expert_max_managed_rounds": expert_max_managed_rounds,
-            }))
-        }
-        Err(e) => {
-            error!("Failed to save expert settings: {}", e);
-            Json(json!({ "success": false, "error": format!("Failed to save: {}", e) }))
-        }
+    );
+    let save_roles = crate::config::Config::save_role_models(workspace_dir, &role_models);
+    if let Err(e) = &save_main {
+        error!("Failed to save expert settings: {}", e);
+        return Json(json!({ "success": false, "error": format!("Failed to save: {}", e) }));
     }
+    if let Err(e) = &save_roles {
+        error!("Failed to save role models: {}", e);
+        return Json(json!({ "success": false, "error": format!("Failed to save role models: {}", e) }));
+    }
+
+    // Hot-reload in-memory values so the next Expert run picks them up
+    state.expert_max_iterations.store(expert_max_iterations, Ordering::SeqCst);
+    state.expert_tool_timeout_secs.store(expert_tool_timeout_secs, Ordering::SeqCst);
+    state.expert_max_tool_retries.store(expert_max_tool_retries, Ordering::SeqCst);
+    state.expert_max_managed_rounds.store(expert_max_managed_rounds, Ordering::SeqCst);
+    *state.expert_role_models.write().unwrap() = role_models.clone();
+
+    info!("Expert settings saved: max_iter={}, timeout={}, retries={}, rounds={}, role_models={:?}",
+        expert_max_iterations, expert_tool_timeout_secs, expert_max_tool_retries, expert_max_managed_rounds, role_models);
+    Json(json!({
+        "success": true,
+        "expert_max_iterations": expert_max_iterations,
+        "expert_tool_timeout_secs": expert_tool_timeout_secs,
+        "expert_max_tool_retries": expert_max_tool_retries,
+        "expert_max_managed_rounds": expert_max_managed_rounds,
+        "role_models": role_models,
+    }))
 }
 
 // ============================================================

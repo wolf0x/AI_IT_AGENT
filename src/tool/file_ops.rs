@@ -22,6 +22,54 @@ fn resolve_path(ctx: &ToolContext, path: &str) -> PathBuf {
     }
 }
 
+/// Resolve a read path with an Expert-mode fallback. In Expert mode each round
+/// writes artifacts into `managed/<contract>/round_NNN/`, so a relative
+/// reference like `output/x.json` or a bare filename may live in the current
+/// round dir or an earlier round dir of the same contract. Instant mode (no
+/// per-round output override) keeps the original behavior unchanged.
+fn resolve_read_path(ctx: &ToolContext, path: &str) -> PathBuf {
+    let primary = resolve_path(ctx, path);
+    let default_output = format!("{}/output", ctx.workspace_dir);
+    let eff_output = ctx.output_dir();
+    let is_absolute = std::path::Path::new(path).is_absolute();
+    if std::fs::metadata(&primary).is_ok()
+        || is_absolute
+        || eff_output.eq_ignore_ascii_case(&default_output)
+    {
+        return primary;
+    }
+    // Expert round context: map workspace-relative shorthand into the round dirs.
+    let p = path.replace('\\', "/");
+    let rel = p
+        .strip_prefix("workspace/output/")
+        .or_else(|| p.strip_prefix("output/"))
+        .unwrap_or(p.as_str())
+        .trim_start_matches("./")
+        .trim_start_matches(".\\");
+    if rel.is_empty() {
+        return primary;
+    }
+    let round_dir = PathBuf::from(eff_output);
+    let candidate = round_dir.join(rel);
+    if std::fs::metadata(&candidate).is_ok() {
+        return candidate;
+    }
+    // Sibling rounds of the same contract (managed/<contract>/round_*).
+    if let Some(contract_dir) = round_dir.parent() {
+        if let Ok(entries) = std::fs::read_dir(contract_dir) {
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with("round_") {
+                    let c = e.path().join(rel);
+                    if std::fs::metadata(&c).is_ok() {
+                        return c;
+                    }
+                }
+            }
+        }
+    }
+    primary
+}
+
 /// Resolve path for file WRITE operations.
 /// - Absolute path → use as-is (user explicitly specified)
 /// - Relative path with directory component (contains / or \, but not just ./ or .\) → resolve against working_dir
@@ -45,7 +93,7 @@ fn resolve_write_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, String> 
         Ok(PathBuf::from(&ctx.working_dir).join(stripped))
     } else {
         // Just a filename (or ./filename) - default to workspace/output/
-        Ok(PathBuf::from(&ctx.workspace_dir).join("output").join(stripped))
+        Ok(PathBuf::from(ctx.output_dir()).join(stripped))
     }
 }
 
@@ -73,7 +121,7 @@ impl Tool for FileReadTool {
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let path = args["path"].as_str().ok_or_else(|| "Missing 'path'".to_string())?;
-        let resolved = resolve_path(ctx, path);
+        let resolved = resolve_read_path(ctx, path);
 
         let meta = fs::metadata(&resolved)
             .map_err(|e| format!("Failed to stat {}: {}", resolved.display(), e))?;

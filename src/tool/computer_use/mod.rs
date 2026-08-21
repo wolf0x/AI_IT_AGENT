@@ -103,7 +103,7 @@ impl Tool for CuScreenshotTool {
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let ext = if result.mime_type.contains("jpeg") { "jpg" } else { "png" };
         let filename = format!("cu_screenshot_{}.{}", timestamp, ext);
-        let output_dir = std::path::Path::new(&ctx.workspace_dir).join("output");
+        let output_dir = std::path::PathBuf::from(ctx.output_dir());
         std::fs::create_dir_all(&output_dir).map_err(|e| format!("Failed to create output dir: {}", e))?;
         let filepath = output_dir.join(&filename);
         std::fs::write(&filepath, &result.data).map_err(|e| format!("Failed to save screenshot: {}", e))?;

@@ -132,9 +132,9 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .conv-area{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
 .log-panel{width:280px;display:flex;flex-direction:column;background:#f0f3f5;flex-shrink:0}
 .log-section{display:flex;flex-direction:column;min-height:0}
-.log-section-main{flex:2}
-.todo-section{flex:0 0 auto;max-height:220px;border-bottom:1px solid var(--border)}
-.todo-list{overflow-y:auto;padding:6px 8px;font-size:11px;max-height:170px}
+.log-section-main{flex:1 1 auto;min-height:0}
+.todo-section{flex:0 1 auto;border-bottom:1px solid var(--border)}
+.todo-list{overflow-y:auto;padding:6px 8px;font-size:11px;flex:1 1 auto;max-height:210px}
 .todo-item{display:flex;align-items:center;gap:6px;padding:5px 7px;margin-bottom:4px;border-radius:5px;background:rgba(0,0,0,.03);border:1px solid var(--border)}
 .todo-item:hover{background:rgba(0,0,0,.06)}
 .todo-status{width:8px;height:8px;border-radius:50%;flex-shrink:0}
@@ -146,11 +146,12 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .todo-desc.completed{text-decoration:line-through;opacity:.5}
 .todo-desc.cancelled{text-decoration:line-through;opacity:.4}
 .todo-empty{color:var(--t3);text-align:center;padding:14px 0;font-size:11px}
-.output-section{flex:1;border-top:1px solid var(--border)}
+.output-section{flex:0 1 auto;border-top:1px solid var(--border)}
+.panel-ftr{flex:0 0 auto;height:41.77px;border-top:1px solid var(--border);flex-shrink:0}
 .output-hdr{display:flex;align-items:center;justify-content:space-between}
 .btn-open-folder{background:none;border:none;cursor:pointer;font-size:14px;padding:0 2px;opacity:.65;line-height:1}
 .btn-open-folder:hover{opacity:1}
-.output-list{flex:1;overflow-y:auto;padding:6px 8px;font-size:11px}
+.output-list{overflow-y:auto;padding:6px 8px;font-size:11px;flex:1 1 auto;max-height:200px;min-height:36px}
 .output-item{display:flex;align-items:center;gap:6px;padding:5px 7px;margin-bottom:4px;border-radius:5px;background:rgba(0,0,0,.03);border:1px solid var(--border)}
 .output-item:hover{background:rgba(0,0,0,.06)}
 .output-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--t2);cursor:pointer}
@@ -668,6 +669,7 @@ input:checked+.slider:before{transform:translateX(20px)}
         <div class="settings-section gs-prov">
           <h3>&#128268; Provider</h3>
           <div class="form-card">
+            <div class="form-group"><label>Title</label><input type="text" id="provTitle" placeholder="(default = name)"></div>
             <div class="form-group"><label>Name</label><input type="text" id="provName" placeholder="e.g. gpt-4o"></div>
             <div class="form-group"><label>API Base URL</label><input type="text" id="provApiBase" placeholder="e.g. https://api.openai.com/v1"></div>
             <div class="form-group"><label>API Key</label><input type="password" id="provApiKey" placeholder="optional"></div>
@@ -762,6 +764,31 @@ input:checked+.slider:before{transform:translateX(20px)}
                 <input type="checkbox" id="humanInterventionToggle" onchange="toggleHumanIntervention(this.checked)">
                 <span class="slider"></span>
               </label>
+            </div>
+            <div style="border-top:1px dashed #d0c5e2;margin-top:12px;padding-top:12px">
+              <label style="font-size:12px;font-weight:600;color:#8e44ad;margin-bottom:8px;display:block">&#129513; Role Models (Expert Mode)</label>
+              <small style="color:var(--t3);font-size:10px;display:block;margin-bottom:8px">Assign a different model (and its fallback) to each Expert role. Leave empty to use the Primary/Fallback model above.</small>
+              <div class="form-group" style="margin-bottom:8px">
+                <label style="font-size:11px">Manager Model / Fallback</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select id="roleManagerSel" onchange="saveExpertSettings()" style="flex:1"><option value="">(Primary)</option></select>
+                  <select id="roleManagerFbSel" onchange="saveExpertSettings()" style="flex:1"><option value="">(Fallback)</option></select>
+                </div>
+              </div>
+              <div class="form-group" style="margin-bottom:8px">
+                <label style="font-size:11px">Auditor Model / Fallback</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select id="roleAuditorSel" onchange="saveExpertSettings()" style="flex:1"><option value="">(Primary)</option></select>
+                  <select id="roleAuditorFbSel" onchange="saveExpertSettings()" style="flex:1"><option value="">(Fallback)</option></select>
+                </div>
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label style="font-size:11px">Executor Model / Fallback</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select id="roleExecutorSel" onchange="saveExpertSettings()" style="flex:1"><option value="">(Primary)</option></select>
+                  <select id="roleExecutorFbSel" onchange="saveExpertSettings()" style="flex:1"><option value="">(Fallback)</option></select>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1050,16 +1077,17 @@ input:checked+.slider:before{transform:translateX(20px)}
             <div class="todo-list" id="todoList"><div class="todo-empty">No active tasks</div></div>
           </div>
           <div class="log-section log-section-main">
-            <div class="log-hdr">&#128203; System Log</div>
+            <div class="log-hdr">&#128203; Activities</div>
             <div class="log-area" id="logArea"></div>
           </div>
           <div class="log-section output-section">
             <div class="log-hdr output-hdr">
-              <span>&#128193; Output</span>
+              <span>&#128193; Artifacts</span>
               <button class="btn-open-folder" onclick="openOutputFolder()" title="Open output folder">&#128194;</button>
             </div>
             <div class="output-list" id="outputList"></div>
           </div>
+          <div class="panel-ftr"></div>
         </div>
       </div>
     </div>
@@ -1570,6 +1598,8 @@ async function exportSelectedHtml(){
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='rustagent-chat-'+Date.now()+'.html';a.click();
   setTimeout(function(){URL.revokeObjectURL(a.href)},1000);
   addLog('Exported '+sel.length+' message(s) to HTML','info');
+  // 导出完成后自动清除选中，避免残留高亮
+  clearSelection();
 }
 (function(){
   var conv=document.getElementById('convArea');
@@ -1932,10 +1962,15 @@ async function loadModels(){
       modelVisionMap[name]=vision;
       const o=document.createElement('option');o.value=name;o.textContent=name+ctx;sel.appendChild(o);
       const o2=document.createElement('option');o2.value=name;o2.textContent=name+ctx;fbSel.appendChild(o2);
+      ['roleManagerSel','roleManagerFbSel','roleAuditorSel','roleAuditorFbSel','roleExecutorSel','roleExecutorFbSel'].forEach(function(id){var el=document.getElementById(id);if(!el)return;var o=document.createElement('option');o.value=name;o.textContent=name+ctx;el.appendChild(o);});
     });
     // Set model selections from config
     if(configPrimary&&Array.from(sel.options).some(o=>o.value===configPrimary))sel.value=configPrimary;
     if(configFallback&&Array.from(fbSel.options).some(o=>o.value===configFallback))fbSel.value=configFallback;
+    // Set per-role (Manager/Auditor/Executor) model overrides from config
+    var rm=d.expert_role_models||{};
+    var roleMap={roleManagerSel:rm.manager,roleManagerFbSel:rm.manager_fallback,roleAuditorSel:rm.auditor,roleAuditorFbSel:rm.auditor_fallback,roleExecutorSel:rm.executor,roleExecutorFbSel:rm.executor_fallback};
+    Object.keys(roleMap).forEach(function(id){var el=document.getElementById(id);if(!el)return;var val=roleMap[id];if(val&&Array.prototype.some.call(el.options,function(o){return o.value===val;}))el.value=val;});
     // Also update localStorage for backward compatibility
     if(sel.value)localStorage.setItem(MODEL_KEY,sel.value);
     localStorage.setItem(FALLBACK_MODEL_KEY,fbSel.value||'');
@@ -1957,21 +1992,23 @@ async function loadModels(){
   }catch(e){addLog('Load models failed','error')}
 }
 // --- Provider Management ---
+function qstr(s){return "'"+String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"'";}
 async function loadProviders(){
   try{
     const r=await fetch('/api/providers');const d=await r.json();
     const el=document.getElementById('providerList');
     const providers=d.providers||[];
     if(providers.length){
-      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:6px 4px">Name</th><th>API Base</th><th>Context</th><th style="text-align:right">Actions</th></tr></thead><tbody>'+providers.map(p=>{
+      el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:6px 4px">Title</th><th style="padding:6px 4px">Name</th><th>API Base</th><th>Context</th><th style="text-align:right">Actions</th></tr></thead><tbody>'+providers.map(p=>{
         return '<tr style="border-bottom:1px solid var(--border)">'+
+          '<td style="padding:6px 4px;color:var(--t3)">'+esc(p.title)+'</td>'+
           '<td style="padding:6px 4px;font-weight:600">'+esc(p.name)+'</td>'+
           '<td style="color:var(--t3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(p.api_base)+'</td>'+
           '<td>'+Math.round(p.context_window/1000)+'K</td>'+
           '<td style="text-align:right;white-space:nowrap">'+
-            '<a href="#" onclick="editProvider(\''+esc(p.name)+'\');return false" style="color:var(--accent);margin-right:8px">Edit</a>'+
-            '<a href="#" onclick="testProvider(\''+esc(p.name)+'\', this);return false" style="color:var(--accent);margin-right:8px">Test</a>'+
-            '<a href="#" onclick="deleteProvider(\''+esc(p.name)+'\');return false" style="color:var(--red)">Delete</a>'+
+            '<a href="#" onclick="editProvider('+qstr(p.title)+');return false" style="color:var(--accent);margin-right:8px">Edit</a>'+
+            '<a href="#" onclick="testProvider('+qstr(p.title)+', this);return false" style="color:var(--accent);margin-right:8px">Test</a>'+
+            '<a href="#" onclick="deleteProvider('+qstr(p.title)+');return false" style="color:var(--red)">Delete</a>'+
           '</td></tr>';
       }).join('')+'</tbody></table>';
     }else{
@@ -1998,6 +2035,7 @@ async function saveProvider(){
   const apiBase=document.getElementById('provApiBase').value.trim();
   if(!name||!apiBase){alert('Name and API Base are required');return;}
   const body={
+    title:document.getElementById('provTitle').value.trim(),
     name:name,
     api_base:apiBase,
     api_key:document.getElementById('provApiKey').value.trim()||null,
@@ -2019,11 +2057,12 @@ async function saveProvider(){
     addLog('Provider '+(editing?'updated':'added')+': '+name,'info');
   }catch(e){addLog('Save provider failed','error')}
 }
-async function editProvider(name){
+async function editProvider(title){
   try{
     const r=await fetch('/api/providers');const d=await r.json();
-    const p=(d.providers||[]).find(x=>x.name===name);
+    const p=(d.providers||[]).find(x=>x.title===title);
     if(!p)return;
+    document.getElementById('provTitle').value=p.title||p.name;
     document.getElementById('provName').value=p.name;
     document.getElementById('provApiBase').value=p.api_base;
     document.getElementById('provApiKey').value='';
@@ -2032,36 +2071,37 @@ async function editProvider(name){
     document.getElementById('provCtxWindow').value=p.context_window;
     document.getElementById('provMaxTokens').value=p.max_tokens;
     document.getElementById('provTemp').value=p.temperature;
-    document.getElementById('provSaveBtn').dataset.editing=name;
+    document.getElementById('provSaveBtn').dataset.editing=title;
     document.getElementById('provSaveBtn').textContent='Update Model';
   }catch(e){addLog('Edit provider failed','error')}
 }
-async function deleteProvider(name){
-  if(!confirm('Delete provider "'+name+'"?'))return;
+async function deleteProvider(title){
+  if(!confirm('Delete provider "'+title+'"?'))return;
   try{
-    const r=await fetch('/api/providers/'+encodeURIComponent(name),{method:'DELETE'});
+    const r=await fetch('/api/providers/'+encodeURIComponent(title),{method:'DELETE'});
     const d=await r.json();
     if(d.error){alert(d.error);return;}
     loadProviders();
     loadModels();
-    addLog('Provider deleted: '+name,'info');
+    addLog('Provider "'+title+'" deleted','info');
   }catch(e){addLog('Delete provider failed','error')}
 }
-async function testProvider(name, btn){
+async function testProvider(title, btn){
   try{
-    const r=await fetch('/api/providers/'+encodeURIComponent(name)+'/test',{method:'POST'});
+    const r=await fetch('/api/providers/'+encodeURIComponent(title)+'/test',{method:'POST'});
     const d=await r.json();
+    var nm=d.name||title;
     if(d.ok){
       if(btn){btn.textContent='Connected';btn.style.color='var(--green)';}
-      addLog('Provider test OK: '+name+' ('+d.latency_ms+'ms)','info');
+      addLog('Provider test OK: '+nm+' ('+d.latency_ms+'ms)','info');
     }else{
       if(btn){btn.textContent='Failed';btn.style.color='var(--red)';}
-      addLog('Provider test FAILED: '+name+' - '+(d.error||'unknown error'),'error');
+      addLog('Provider test FAILED: '+nm+' - '+(d.error||'unknown error'),'error');
     }
   }catch(e){if(btn){btn.textContent='Failed';btn.style.color='var(--red)';}addLog('Provider test error: '+e,'error')}
 }
 function resetProviderForm(){
-  ['provName','provApiBase','provApiKey','provApiKeyEnv'].forEach(id=>document.getElementById(id).value='');
+  ['provTitle','provName','provApiBase','provApiKey','provApiKeyEnv'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('provCtxWindow').value='128000';
   document.getElementById('provMaxTokens').value='16384';
   document.getElementById('provTemp').value='0.7';
@@ -2400,7 +2440,12 @@ function renderMd(text){
   var NL=String.fromCharCode(10);
   text=fixBrokenTables(text);
   var lines=text.split(NL);for(var _i=1;_i<lines.length;_i++){if(/^\|.+\|$/.test(lines[_i])&&/^\|[\s:|-]+\|$/.test(lines[_i+1]||'')&&lines[_i-1]!==''){lines.splice(_i,0,'');_i++}}text=lines.join(NL);
-  if(typeof marked!=='undefined'){try{return marked.parse(text)}catch(e){}}
+  if(typeof marked!=='undefined'){try{
+    // 方案A: 转义孤立 `~`，避免 Hive 案例里用 `~` 做字段分隔时被误判成删除线；
+    // 成对的 `~~...~~`（真正的 Markdown 删除线）仍保留。
+    var escT=text.replace(/(^|[^~])~(?!~)/g,'$1\\~');
+    return marked.parse(escT)
+  }catch(e){}}
   return renderMdFallback(text);
 }
 function renderMdFallback(text){
@@ -2651,11 +2696,23 @@ function saveExpertSettings(){
   const expertToolTimeout=parseInt(document.getElementById('expertToolTimeoutInput').value)||600;
   const expertToolMaxRetries=parseInt(document.getElementById('expertToolMaxRetriesInput').value)||3;
   const expertMaxManagedRounds=parseInt(document.getElementById('expertMaxManagedRoundsInput').value)||50;
+  const roleManager=document.getElementById('roleManagerSel').value||'';
+  const roleManagerFb=document.getElementById('roleManagerFbSel').value||'';
+  const roleAuditor=document.getElementById('roleAuditorSel').value||'';
+  const roleAuditorFb=document.getElementById('roleAuditorFbSel').value||'';
+  const roleExecutor=document.getElementById('roleExecutorSel').value||'';
+  const roleExecutorFb=document.getElementById('roleExecutorFbSel').value||'';
   fetch('/api/settings/agent/expert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     expert_max_iterations:expertMaxIter,
     expert_tool_timeout_secs:expertToolTimeout,
     expert_max_tool_retries:expertToolMaxRetries,
-    expert_max_managed_rounds:expertMaxManagedRounds
+    expert_max_managed_rounds:expertMaxManagedRounds,
+    role_manager:roleManager||null,
+    role_manager_fallback:roleManagerFb||null,
+    role_auditor:roleAuditor||null,
+    role_auditor_fallback:roleAuditorFb||null,
+    role_executor:roleExecutor||null,
+    role_executor_fallback:roleExecutorFb||null
   })})
     .then(r=>r.json())
     .then(d=>{if(d.success){addLog('Expert settings saved','info');}else{addLog('Expert settings save failed: '+(d.error||'unknown'),'error');}})
@@ -2797,7 +2854,7 @@ async function loadOutputs(){
     const el=document.getElementById('outputList');if(!el)return;
     const files=d.files||[];
     if(!files.length){el.innerHTML='<div class="output-empty">No output files yet</div>';return}
-    el.innerHTML=files.map(f=>{
+    el.innerHTML=files.slice(0,5).map(f=>{
       const name=escHtml(f.name);
       return '<div class="output-item" title="'+name+'">'+
         '<span class="output-name" onclick="window.open(\''+f.url+'\')">'+name+'</span>'+

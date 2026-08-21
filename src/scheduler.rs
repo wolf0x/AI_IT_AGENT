@@ -401,6 +401,7 @@ impl Scheduler {
                     2,     // default max_tool_retries for scheduled tasks
                     vec![],  // no images for scheduled tasks
                     None, None,  // no checkpoint for scheduled tasks
+                    None,        // no per-round output override (scheduled task)
                 ).await {
                     Ok(mut stream) => {
                         use futures::StreamExt;

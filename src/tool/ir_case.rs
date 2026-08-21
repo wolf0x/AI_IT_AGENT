@@ -11,14 +11,14 @@ use crate::error::AgentResult;
 /// an incident response engagement so the agent never loses its place.
 pub struct IrCaseTool;
 
-/// Path to the case file directory inside the workspace.
-fn case_dir(workspace: &str) -> String {
-    format!("{}/output/cases", workspace)
+/// Path to the case file directory under the output root.
+fn case_dir(output: &str) -> String {
+    format!("{}/cases", output)
 }
 
 /// Load a case file from disk.
 fn load_case(workspace: &str, case_id: &str) -> AgentResult<Value> {
-    let path = format!("{}/{}.json", case_dir(workspace), case_id);
+    let path = format!("{}/{}.json", case_dir(&workspace), case_id);
     let content = fs::read_to_string(&path)
         .map_err(|e| format!("Case '{}' not found: {}", case_id, e))?;
     serde_json::from_str(&content)
@@ -27,7 +27,7 @@ fn load_case(workspace: &str, case_id: &str) -> AgentResult<Value> {
 
 /// Save a case file to disk.
 fn save_case(workspace: &str, case: &Value) -> AgentResult<String> {
-    let dir = case_dir(workspace);
+    let dir = case_dir(&workspace);
     fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create case directory: {}", e))?;
     let case_id = case["case_id"].as_str().unwrap_or("unknown");
@@ -96,7 +96,7 @@ impl Tool for IrCaseTool {
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let action = args["action"].as_str().unwrap_or("status");
-        let workspace = &ctx.workspace_dir;
+        let workspace = ctx.output_dir();
 
         match action {
             "init" => {
@@ -125,7 +125,7 @@ impl Tool for IrCaseTool {
                     }],
                 });
 
-                let path = save_case(workspace, &case)?;
+                let path = save_case(&workspace, &case)?;
                 Ok(json!({
                     "status": "ok",
                     "action": "init",
@@ -138,7 +138,7 @@ impl Tool for IrCaseTool {
             "update" => {
                 let case_id = args["case_id"].as_str()
                     .ok_or("case_id required for update action")?;
-                let mut case = load_case(workspace, case_id)?;
+                let mut case = load_case(&workspace, case_id)?;
                 let now = Utc::now();
 
                 // Update phase if provided
@@ -210,7 +210,7 @@ impl Tool for IrCaseTool {
                 }
 
                 case["updated"] = json!(now.to_rfc3339());
-                let path = save_case(workspace, &case)?;
+                let path = save_case(&workspace, &case)?;
 
                 let finding_count = case["findings"].as_array().map(|a| a.len()).unwrap_or(0);
                 let ioc_count = case["iocs"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -233,7 +233,7 @@ impl Tool for IrCaseTool {
             "status" => {
                 let case_id = args["case_id"].as_str()
                     .ok_or("case_id required for status action")?;
-                let case = load_case(workspace, case_id)?;
+                let case = load_case(&workspace, case_id)?;
 
                 let finding_count = case["findings"].as_array().map(|a| a.len()).unwrap_or(0);
                 let ioc_count = case["iocs"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -271,7 +271,7 @@ impl Tool for IrCaseTool {
             }
 
             "list" => {
-                let dir = case_dir(workspace);
+                let dir = case_dir(&workspace);
                 let mut cases = Vec::new();
                 if let Ok(entries) = fs::read_dir(&dir) {
                     for entry in entries.flatten() {
@@ -307,7 +307,7 @@ impl Tool for IrCaseTool {
             "close" => {
                 let case_id = args["case_id"].as_str()
                     .ok_or("case_id required for close action")?;
-                let mut case = load_case(workspace, case_id)?;
+                let mut case = load_case(&workspace, case_id)?;
                 let now = Utc::now();
 
                 case["status"] = json!("closed");
@@ -322,7 +322,7 @@ impl Tool for IrCaseTool {
                 }));
                 case["updated"] = json!(now.to_rfc3339());
 
-                let path = save_case(workspace, &case)?;
+                let path = save_case(&workspace, &case)?;
                 Ok(json!({
                     "status": "ok",
                     "action": "close",

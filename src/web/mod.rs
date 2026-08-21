@@ -22,6 +22,16 @@ impl StaticServer {
             .unwrap_or_else(|| PathBuf::from("static"))
     }
 
+    /// Disable caching so browsers always fetch the latest UI.
+    fn no_cache(response: impl IntoResponse) -> Response {
+        let mut resp = response.into_response();
+        resp.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+        );
+        resp
+    }
+
     pub fn serve_file(path: &str, workspace_dir: &str) -> Response {
         if Self::prefer_disk_assets() {
             // Try workspace/static first, then exe/static
@@ -34,6 +44,7 @@ impl StaticServer {
                             Response::builder()
                                 .status(StatusCode::OK)
                                 .header("Content-Type", mime.as_ref())
+                                .header("Cache-Control", "no-cache, no-store, must-revalidate")
                                 .body(content.into())
                                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
                         }
@@ -53,6 +64,7 @@ impl StaticServer {
                 Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/javascript")
+                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
                     .body(include_str!("../../static/marked.min.js").as_bytes().to_vec().into())
                     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
             }
@@ -66,17 +78,17 @@ impl StaticServer {
             let ws_index = Self::static_dir(workspace_dir).join("index.html");
             if ws_index.exists() {
                 if let Ok(content) = std::fs::read_to_string(&ws_index) {
-                    return Html(content).into_response();
+                    return Self::no_cache(Html(content));
                 }
             }
             let exe_index = Self::exe_static_dir().join("index.html");
             if exe_index.exists() {
                 if let Ok(content) = std::fs::read_to_string(&exe_index) {
-                    return Html(content).into_response();
+                    return Self::no_cache(Html(content));
                 }
             }
         }
 
-        Html(include_str!("../../static/index.html").to_string()).into_response()
+        Self::no_cache(Html(include_str!("../../static/index.html").to_string()))
     }
 }

@@ -15,6 +15,7 @@ use crate::model::ToolDefinition;
 use crate::skill::types::SkillMetadata;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tracing::warn;
 
 /// Result of a Manager planning round.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,7 +158,7 @@ fn manager_system_prompt(lang: &str, domain: TaskDomain, tool_defs: &[ToolDefini
     prompt.push_str("11. The Subtask MUST name at least one concrete tool.\n");
     prompt.push_str("\nCRITICAL — Evidence Discipline Rules:\n");
     prompt.push_str("12. Only entries recorded as Verified Findings/Outcomes have been independently checked. Treat everything else (prior session context, manager notes) as unverified leads to re-audit.\n");
-    prompt.push_str("13. **MANDATORY OUTPUT LOCATION**: ALL artifacts and reports MUST be saved under the `workspace/output/` directory. Expected Evidence paths must be relative to workspace/output/ (e.g. \"output/result.json\").\n");
+    prompt.push_str("13. **MANDATORY OUTPUT LOCATION**: This whole Expert project has ONE shared artifact directory `managed/<contract>/`, used by ALL rounds (replacing the legacy `workspace/output/`). List Expected Evidence paths as `output/xxx` (e.g. \"output/result.json\") — these are mapped into that shared project directory. Files saved in earlier rounds remain there and are directly reusable by later rounds. NEVER reference C:\\\\ or D:\\\\ locations.\n");
     prompt.push_str("\nCRITICAL - STRICT ADVANCE RULE:\n");
     prompt.push_str("14. If the previous round produced one or more VERIFIED findings/outcomes, the next subtask MUST be a strict advance from the most recent one: open the artifact already saved, call the endpoint already discovered, or act directly on the newest verified fact. NEVER re-fetch, re-capture, or re-derive a result whose artifact/outcome is already verified.\n");
     prompt.push_str("15. Each subtask must be a clear step FORWARD. If the newest verified outcome enables one concrete next action (e.g., connect to a discovered WebSocket terminal, analyze a downloaded binary), the next subtask MUST perform that action, NOT re-collect the same pages/hints.\n");
@@ -197,7 +198,11 @@ fn manager_user_prompt(contract: &TaskContract) -> String {
     if !contract.verified_findings.is_empty() {
         prompt.push_str("# Verified Findings\n");
         for f in &contract.verified_findings {
-            prompt.push_str(&format!("- [{}] {} — {}\n", f.severity.to_uppercase(), f.title, f.evidence_summary));
+            if let Some(p) = &f.evidence_path {
+                prompt.push_str(&format!("- [{}] {} — {} (artifact: {})\n", f.severity.to_uppercase(), f.title, f.evidence_summary, p));
+            } else {
+                prompt.push_str(&format!("- [{}] {} — {}\n", f.severity.to_uppercase(), f.title, f.evidence_summary));
+            }
         }
         prompt.push('\n');
     }
@@ -431,6 +436,7 @@ fn parse_phase(s: &str) -> Option<IrPhase> {
 pub async fn plan_next(
     provider: &Arc<OpenAiProvider>,
     model: &str,
+    fallback_model: Option<&str>,
     contract: &TaskContract,
     skills: &[SkillMetadata],
     tool_defs: &[ToolDefinition],
@@ -488,10 +494,24 @@ pub async fn plan_next(
         while dummy_rx.recv().await.is_some() {}
     });
 
-    let (content, _reasoning, _tool_calls, _usage) = provider
-        .chat_stream(model, &messages, &[], dummy_tx, &contract.id, "manager")
-        .await
-        .map_err(|e| format!("Manager LLM call failed: {}", e))?;
+    let resp = provider
+        .chat_stream(model, &messages, &[], dummy_tx.clone(), &contract.id, "manager")
+        .await;
+    let (content, _reasoning, _tool_calls, _usage) = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            let fb = fallback_model.filter(|f| !f.is_empty() && f != &model);
+            if let Some(fb) = fb {
+                warn!("[manager] primary model '{}' failed ({}), switching to fallback '{}'", model, e, fb);
+                provider
+                    .chat_stream(fb, &messages, &[], dummy_tx, &contract.id, "manager")
+                    .await
+                    .map_err(|e2| format!("Manager LLM call (fallback) failed: {}", e2))?
+            } else {
+                return Err(format!("Manager LLM call failed: {}", e));
+            }
+        }
+    };
 
     Ok(parse_manager_plan(&content))
 }

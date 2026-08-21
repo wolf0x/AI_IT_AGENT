@@ -122,6 +122,10 @@ impl OpenAiProvider {
     pub async fn test_connection(&self, model_name: &str) -> Result<(u64, String), String> {
         let model = self.find_model(model_name).await
             .ok_or_else(|| format!("No model configured with name '{model_name}'"))?;
+        self.test_connection_for(&model).await
+    }
+    /// Test connectivity for an already-resolved provider config (by ID).
+    pub async fn test_connection_for(&self, model: &ModelConfig) -> Result<(u64, String), String> {
         let api_key = model.resolved_api_key();
         let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
 

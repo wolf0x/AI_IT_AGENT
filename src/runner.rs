@@ -122,6 +122,7 @@ impl Runner {
         images: Vec<String>,
         checkpoint_id: Option<String>,
         resume_checkpoint: Option<ResumeState>,
+        output_dir: Option<String>,
     ) -> AgentResult<EventStream> {
         info!("Runner dispatching to agent '{}' (session: {})", self.agent.name(), session_id);
 
@@ -146,7 +147,8 @@ impl Runner {
          .with_context_window(context_window)
          .with_context_window_threshold(context_window_threshold)
          .with_tool_timeout_secs(tool_timeout_secs)
-         .with_max_tool_retries(max_tool_retries);
+         .with_max_tool_retries(max_tool_retries)
+         .with_tool_output_dir(output_dir);
 
         // Wire checkpoint/resume state if provided.
         if let Some(resume) = resume_checkpoint {

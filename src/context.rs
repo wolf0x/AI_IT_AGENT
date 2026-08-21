@@ -70,6 +70,10 @@ pub struct ToolContext {
     pub function_call_id: String,
     pub working_dir: String,
     pub workspace_dir: String,
+    /// Override for the artifact/output directory. Empty → defaults to
+    /// `workspace_dir/output`. Used by Expert mode to write each round's
+    /// artifacts directly into `managed/<contract>/round_NNN/`.
+    output_dir: String,
     /// Optional progress channel for long-running tools to report status.
     /// Messages sent here are forwarded to the frontend as `progress` events.
     progress_tx: Option<tokio::sync::mpsc::Sender<String>>,
@@ -82,6 +86,7 @@ impl ToolContext {
             function_call_id,
             working_dir,
             workspace_dir,
+            output_dir: String::new(),
             progress_tx: None,
         }
     }
@@ -99,7 +104,25 @@ impl ToolContext {
             function_call_id: String::new(),
             working_dir,
             workspace_dir,
+            output_dir: String::new(),
             progress_tx: None,
+        }
+    }
+
+    /// Override the artifact/output directory for this tool invocation.
+    /// When empty, tools fall back to `workspace_dir/output`.
+    pub fn with_output_dir(mut self, dir: String) -> Self {
+        self.output_dir = dir;
+        self
+    }
+
+    /// Effective output directory for artifacts. Falls back to
+    /// `workspace_dir/output` when no per-invocation override is set.
+    pub fn output_dir(&self) -> String {
+        if self.output_dir.is_empty() {
+            format!("{}/output", self.workspace_dir)
+        } else {
+            self.output_dir.clone()
         }
     }
 
@@ -156,6 +179,8 @@ pub struct InvocationContext {
     /// Pre-authorization profile for managed (unattended) task execution.
     /// When set, matching tool calls bypass the human permission gate (Phase 6).
     pub preauth_profile: Option<std::sync::Arc<crate::managed::permission_profile::PermissionProfile>>,
+    /// Optional per-invocation artifact/output directory override (Expert rounds).
+    pub tool_output_dir: Option<String>,
     ended: Arc<AtomicBool>,
 }
 
@@ -189,6 +214,7 @@ impl InvocationContext {
             checkpointer: None,
             event_log_path: None,
             preauth_profile: None,
+            tool_output_dir: None,
             ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -278,6 +304,12 @@ impl InvocationContext {
         profile: Option<std::sync::Arc<crate::managed::permission_profile::PermissionProfile>>,
     ) -> Self {
         self.preauth_profile = profile;
+        self
+    }
+
+    /// Set an optional artifact/output directory override for this invocation.
+    pub fn with_tool_output_dir(mut self, dir: Option<String>) -> Self {
+        self.tool_output_dir = dir;
         self
     }
 

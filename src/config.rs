@@ -72,10 +72,36 @@ pub struct AgentConfig {
     /// Expert mode: max managed rounds (default: 50)
     #[serde(default = "default_expert_max_managed_rounds")]
     pub expert_max_managed_rounds: usize,
+    /// Expert mode: per-role model overrides (Manager/Auditor/Executor) and their
+    /// optional fallbacks. When a role model is set it overrides the session/primary
+    /// model for that role; otherwise the role uses the primary model. Each role's
+    /// fallback falls back to the global fallback_model when unset.
+    #[serde(default)]
+    pub expert_role_models: RoleModelsConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RoleModelsConfig {
+    #[serde(default)]
+    pub manager: Option<String>,
+    #[serde(default)]
+    pub manager_fallback: Option<String>,
+    #[serde(default)]
+    pub auditor: Option<String>,
+    #[serde(default)]
+    pub auditor_fallback: Option<String>,
+    #[serde(default)]
+    pub executor: Option<String>,
+    #[serde(default)]
+    pub executor_fallback: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelConfig {
+    /// Human-readable unique label; the CRUD key (defaults to `name`).
+    /// `name` may repeat across different api_base endpoints; give each a distinct title.
+    #[serde(default)]
+    pub title: String,
     pub name: String,
     pub api_base: String,
     #[serde(default)]
@@ -160,6 +186,7 @@ impl Default for Config {
                 expert_tool_timeout_secs: default_expert_tool_timeout_secs(),
                 expert_max_tool_retries: default_expert_max_tool_retries(),
                 expert_max_managed_rounds: default_expert_max_managed_rounds(),
+                expert_role_models: RoleModelsConfig::default(),
             },
         }
     }
@@ -437,6 +464,16 @@ timezone_offset = 8
         config.agent.expert_max_tool_retries = expert_max_tool_retries;
         config.agent.expert_max_managed_rounds = expert_max_managed_rounds;
 
+        config.save(workspace_dir)
+    }
+
+    /// Save Expert-mode per-role model overrides (Manager/Auditor/Executor) to config.toml.
+    pub fn save_role_models(
+        workspace_dir: &str,
+        role_models: &RoleModelsConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = Self::load(workspace_dir).unwrap_or_default();
+        config.agent.expert_role_models = role_models.clone();
         config.save(workspace_dir)
     }
 }

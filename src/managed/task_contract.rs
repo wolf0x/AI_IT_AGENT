@@ -398,8 +398,8 @@ impl TaskContract {
 
         brief.push_str("## Instructions\n");
         brief.push_str("- Execute this subtask using available tools.\n");
-        brief.push_str("- **MANDATORY**: Save ALL artifacts, evidence files, reports, and outputs to `workspace/output/` directory. NEVER save files to C:\\, D:\\, or any location outside workspace/output/.\n");
-        brief.push_str("- Reference the saved file paths in your response (e.g., 'Saved to output/scan_result.json').\n");
+        brief.push_str("- **MANDATORY**: Save ALL artifacts, evidence files, reports, and outputs under the SHARED project artifact directory — the exact absolute path is stated in the brief (managed/<contract>/). It is the same directory every round, so later rounds can reuse files saved here. NEVER save files to C:\\, D:\\, or outside that directory.\n");
+        brief.push_str("- Reference the saved file paths in your response as the absolute path, and list them in the FINAL STATE ARTIFACTS block.\n");
         brief.push_str("- Focus ONLY on this subtask. Do not repeat work from verified findings.\n");
         brief.push_str("- If you encounter a timeout, use partial results and narrow scope.\n\n");
 

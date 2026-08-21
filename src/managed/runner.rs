@@ -77,6 +77,47 @@ fn is_bare_resume(msg: &str) -> bool {
     false
 }
 
+/// Map a Manager-provided evidence path (workspace-relative shorthand like
+/// `workspace/output/x.json`, `output/x.json`, or a bare filename) to the
+/// relative path inside the round output directory (`round_dir`).
+fn round_relative_evidence(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    if let Some(rest) = p.strip_prefix("workspace/output/") {
+        return rest.to_string();
+    }
+    if let Some(rest) = p.strip_prefix("output/") {
+        return rest.to_string();
+    }
+    p.trim_start_matches("./").trim_start_matches(".\\").to_string()
+}
+
+/// Rewrite legacy `output/...` / `workspace/output/...` evidence references to
+/// the real Expert artifact directory (managed/<contract>/) for frontend
+/// display only — the underlying file write already targets the managed dir.
+fn display_evidence(evidence: &str, contract_dir: &std::path::Path) -> String {
+    let cd = contract_dir.to_string_lossy().replace('\\', "/");
+    evidence
+        .split(|c| c == ',' || c == '\n')
+        .filter_map(|item| {
+            let item = item.trim();
+            if item.is_empty() {
+                return None;
+            }
+            let p = item.replace('\\', "/");
+            if let Some(rest) = p.strip_prefix("workspace/output/") {
+                Some(format!("{}/{}", cd, rest))
+            } else if let Some(rest) = p.strip_prefix("output/") {
+                Some(format!("{}/{}", cd, rest))
+            } else if let Some(rest) = p.strip_prefix("./") {
+                Some(format!("{}/{}", cd, rest))
+            } else {
+                Some(item.to_string())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Deadlock guardrails for the F10 backtrack gate.
 /// A single lead is abandoned after this many rounds even when progress is slow.
 const PER_LEAD_ROUND_CAP: usize = 6;
@@ -116,6 +157,13 @@ pub struct ManagedRunner {
     /// Computer Use availability flag (shared with server; used for GUI-channel
     /// auto-enable with a user opt-in window).
     computer_use_enabled: Arc<AtomicBool>,
+    /// Fallback model for Manager / Auditor / Executor LLM calls when the
+    /// primary model fails (mirrors Instant-mode fallback).
+    fallback_model: Option<String>,
+    /// Per-role (Manager/Auditor/Executor) model overrides and their fallbacks.
+    /// A role model overrides the session/primary model; a role fallback overrides
+    /// the global fallback_model for that role.
+    role_models: crate::config::RoleModelsConfig,
     /// Whether to use LLM to simulate human intervention when blocked.
     human_intervention_enabled: Arc<AtomicBool>,
 }
@@ -158,6 +206,8 @@ impl ManagedRunner {
         max_tool_retries: usize,
         skill_manager: Arc<SkillManager>,
         computer_use_enabled: Arc<AtomicBool>,
+        fallback_model: Option<String>,
+        role_models: crate::config::RoleModelsConfig,
         human_intervention_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -176,6 +226,8 @@ impl ManagedRunner {
             max_tool_retries,
             skill_manager,
             computer_use_enabled,
+            fallback_model,
+            role_models,
             human_intervention_enabled,
         }
     }
@@ -284,6 +336,19 @@ impl ManagedRunner {
         // never pre-authorized (safety interlock preserved).
         let permission_profile = std::sync::Arc::new(PermissionProfile::ir_containment(contract_id.clone()));
 
+        // ── Resolve per-role model overrides ──
+        // Each role model (Some) overrides the session/primary model for that role;
+        // otherwise the role uses the primary model. Each role fallback (Some) overrides
+        // the global fallback_model; otherwise it falls back to the global fallback.
+        let base_model = model_name.to_string();
+        let roles = &self.role_models;
+        let eff_manager = roles.manager.clone().unwrap_or_else(|| self.manager_model.clone());
+        let eff_manager_fb = roles.manager_fallback.clone().or_else(|| self.fallback_model.clone());
+        let eff_auditor = roles.auditor.clone().unwrap_or_else(|| base_model.clone());
+        let eff_auditor_fb = roles.auditor_fallback.clone().or_else(|| self.fallback_model.clone());
+        let eff_executor = roles.executor.clone().unwrap_or_else(|| base_model.clone());
+        let eff_executor_fb = roles.executor_fallback.clone().or_else(|| self.fallback_model.clone());
+
         // ── Phase 4: Auditor for independent verification ──
         // F6: Enable LLM-based semantic verification (deterministic checks always
         // run first; semantic artifacts additionally get LLM interpretation).
@@ -294,9 +359,10 @@ impl ManagedRunner {
         )
         .with_llm(
             self.provider.clone(),
-            model_name.to_string(),
+            eff_auditor.clone(),
             8000, // auditor_context_chars budget
-        );
+        )
+        .with_fallback_model(eff_auditor_fb.clone());
 
         // ── Persist initial TaskContract for crash recovery ──
         if let Ok(json) = contract.to_json() {
@@ -308,7 +374,6 @@ impl ManagedRunner {
         }
 
         let inner = self.inner.clone();
-        let model = model_name.to_string();
         let session = session_id.to_string();
         let permissions = permissions.clone();
         let permission_pending = permission_pending.clone();
@@ -324,7 +389,10 @@ impl ManagedRunner {
         let computer_use_enabled = self.computer_use_enabled.clone();
         let human_intervention_enabled = self.human_intervention_enabled.clone();
         let provider = self.provider.clone();
-        let manager_model = self.manager_model.clone();
+        let manager_model = eff_manager.clone();
+        let manager_fallback = eff_manager_fb.clone();
+        let executor_model = eff_executor.clone();
+        let executor_fallback = eff_executor_fb.clone();
         // Direct registry access for GUI-channel auto-enable (register cu_* tools).
         let tools = self.tools.clone();
         // Move auditor + permission profile into the spawned task for post-Executor
@@ -481,7 +549,7 @@ impl ManagedRunner {
                     } else {
                         // No pending plan, fall through to re-plan
                         let anchor = None;
-                        match manager::plan_next(&provider, &manager_model, &contract, &skills, &tool_defs, anchor).await {
+                        match manager::plan_next(&provider, &manager_model, manager_fallback.as_deref(), &contract, &skills, &tool_defs, anchor).await {
                             Ok(p) => p,
                             Err(e) => {
                                 error!("[managed:{}] Manager planning failed: {}", session, e);
@@ -500,7 +568,7 @@ impl ManagedRunner {
                     } else {
                         None
                     };
-                    match manager::plan_next(&provider, &manager_model, &contract, &skills, &tool_defs, anchor).await {
+                    match manager::plan_next(&provider, &manager_model, manager_fallback.as_deref(), &contract, &skills, &tool_defs, anchor).await {
                         Ok(p) => p,
                         Err(e) => {
                             error!("[managed:{}] Manager planning failed: {}", session, e);
@@ -530,7 +598,7 @@ impl ManagedRunner {
                 if !plan.expected_evidence.trim().is_empty() {
                     plan_event.push_str(&format!(
                         "\n\n**Expected Evidence**\n{}",
-                        plan.expected_evidence
+                        display_evidence(&plan.expected_evidence, &archive_dir)
                     ));
                 }
                 plan_event.push_str(&format!(
@@ -689,6 +757,22 @@ impl ManagedRunner {
                     }
                 };
 
+                // ── Per-round artifact directory ──
+                // All Expert artifacts are written to the SHARED contract
+                // directory managed/<contract_id>/ (originally workspace/output),
+                // so every round can find and reuse prior rounds' products.
+                let _ = std::fs::create_dir_all(&archive_dir);
+                // Tell the Executor where to put its outputs.
+                let brief = {
+                    let mut b = brief;
+                    if brief_lang_cn {
+                        b.push_str(&format!("\n\n## 项目产物目录（MANDATORY，全轮共享）\n本 Expert 项目所有生成的文件/报告/证据/临时文件都必须保存到共享目录：`{}`\n该目录对每一轮都相同，后续 round 会从这里读取并复用。所有写产物的工具（file_write / ir_report / screenshot / web_fetch / ir_case / ir_memdump 等）的输出都会直接落在这里。", archive_dir.display()));
+                    } else {
+                        b.push_str(&format!("\n\n## Project Artifact Directory (MANDATORY, shared across ALL rounds)\nALL files/reports/evidence/temp artifacts for this Expert project MUST be saved to this shared directory: `{}`\nIt is the SAME directory every round, so later rounds can read and reuse prior rounds' products here. All artifact-writing tools (file_write / ir_report / screenshot / web_fetch / ir_case / ir_memdump, etc.) write their output directly into it.", archive_dir.display()));
+                    }
+                    b
+                };
+
                 info!("[managed:{}] Executor starting with brief ({} chars)", session, brief.len());
 
                 // Run the Executor with the brief as the user message
@@ -696,13 +780,13 @@ impl ManagedRunner {
                 let executor_result = inner.run(
                     &brief,
                     &format!("{}-exec-{}", session, round),
-                    &model,
+                    &executor_model,
                     max_executor_iterations,
                     vec![], // fresh history for each Executor round
                     permissions.clone(),
                     permission_pending.clone(),
                     Some(permission_profile.clone()), // Phase 6 pre-authorization profile
-                    None, // no fallback model
+                    executor_fallback.clone(),
                     rabbit_hole_threshold,
                     context_window,
                     80,   // context window threshold
@@ -710,6 +794,7 @@ impl ManagedRunner {
                     max_tool_retries,
                     vec![], // no images
                     None, None, // no checkpoint resume
+                    Some(archive_dir.to_string_lossy().to_string()), // shared contract artifact output dir
                 ).await;
 
                 let mut executor_output = String::new();
@@ -925,9 +1010,11 @@ impl ManagedRunner {
                         if path.is_empty() {
                             continue;
                         }
-                        let audit = auditor.verify_artifact(path, None).await;
+                        let rel = round_relative_evidence(path);
+                        let resolved = archive_dir.join(&rel).to_string_lossy().to_string();
+                        let audit = auditor.verify_artifact(&resolved, None, &archive_dir).await;
                         round_audits.push(serde_json::json!({
-                            "path": path,
+                            "path": rel,
                             "verified": audit.verified,
                             "status": audit.status,
                             "integrity": audit.integrity,
@@ -937,12 +1024,12 @@ impl ManagedRunner {
                         if audit.verified && round_ok {
                             contract.add_finding(VerifiedFinding {
                                 id: uuid::Uuid::new_v4().to_string(),
-                                title: format!("Evidence collected: {}", path),
+                                title: format!("Evidence collected: {}", rel),
                                 severity: "info".to_string(),
                                 status: audit.status.clone(),
                                 integrity_status: audit.integrity.clone(),
                                 evidence_summary: audit.evidence.clone(),
-                                evidence_path: Some(path.to_string()),
+                                evidence_path: Some(resolved.clone()),
                                 mitre_technique: None,
                                 verified_at: chrono::Utc::now(),
                                 round_index: round,
@@ -950,11 +1037,11 @@ impl ManagedRunner {
                             contract.add_record(TaskRecord {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 kind: "artifact".to_string(),
-                                title: format!("Evidence collected: {}", path),
+                                title: format!("Evidence collected: {}", rel),
                                 status: "completed".to_string(),
                                 integrity: audit.integrity.clone(),
                                 evidence_summary: audit.evidence.clone(),
-                                evidence_path: Some(path.to_string()),
+                                evidence_path: Some(resolved.clone()),
                                 phase: Some(format!("{:?}", contract.phase).to_lowercase()),
                                 round_index: round,
                                 updated_at: Some(chrono::Utc::now()),
@@ -964,11 +1051,11 @@ impl ManagedRunner {
                             contract.add_record(TaskRecord {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 kind: "artifact".to_string(),
-                                title: format!("Evidence collected: {}", path),
+                                title: format!("Evidence collected: {}", rel),
                                 status: if audit.verified { "untrusted".to_string() } else { "pending".to_string() },
                                 integrity: audit.integrity.clone(),
                                 evidence_summary: audit.evidence.clone(),
-                                evidence_path: Some(path.to_string()),
+                                evidence_path: Some(resolved.clone()),
                                 phase: Some(format!("{:?}", contract.phase).to_lowercase()),
                                 round_index: round,
                                 updated_at: Some(chrono::Utc::now()),
@@ -979,12 +1066,12 @@ impl ManagedRunner {
                                 audit.failure_reason.unwrap_or_else(|| "verification failed".to_string())
                             };
                             contract.add_lead(
-                                &format!("Evidence '{}' not verified", path),
+                                &format!("Evidence '{}' not verified", rel),
                                 &reason,
                             );
                             contract.manager_notes.push(format!(
                                 "Round {}: evidence '{}' not verified: {}",
-                                round + 1, path, reason
+                                round + 1, rel, reason
                             ));
                         }                    }
                 }
@@ -1054,13 +1141,12 @@ impl ManagedRunner {
                 round += 1;
             }
 
-            // Safety net: if the task completed, persist but do NOT delete.
-            // The contract remains in the DB for reference or manual cleanup.
-            if contract.phase == IrPhase::Completed {
-                persist_contract(&memory_store, &contract_id, &session, &contract);
-                // Generate HTML report for completed Expert tasks
-                write_expert_report(&workspace_dir, &contract, &contract_id, &archive_dir);
-            }
+            // Safety net: persist but do NOT delete. The contract remains in the
+            // DB for reference or manual cleanup.
+            persist_contract(&memory_store, &contract_id, &session, &contract);
+            // Generate the complete project report whenever the Expert run ends
+            // (Completed, Blocked, or max-rounds reached).
+            write_expert_report(&workspace_dir, &contract, &contract_id, &archive_dir);
 
             // Send done event
             let _ = tx.send(Ok(AgentEvent::done(&contract_id, "manager"))).await;
@@ -1289,13 +1375,19 @@ h3{{font-size:16px;color:var(--accent);margin:20px 0 8px}}
     if !contract.verified_findings.is_empty() {
         let _ = writeln!(html, "<h2>🔍 Verified Findings ({})</h2>", contract.verified_findings.len());
         for f in &contract.verified_findings {
+            let path_html = f.evidence_path.as_deref()
+                .map(|p| format!("<div class=\"finding-meta\">Artifact: <span style=\"font-family:monospace;font-size:11px\">{}</span></div>", html_escape(p)))
+                .unwrap_or_default();
             let _ = writeln!(html, "<div class=\"finding\">
 <div class=\"finding-title\">[{}] {}</div>
-<div class=\"finding-meta\">Severity: {} | Status: {} | Integrity: {}</div>
+<div class=\"finding-meta\">Severity: {} | Status: {} | Integrity: {} | Round: {}</div>
+{}
 <div class=\"section-content\">{}</div>
 </div>",
                 html_escape(&f.severity), html_escape(&f.title),
                 html_escape(&f.severity), html_escape(&f.status), html_escape(&f.integrity_status),
+                f.round_index,
+                path_html,
                 html_escape(&f.evidence_summary));
         }
     }
@@ -1308,7 +1400,60 @@ h3{{font-size:16px;color:var(--accent);margin:20px 0 8px}}
 <div class=\"finding-title\">{}</div>
 <div class=\"section-content\">{}</div>
 </div>",
-                html_escape(&a.description), html_escape(&a.verification));
+            html_escape(&a.description), html_escape(&a.verification));
+        }
+    }
+
+    // Hypothesis
+    if !contract.hypothesis.trim().is_empty() {
+        let _ = writeln!(html, "<h2>💡 Hypothesis</h2><div class=\"section-content\">{}</div>",
+            html_escape(&contract.hypothesis));
+    }
+
+    // Open Leads
+    if !contract.open_leads.is_empty() {
+        let _ = writeln!(html, "<h2>🧭 Open Leads ({})</h2>", contract.open_leads.len());
+        for l in &contract.open_leads {
+            let _ = writeln!(html, "<div class=\"finding\">
+<div class=\"finding-title\">[{}] {}</div>
+<div class=\"finding-meta\">Round: {}</div>
+<div class=\"section-content\">{}</div>
+</div>",
+                html_escape(&l.status), html_escape(&l.description),
+                l.round_index,
+                html_escape(&l.context));
+        }
+    }
+
+    // Remaining Work
+    if !contract.remaining_work.is_empty() {
+        let _ = writeln!(html, "<h2>📌 Remaining Work</h2><div class=\"section-content\">");
+        for (i, item) in contract.remaining_work.iter().enumerate() {
+            let _ = writeln!(html, "<div style=\"margin:4px 0\">{}. {}</div>", i + 1, html_escape(item));
+        }
+        let _ = writeln!(html, "</div>");
+    }
+
+    // Project Artifacts — all files the rounds produced in the shared contract dir.
+    {
+        let mut artifacts: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(archive_dir) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("round_") || e.path().is_dir() {
+                    continue;
+                }
+                artifacts.push(name);
+            }
+        }
+        artifacts.sort();
+        if !artifacts.is_empty() {
+            let _ = writeln!(html, "<h2>🗂 Project Artifacts ({})</h2><div class=\"tool-list\">", artifacts.len());
+            for a in &artifacts {
+                let _ = writeln!(html, "<span class=\"tool-tag\" style=\"font-family:monospace\">{}</span>", html_escape(a));
+            }
+            let _ = writeln!(html, "</div><div class=\"section-content\" style=\"margin-top:8px\">Directory: <span style=\"font-family:monospace;font-size:12px\">{}</span></div>",
+                html_escape(&archive_dir.to_string_lossy().to_string()));
         }
     }
 

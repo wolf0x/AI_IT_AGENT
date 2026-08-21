@@ -171,7 +171,7 @@ fn script_dump(args: &Value, ctx: &ToolContext) -> Result<String, String> {
     let output_path = if let Some(p) = args["output_path"].as_str() {
         p.to_string()
     } else {
-        format!(r"{}\output\proc_{}.dmp", ctx.workspace_dir, pid)
+        format!(r"{}\proc_{}.dmp", ctx.output_dir(), pid)
     };
 
     // MiniDumpWriteDump flags:

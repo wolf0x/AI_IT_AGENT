@@ -131,6 +131,7 @@ impl Heartbeat {
             2,     // default max_tool_retries for heartbeat
             vec![],  // no images for heartbeat
             None, None,  // no checkpoint for heartbeat
+            None,        // no per-round output override (heartbeat)
         ).await {
             Ok(mut stream) => {
                 use futures::StreamExt;

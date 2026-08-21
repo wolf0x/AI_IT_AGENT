@@ -25,9 +25,10 @@
 //! when the verification requires interpretation of complex evidence.
 
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::model::openai::OpenAiProvider;
+use crate::model::ChatMessage;
 use crate::tool::ToolRegistry;
 use crate::context::ToolContext;
 
@@ -113,6 +114,8 @@ pub struct Auditor {
     provider: Option<std::sync::Arc<OpenAiProvider>>,
     /// Model used for semantic verification.
     auditor_model: String,
+    /// Fallback model for semantic verification if the primary LLM call fails.
+    fallback_model: Option<String>,
     /// Max characters of evidence fed to the LLM (budget control).
     auditor_context_chars: usize,
 }
@@ -130,6 +133,7 @@ impl Auditor {
             workspace_dir,
             provider: None,
             auditor_model: String::new(),
+            fallback_model: None,
             auditor_context_chars: 8000,
         }
     }
@@ -140,6 +144,31 @@ impl Auditor {
         self.auditor_model = model;
         self.auditor_context_chars = context_chars.max(1000);
         self
+    }
+
+    /// Set an optional fallback model used if the primary auditor LLM call fails.
+    pub fn with_fallback_model(mut self, model: Option<String>) -> Self {
+        self.fallback_model = model;
+        self
+    }
+
+    /// Semantic LLM call with automatic fallback to `fallback_model` on error.
+    async fn semantic_chat(&self, messages: &[ChatMessage]) -> Result<String, String> {
+        let Some(provider) = &self.provider else {
+            return Err("LLM verification not configured".into());
+        };
+        match provider.chat_simple(&self.auditor_model, messages).await {
+            Ok(o) => Ok(o),
+            Err(e) => {
+                let fb = self.fallback_model.as_deref().filter(|f| !f.is_empty() && f != &self.auditor_model.as_str());
+                if let Some(fb) = fb {
+                    warn!("[auditor] primary model '{}' failed ({}), switching to fallback '{}'", self.auditor_model, e, fb);
+                    provider.chat_simple(fb, messages).await
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     /// Verify a containment/eradication action.
@@ -175,38 +204,31 @@ impl Auditor {
     /// If the file is a log/test-output artifact and an LLM is configured,
     /// additionally run semantic verification against the expected criteria.
     /// 
-    /// **MANDATORY**: All artifacts MUST be saved under workspace/output/. 
-    /// Paths outside workspace/output/ will be rejected.
-    pub async fn verify_artifact(&self, path: &str, expected_content: Option<&str>) -> AuditResult {
+    /// **MANDATORY**: All artifacts MUST be saved under the round output
+    /// directory (`artifact_root`, e.g. managed/<contract>/round_NNN/).
+    /// Paths outside that directory will be rejected.
+    pub async fn verify_artifact(&self, path: &str, expected_content: Option<&str>, artifact_root: &std::path::Path) -> AuditResult {
         info!("[auditor] Verifying artifact: {}", path);
 
-        // **MANDATORY CHECK**: Ensure path is under workspace/output/
-        let normalized_path = path.replace('\\', "/").to_lowercase();
-        let workspace_output = format!("{}/output/", self.workspace_dir.replace('\\', "/")).to_lowercase();
-        
-        // Check if path is relative (starts with "output/" or "workspace/output/")
-        // or absolute and under workspace_dir/output/
-        let is_valid_path = if std::path::Path::new(path).is_absolute() {
-            // Absolute path: must be under workspace_dir/output/
-            normalized_path.starts_with(&workspace_output)
+        // Resolve to an absolute path rooted at artifact_root (the per-round dir).
+        let p = std::path::Path::new(path);
+        let full_path = if p.is_absolute() {
+            p.to_path_buf()
         } else {
-            // Relative path: must start with "output/" or be just a filename (will be prefixed with workspace_dir)
-            normalized_path.starts_with("output/") || normalized_path.starts_with("workspace/output/") || !normalized_path.contains('/')
+            artifact_root.join(path)
         };
-        
-        if !is_valid_path {
+
+        // **MANDATORY CHECK**: the resolved path must live under artifact_root,
+        // canonicalized so ".." / symlink navigation cannot escape the round dir.
+        let resolved = full_path.canonicalize().unwrap_or_else(|_| full_path.clone());
+        let root = artifact_root.canonicalize().unwrap_or_else(|_| artifact_root.to_path_buf());
+        if !resolved.starts_with(&root) {
             return AuditResult::fail(
                 path,
                 String::new(),
-                &format!("VIOLATION: Artifact path '{}' is NOT under workspace/output/. ALL artifacts MUST be saved under workspace/output/ directory. NEVER save to C:\\, D:\\, or other locations.", path)
+                &format!("VIOLATION: Artifact path '{}' is outside the round output directory {:?}. All artifacts MUST be saved under this round's output directory.", path, artifact_root)
             );
         }
-
-        let full_path = if std::path::Path::new(path).is_absolute() {
-            path.to_string()
-        } else {
-            format!("{}/{}", self.workspace_dir, path)
-        };
 
         // Check file exists
         let metadata = match tokio::fs::metadata(&full_path).await {
@@ -272,9 +294,9 @@ impl Auditor {
     /// the Manager's success criteria. Never fabricates evidence — it only
     /// receives actual file content and must state insufficiency explicitly.
     pub async fn verify_semantic(&self, path: &str, content: &str, criteria: &str) -> AuditResult {
-        let Some(provider) = &self.provider else {
+        if self.provider.is_none() {
             return AuditResult::fail(path, String::new(), "LLM verification not configured");
-        };
+        }
 
         // Budget control: truncate evidence to auditor_context_chars.
         let truncated: String = content.chars().take(self.auditor_context_chars).collect();
@@ -307,7 +329,7 @@ impl Auditor {
             crate::model::ChatMessage::user(&user),
         ];
 
-        let output = match provider.chat_simple(&self.auditor_model, &messages).await {
+        let output = match self.semantic_chat(&messages).await {
             Ok(o) => o,
             Err(e) => {
                 return AuditResult::blocked(
@@ -368,7 +390,9 @@ impl Auditor {
         recent_verified: &str,
         final_state_block: &str,
     ) -> Option<AuditReport> {
-        let provider = self.provider.as_ref()?;
+        if self.provider.is_none() {
+            return None;
+        }
         let system = "You are the independent AUDITOR in a long-horizon task loop.\n\
             ROLE: read-only. You never execute tools; you only reason about the evidence handed to you.\n\
             The subtask is COMPLETE only if the acceptance criteria are met AND integrity is clean.\n\
@@ -395,7 +419,7 @@ impl Auditor {
             crate::model::ChatMessage::system(system),
             crate::model::ChatMessage::user(&user),
         ];
-        let output = match provider.chat_simple(&self.auditor_model, &messages).await {
+        let output = match self.semantic_chat(&messages).await {
             Ok(o) => o,
             Err(e) => {
                 return Some(AuditReport {

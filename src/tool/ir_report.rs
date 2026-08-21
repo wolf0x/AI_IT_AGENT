@@ -121,7 +121,7 @@ impl Tool for IrReportTool {
         // Default to workspace output directory: %USERPROFILE%\.RustAgent\workspace\output\
         let base_path = args["output_path"].as_str()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{}/output/ir_report_{}", ctx.workspace_dir, file_ts));
+            .unwrap_or_else(|| format!("{}/ir_report_{}", ctx.output_dir(), file_ts));
 
         // Strip extension if provided
         let base_path = base_path.trim_end_matches(".html").trim_end_matches(".pdf").to_string();

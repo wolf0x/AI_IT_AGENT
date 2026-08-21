@@ -265,7 +265,7 @@ impl Tool for BrowserCdpTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let action = args["action"].as_str()
             .ok_or_else(|| "Missing 'action'".to_string())?;
 
@@ -281,7 +281,8 @@ impl Tool for BrowserCdpTool {
 
         // Execute with auto-recovery: if the action fails due to a dead browser,
         // clear state and recover with a freshly launched browser.
-        let result = self.execute_action(action, &args).await;
+        let output_dir = ctx.output_dir();
+        let result = self.execute_action(action, &args, &output_dir).await;
 
         match result {
             Err(ref e) if Self::is_connection_lost(&e.to_string()) => {
@@ -290,7 +291,7 @@ impl Tool for BrowserCdpTool {
                 // Only 'navigate' is meaningful to retry — other actions operate on page
                 // state that is lost when the browser restarts (fresh page = about:blank).
                 if action == "navigate" {
-                    self.execute_action(action, &args).await
+                    self.execute_action(action, &args, &output_dir).await
                 } else {
                     Err(format!(
                         "Browser session was lost and has been restarted with a blank page. \
@@ -316,7 +317,7 @@ impl BrowserCdpTool {
     }
 
     /// Execute a single browser action (called by execute, may be retried).
-    async fn execute_action(&self, action: &str, args: &Value) -> AgentResult<Value> {
+    async fn execute_action(&self, action: &str, args: &Value, output_dir: &str) -> AgentResult<Value> {
         // All actions need the browser initialized
         let page = self.session.get_or_init().await
             .map_err(|e| -> crate::error::AgentError { e.into() })?;
@@ -428,7 +429,9 @@ impl BrowserCdpTool {
                 } else {
                     filename
                 };
-                let path = self.output_dir().join(&file_name);
+                let out = PathBuf::from(output_dir);
+                let _ = std::fs::create_dir_all(&out);
+                let path = out.join(&file_name);
                 let params = CaptureScreenshotParams {
                     format: Some(CaptureScreenshotFormat::Png),
                     ..Default::default()

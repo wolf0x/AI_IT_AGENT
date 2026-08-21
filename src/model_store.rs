@@ -44,6 +44,12 @@ pub fn load_configs(path: &Path) -> Vec<ModelConfig> {
                         }
                     }
                 }
+                // Backfill: older models.json entries without a title default to their name.
+                for cfg in &mut configs {
+                    if cfg.title.trim().is_empty() {
+                        cfg.title = cfg.name.clone();
+                    }
+                }
                 info!(
                     "Loaded {} persisted model config(s) from {} (api keys decrypted)",
                     configs.len(),

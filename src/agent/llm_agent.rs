@@ -730,6 +730,10 @@ impl Agent for LlmAgent {
         let tools = self.tools.clone();
         let working_dir = self.working_dir.clone();
         let workspace_dir = self.workspace_dir.clone();
+        let output_dir_override = match &ctx.tool_output_dir {
+            Some(d) if !d.is_empty() => d.clone(),
+            _ => String::new(),
+        };
         let model = model.to_string();
         let invocation_id = invocation_id.to_string();
         let author = author.to_string();
@@ -1147,14 +1151,14 @@ impl Agent for LlmAgent {
                                         &invocation_id, &author
                                     ))).await;
                                     let msgs = execute_tools_concurrent(
-                                        &tools, &tool_calls, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                        &tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     // Standard sequential execution
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
+                                            &tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1177,13 +1181,13 @@ impl Agent for LlmAgent {
                                 if all_read_only && tool_calls.len() > 1 {
                                     info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
                                     let msgs = execute_tools_concurrent(
-                                        &*tools, &tool_calls, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                        &*tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &*tools, tc, &working_dir, &workspace_dir, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
+                                            &*tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1540,6 +1544,7 @@ async fn execute_tool_call(
     tc: &crate::model::ToolCallDelta,
     working_dir: &str,
     workspace_dir: &str,
+    output_dir: &str,
     invocation_id: &str,
     author: &str,
     tx: &tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
@@ -1624,6 +1629,7 @@ async fn execute_tool_call(
                     // Create progress channel for long-running tools
                     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<String>(32);
                     let ctx = ToolContext::simple(working_dir.to_string(), workspace_dir.to_string())
+                        .with_output_dir(output_dir.to_string())
                         .with_progress(progress_tx);
                     let args_clone = args.clone();
 
@@ -1832,6 +1838,7 @@ async fn execute_tools_concurrent<'a>(
     tool_calls: &'a [crate::model::ToolCallDelta],
     working_dir: &'a str,
     workspace_dir: &'a str,
+    output_dir: &'a str,
     invocation_id: &'a str,
     author: &'a str,
     tx: &'a tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
@@ -1841,7 +1848,7 @@ async fn execute_tools_concurrent<'a>(
 ) -> Vec<ChatMessage> {
     use futures::future::join_all;
     let futs = tool_calls.iter().map(|tc| {
-        execute_tool_call(tools, tc, working_dir, workspace_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries, None)
+        execute_tool_call(tools, tc, working_dir, workspace_dir, output_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries, None)
     });
     join_all(futs).await
 }

@@ -169,7 +169,7 @@ impl Tool for WebFetchTool {
                 ctx.base.base.session_id.get(..8).unwrap_or("sess"),
                 chrono::Utc::now().format("%Y%m%d_%H%M%S%3f")
             );
-            let dir = std::path::Path::new(&ctx.workspace_dir).join("output").join("fetch");
+            let dir = std::path::Path::new(&ctx.output_dir()).join("fetch");
             let _ = std::fs::create_dir_all(&dir);
             let path = dir.join(&name);
             match std::fs::write(&path, &body_text) {

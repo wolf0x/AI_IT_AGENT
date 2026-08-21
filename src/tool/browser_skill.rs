@@ -190,7 +190,7 @@ impl Tool for BrowserSkillTool {
     fn is_read_only(&self) -> bool { false }
     fn category(&self) -> &str { "write" }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
         let action = args.get("action")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing 'action' parameter".to_string())?;
@@ -256,10 +256,9 @@ impl Tool for BrowserSkillTool {
                     p.to_string()
                 } else {
                     let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                    self.output_dir()
-                        .join(format!("bsk_{}.png", ts))
-                        .to_string_lossy()
-                        .to_string()
+                    let out = std::path::PathBuf::from(ctx.output_dir());
+                    let _ = std::fs::create_dir_all(&out);
+                    out.join(format!("bsk_{}.png", ts)).to_string_lossy().to_string()
                 };
                 let result = self.run_bsk(&["screenshot", "--out", &screenshot_path, "--json"], Some(&sid)).await?;
                 // Return workspace-relative URL for display

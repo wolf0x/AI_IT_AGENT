@@ -568,6 +568,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         human_intervention_enabled,
         primary_model: Arc::new(std::sync::RwLock::new(config.agent.primary_model.clone())),
         fallback_model: Arc::new(std::sync::RwLock::new(config.agent.fallback_model.clone())),
+        expert_role_models: Arc::new(std::sync::RwLock::new(config.agent.expert_role_models.clone())),
         timezone_offset: Arc::new(std::sync::RwLock::new(config.agent.timezone_offset)),
     });
 
