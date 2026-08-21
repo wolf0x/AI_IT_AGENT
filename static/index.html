@@ -3061,7 +3061,8 @@ function renderQuickActions(){
   }
 }
 function toggleQuickAction(id,on){const en=qaEnabled();en[id]=on;qaSave(en);renderQuickActions();}
-function runQuickAction(id){const a=QUICK_ACTIONS.find(x=>x.id===id);if(!a)return;switchPage('chat',document.querySelector('.nav-tab'));document.getElementById('msgInput').value=a.prompt;sendMsg();}
+function uiLang(){try{const p=(localStorage.getItem('ra_lang')||navigator.language||'').toLowerCase();return p.indexOf('zh')===0?'zh':'en';}catch(e){return 'en';}}
+function runQuickAction(id){const a=QUICK_ACTIONS.find(x=>x.id===id);if(!a)return;switchPage('chat',document.querySelector('.nav-tab'));document.getElementById('msgInput').value=(uiLang()==='zh'?a.prompt:a.tip)||a.prompt;sendMsg();}
 
 function toggleTokenUsage(){
   const section=document.querySelector('.collapsible');
