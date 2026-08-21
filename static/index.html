@@ -3027,18 +3027,18 @@ async function loadTodayUsage(){
 
 // Quick Actions catalog
 const QUICK_ACTIONS=[
-  {id:'health',   icon:'🖥',  label:'系统健康检查',  sub:'CPU / 内存 / 磁盘 / 服务',  grad:'qa-g1',  def:true,  hint:'推荐常开',   prompt:"执行系统健康检查：采集 CPU、内存、磁盘、关键进程与服务状态（sys_info / sys_process / sys_service），给出健康度评估与瓶颈、异常提示。"},
-  {id:'network',  icon:'🌐',  label:'网络故障排查',  sub:'连通 / 路由 / DNS',         grad:'qa-g2',  def:true,  hint:'推荐常开',   prompt:"执行网络故障排查：检查本机连通性、路由表、DNS、活动网络连接（ipconfig / ping / tracert / netstat / ir_network），定位故障并给出建议。"},
-  {id:'security', icon:'🛡',  label:'安全快速分析',  sub:'进程 / 持久化 / IOC',       grad:'qa-g3',  def:true,  hint:'推荐常开',   prompt:"执行安全快速分析：并行采集进程、账户、持久化、网络痕迹（ir_scan / ir_process / ir_account / ir_persistence / ir_network），用 ir_analyzer 分析并输出 IOC 摘要与风险提示。"},
-  {id:'triage',   icon:'🔍',  label:'Quick Triage', sub:'快速告警分诊',               grad:'qa-g4',  def:false, hint:'应急',       prompt:"Run a quick incident triage: execute ir_scan, ir_process, ir_account, ir_persistence, ir_network in parallel, then analyze with ir_analyzer and generate a summary."},
-  {id:'report',   icon:'📋',  label:'Generate Report', sub:'生成调查 / 应急报告',     grad:'qa-g5',  def:false, hint:'报告',       prompt:"Generate an IR report from the latest findings in PDF format."},
-  {id:'timeline', icon:'🕘',  label:'View Timeline', sub:'近 24 小时安全事件时间线',  grad:'qa-g6',  def:false, hint:'调查',       prompt:"Show me a timeline of security events from the last 24 hours using ir_timeline."},
-  {id:'hunt',     icon:'🎯',  label:'Full Hunt',    sub:'全量威胁狩猎',               grad:'qa-g7',  def:false, hint:'深度',       prompt:"Perform a full threat hunt: run all IR collection tools, malware scan on suspicious files, deep analysis, and generate a comprehensive report."},
-  {id:'desktop',  icon:'🛠',  label:'桌面运维',      sub:'自启动 / 计划任务 / 日志',   grad:'qa-g8',  def:false, hint:'运维',       prompt:"执行桌面运维巡检：检查系统自启动项、计划任务、最近异常系统日志与磁盘/临时文件占用，排查影响桌面使用体验的问题并给出优化建议。"},
-  {id:'respond',  icon:'🚨',  label:'应急响应',      sub:'采集→分析→遏制',           grad:'qa-g9',  def:false, hint:'应急',       prompt:"启动应急响应：评估当前告警与已知 IOC，按采集→分析→遏制流程执行（采集使用 ir_* 工具，遏制类操作先确认），给出处置建议与后续跟踪。"},
-  {id:'forensic', icon:'🔬',  label:'数字取证',      sub:'证据采集 / 时间线 / 可追溯', grad:'qa-g10', def:false, hint:'取证',       prompt:"执行数字取证：采集事件日志、文件系统痕迹、进程与网络证据，重建事件时间线并整理可追溯的证据链，输出取证报告。"},
-  {id:'malware',  icon:'🦠',  label:'恶意软件分析',  sub:'静态 / 动态检测与判定',     grad:'qa-g11', def:false, hint:'深度',       prompt:"对可疑文件执行恶意软件分析：使用 malware_scan 扫描与 malware_deep 深度分析，给出是否恶意、家族与处置建议。"}
-];
+  {id:'health',   icon:'🖥',  label:'System Health',            grad:'qa-g1',  def:true,  hint:'ON',   prompt:"执行系统健康检查：采集 CPU、内存、磁盘、关键进程与系统服务状态，给出健康度评估与瓶颈、异常提示。"},
+  {id:'network',  icon:'🌐',  label:'Network Troubleshooting',  grad:'qa-g2',  def:true,  hint:'ON',   prompt:"执行网络故障排查：检查本机连通性、路由表、DNS 与活动网络连接，定位故障原因并给出修复建议。"},
+  {id:'security', icon:'🛡',  label:'Security Quick Scan',      grad:'qa-g3',  def:true,  hint:'ON',   prompt:"执行安全快速分析：并行采集进程、账户、持久化与网络痕迹，分析并输出 IOC 摘要与风险提示。"},
+  {id:'triage',   icon:'🔍',  label:'Quick Triage',             grad:'qa-g4',  def:false, hint:'IR',   prompt:"执行快速告警分诊：采集进程、账户、持久化与网络痕迹并进行分析，输出处置摘要与建议。"},
+  {id:'report',   icon:'📋',  label:'Generate Report',          grad:'qa-g5',  def:false, hint:'Report', prompt:"根据最新调查发现，生成一份 PDF 格式的调查 / 应急报告。"},
+  {id:'timeline', icon:'🕘',  label:'View Timeline',            grad:'qa-g6',  def:false, hint:'IR',   prompt:"展示最近 24 小时的安全事件时间线。"},
+  {id:'hunt',     icon:'🎯',  label:'Full Hunt',                grad:'qa-g7',  def:false, hint:'Deep',  prompt:"执行全量威胁狩猎：采集所有可用痕迹，对可疑文件进行恶意软件扫描与深度分析，并生成综合报告。"},
+  {id:'desktop',  icon:'🛠',  label:'Desktop Ops',              grad:'qa-g8',  def:false, hint:'Ops',   prompt:"执行桌面运维巡检：检查系统自启动项、计划任务、最近异常系统日志与磁盘 / 临时文件占用，排查影响使用体验的问题并给出优化建议。"},
+  {id:'respond',  icon:'🚨',  label:'Incident Response',        grad:'qa-g9',  def:false, hint:'IR',   prompt:"启动应急响应：评估当前告警与已知 IOC，按采集、分析、遏制流程执行，给出处置建议与后续跟踪。"},
+  {id:'forensic', icon:'🔬',  label:'Digital Forensics',        grad:'qa-g10', def:false, hint:'DF',   prompt:"执行数字取证：采集事件日志、文件系统痕迹、进程与网络证据，重建事件时间线并整理可追溯的证据链，输出取证报告。"},
+  {id:'malware',  icon:'🦠',  label:'Malware Analysis',         grad:'qa-g11', def:false, hint:'Deep',  prompt:"对可疑文件执行恶意软件分析，判定是否恶意、所属家族并给出处置建议。"}
+]
 const QA_KEY='ra_quick_actions';
 function qaEnabled(){
   let en={};
@@ -3053,11 +3053,11 @@ function renderQuickActions(){
   if(nav){
     const sel=QUICK_ACTIONS.filter(a=>en[a.id]);
     nav.classList.toggle('has',sel.length>0);
-    nav.innerHTML='<div class="qa-nav-title">⚡ 快捷诊断</div>'+sel.map(a=>'<button class="qa-nav-tile '+a.grad+'" title="'+a.prompt+'" onclick="runQuickAction(\''+a.id+'\')"><span class="ic">'+a.icon+'</span><span class="qa-txt"><b>'+a.label+'</b><small>'+a.sub+'</small></span><span class="go">→</span></button>').join('');
+    nav.innerHTML='<div class="qa-nav-title">⚡ Quick Actions</div>'+sel.map(a=>'<button class="qa-nav-tile '+a.grad+'" title="'+a.prompt+'" onclick="runQuickAction(\''+a.id+'\')"><span class="ic">'+a.icon+'</span><span class="qa-txt"><b>'+a.label+'</b></span><span class="go">→</span></button>').join('');
   }
   const list=document.getElementById('qaChecklist');
   if(list){
-    list.innerHTML=QUICK_ACTIONS.map(a=>{const on=en[a.id]?' on':'';const ch=en[a.id]?'checked':'';return '<label class="qa-option'+on+'"><input type="checkbox" '+ch+' onchange="toggleQuickAction(\''+a.id+'\',this.checked)"><span class="qa-opt-ic">'+a.icon+'</span><span class="qa-opt-txt"><b>'+a.label+'</b><small>'+a.sub+(a.hint?'<span class="qa-opt-hint">'+a.hint+'</span>':'')+'</small></span></label>';}).join('');
+    list.innerHTML=QUICK_ACTIONS.map(a=>{const on=en[a.id]?' on':'';const ch=en[a.id]?'checked':'';return '<label class="qa-option'+on+'"><input type="checkbox" '+ch+' onchange="toggleQuickAction(\''+a.id+'\',this.checked)"><span class="qa-opt-ic">'+a.icon+'</span><span class="qa-opt-txt"><b>'+a.label+'</b>'+(a.hint?'<span class="qa-opt-hint">'+a.hint+'</span>':'')+'</span></label>';}).join('');
   }
 }
 function toggleQuickAction(id,on){const en=qaEnabled();en[id]=on;qaSave(en);renderQuickActions();}
