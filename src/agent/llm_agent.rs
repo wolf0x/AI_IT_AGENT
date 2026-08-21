@@ -849,6 +849,16 @@ impl Agent for LlmAgent {
 
             // Rabbit hole detection: track identical tool calls (same name + same args)
             let mut call_signatures: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            // Automatic stall self-heal state (no human required).
+            // last_result: per-tool (last content digest, consecutive repeat count).
+            // no_new_state_iters: consecutive iterations that produced no new result.
+            // reconsider_events: number of automatic strategy-reconsiderations fired.
+            const MAX_AUTO_RECONSIDERS: usize = 3;
+            const RESULT_REPEAT_THRESHOLD: usize = 3;
+            const NO_STATE_ITERS: usize = 3;
+            let mut last_result: std::collections::HashMap<String, (u64, usize)> = std::collections::HashMap::new();
+            let mut no_new_state_iters: usize = 0;
+            let mut reconsider_events: usize = 0;
             // Track which model we're using (for fallback)
             let mut active_model = model.clone();
             let mut used_fallback = false;
@@ -1142,6 +1152,7 @@ impl Agent for LlmAgent {
                             preauth_profile.clone(),
                         );
 
+                        let hist_start = history.len();
                         // Execute based on strategy
                         match strategy {
                             ToolExecutionStrategy::Sequential => {
@@ -1199,6 +1210,91 @@ impl Agent for LlmAgent {
                                     }
                                 }
                             }
+                        }
+
+                        // ── Automatic stall detection & self-heal (no human required) ──
+                        // After tool execution, tracks repeated identical tool results and "no new
+                        // state" windows. On stall it condenses duplicated results in history,
+                        // injects an automatic strategy reconsideration, and (bounded) terminates
+                        // gracefully with a summary if still stuck. No human intervention needed.
+                        let tool_msgs = collect_tool_results(&history[hist_start..]);
+                        let mut stalled = false;
+                        if !tool_msgs.is_empty() {
+                            let mut saw_new_state = false;
+                            for (name, content) in &tool_msgs {
+                                let dig = content_digest(content);
+                                let entry = last_result.entry(name.clone()).or_insert((dig, 0));
+                                if entry.0 == dig {
+                                    entry.1 += 1;
+                                    if entry.1 >= RESULT_REPEAT_THRESHOLD {
+                                        info!("[session:{}] Stall: '{}' returned identical result {}x", session_id, name, entry.1);
+                                        stalled = true;
+                                    }
+                                } else {
+                                    entry.0 = dig;
+                                    entry.1 = 1;
+                                    saw_new_state = true;
+                                }
+                            }
+                            if !saw_new_state && !stalled {
+                                no_new_state_iters += 1;
+                                if no_new_state_iters >= NO_STATE_ITERS {
+                                    info!("[session:{}] Stall: no new state for {} iterations", session_id, no_new_state_iters);
+                                    stalled = true;
+                                }
+                            } else {
+                                no_new_state_iters = 0;
+                            }
+                        }
+
+                        if stalled {
+                            last_result.clear();
+                            no_new_state_iters = 0;
+                            reconsider_events += 1;
+                            let deduped = dedup_tool_results(&mut history);
+                            if deduped > 0 {
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("
+
+*[Auto-stall: {} repeated result(s) merged - reconsidering from a clean state]*
+
+", deduped),
+                                    &invocation_id, &author
+                                ))).await;
+                            }
+
+                            if reconsider_events >= MAX_AUTO_RECONSIDERS {
+                                warn!("[session:{}] Auto-stall: no progress after {} reconsiderations; terminating with summary", session_id, reconsider_events);
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("
+
+*[Auto-stall] No progress after {} reconsiderations - stopping with a best-effort summary. Send a new message to continue.*
+
+", reconsider_events),
+                                    &invocation_id, &author
+                                ))).await;
+                                let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
+                                for s in &cleanup_sessions { let _ = s.close().await; }
+                                return;
+                            }
+
+                            history.push(ChatMessage::user(
+                                "[AUTO-STALL] The previous tool call(s) are not making progress - the observed state is unchanged. \
+                                 Reconsider the CORRECTNESS of your next tool call before acting:
+                                 1. Re-validate the current goal and whether your interpretation of it is correct.
+                                 2. Was the previous tool call actually valid here (wrong target, blocked by an overlay, or a misread result)?
+                                 3. Adopt a MATERIALLY DIFFERENT approach: a different tool, different target/arguments, verify the state differently, or state concisely what is blocking you.
+                                 Do NOT repeat the same tool call expecting a different result.",
+                            ));
+                            let _ = tx.send(Ok(AgentEvent::text(
+                                &format!("
+
+*[Auto-stall detected - reconsidering approach ({}/{})]*
+
+", reconsider_events, MAX_AUTO_RECONSIDERS),
+                                &invocation_id, &author
+                            ))).await;
+                            continue;
                         }
 
                         // ── Save checkpoint after tool execution ──
@@ -1862,6 +1958,60 @@ async fn execute_tools_concurrent<'a>(
 /// Rabbit-hole detection: tracks how many times a tool was called with the same
 /// signature. Returns `Some((count, warning_text))` when the threshold is
 /// reached (and resets the counter so it can trigger again later).
+/// Stable-enough content digest for a tool result (whitespace-trimmed hash).
+/// Used by the automatic stall detector to recognize "the same state came back".
+fn content_digest(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.trim().hash(&mut h);
+    h.finish()
+}
+
+/// Collect (tool_name, content) pairs from tool-role messages in a slice.
+fn collect_tool_results(messages: &[ChatMessage]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for m in messages {
+        if m.role == "tool" {
+            if let Some(txt) = m.content_as_text() {
+                let name = m.name.clone().unwrap_or_else(|| "tool".to_string());
+                out.push((name, txt));
+            }
+        }
+    }
+    out
+}
+
+/// Deduplicate repeated identical tool results in history (keep the LAST
+/// occurrence of each distinct (name, content-digest), replace earlier ones
+/// with a short placeholder). Returns how many were replaced.
+fn dedup_tool_results(history: &mut Vec<ChatMessage>) -> usize {
+    let mut seen: std::collections::HashMap<(String, u64), usize> = std::collections::HashMap::new();
+    for (i, m) in history.iter().enumerate() {
+        if m.role == "tool" {
+            if let Some(txt) = m.content_as_text() {
+                let name = m.name.clone().unwrap_or_else(|| "tool".to_string());
+                seen.insert((name, content_digest(&txt)), i);
+            }
+        }
+    }
+    let mut replaced = 0usize;
+    for (i, m) in history.iter_mut().enumerate() {
+        if m.role != "tool" { continue; }
+        let Some(txt) = m.content_as_text() else { continue; };
+        let name = m.name.clone().unwrap_or_else(|| "tool".to_string());
+        let key = (name.clone(), content_digest(&txt));
+        let last_idx = seen[&key];
+        if i != last_idx {
+            m.content = Some(Value::String(format!(
+                "[{} returned the same result - merged earlier duplicate; see the last result above]",
+                name
+            )));
+            replaced += 1;
+        }
+    }
+    replaced
+}
+
 fn rabbit_hole_check(
     call_signatures: &mut std::collections::HashMap<String, usize>,
     signature: &str,
