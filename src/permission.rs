@@ -31,7 +31,7 @@ pub fn tool_category(name: &str) -> &'static str {
         "file_delete" => "delete",
         // Modify — changes state of existing resources
         "file_modify" | "sys_process" | "sys_service" | "ir_process" | "ir_vss"
-        | "browser_cdp" | "browser_skill" | "cron_manage" | "cu_window_activate" => "modify",
+        | "browser_cdp" | "cron_manage" | "cu_window_activate" => "modify",
         // Execute — arbitrary code execution
         "shell_exec" | "app_launch" | "ir_memdump" | "cu_mouse" | "cu_keyboard" | "cu_process_kill" | "cu_ui_interact" => "execute",
         // Default: unknown tools (MCP, external) require endorsement

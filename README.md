@@ -137,7 +137,7 @@ RustAgent 实现了分类门控（Category-based Gates）+ 意图策略（Intent
 
 **恶意软件分析**：Boreal YARA 规则扫描（支持自定义规则集，本地文件加载）+ PE 深度分析（goblin 解析导入表/节区/资源 + iced-x86 反汇编关键函数），可对可疑文件进行静态分析
 
-**浏览器自动化**：chromiumoxide CDP 隔离浏览器（无登录态，用于安全搜索）+ 用户浏览器控制（BSK 扩展，用于需要登录态的操作）
+**浏览器自动化**：chromiumoxide CDP 隔离浏览器（无登录态，用于安全搜索）+ 可直接驱动用户已有浏览器的登录态可通过外部 BrowserSkill（bsk，需自行安装）或 browser_cdp 的已认证会话实现
 
 **Web 工具**：WebFetch（抓取页面内容分析）/ WebSearch（搜索漏洞情报、CVE 信息）/ ImageSearch / ImageGen
 

@@ -137,7 +137,7 @@ These 14 tools can be automatically orchestrated by the Agent — engineers only
 
 **Malware Analysis**: Boreal YARA rule scanning (custom rule sets, local file loading) + PE deep analysis (goblin parsing of imports/sections/resources + iced-x86 disassembly of key functions) for static analysis of suspicious files
 
-**Browser Automation**: chromiumoxide CDP isolated browser (no login state, for safe browsing) + user browser control (BSK extension, for operations requiring login state)
+**Browser Automation**: chromiumoxide CDP isolated browser (no login state, for safe browsing) + login-state browser control is external via the separately-installed BrowserSkill (bsk) or an authenticated browser_cdp session
 
 **Web Tools**: WebFetch (page content retrieval and analysis) / WebSearch (vulnerability intelligence, CVE information) / ImageSearch / ImageGen
 

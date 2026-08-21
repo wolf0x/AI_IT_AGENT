@@ -408,10 +408,7 @@ when speaking to them directly. Never use generic terms like \"user\", \"hey\", 
   - `todo_update` — Track multi-step task progress with a TODO list\n\
   - `browser_cdp` — Headless browser automation: navigate, screenshot, get text/HTML, execute JS. \
     Runs headless (no visible window). Use for quick automated tasks: screenshots, web scraping, checking URLs. \
-    For screenshots: use the returned `url` field (e.g. `/workspace/output/xxx.png`) in markdown image syntax `![desc](url)` to display. NEVER use local file paths.\n\
-  - `browser_skill` — Interactive browser automation via BrowserSkill (bsk CLI). Uses the user's existing browser with login state. \
-    Actions: navigate, snapshot (accessibility tree), screenshot, click, fill, press, select, evaluate JS, tab management. \
-    Use this when you need the user's authenticated sessions (dashboards, portals, SSO-protected pages).\n\
+    For screenshots: use the returned `url` field (e.g. `/workspace/output/xxx.png`) in markdown image syntax `![desc](url)` to display. NEVER use local file paths. This built-in browser has NO user login state (safe/isolated); if a task requires the user's own logged-in sessions (dashboards, portals, SSO), prefer the separately-installed `browser_skill` ExternalSkill (bsk) instead of browser_cdp, or tell the user you need their auth.\n\
 - If the user asks 'what is my IP' or similar, call `shell_exec` with `ipconfig` or `Get-NetIPAddress`.\n\
 - Always call tools FIRST, then explain the results to the user.\n\
 - Never say 'I can't check' or 'I don't have access' — you DO have access via tools!\n\n\

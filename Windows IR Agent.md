@@ -261,7 +261,7 @@ RustAgent 选择了 **OpenAI-compatible** 协议作为统一标准。这意味�
 | **文件操作** | `file_read/write/delete/list/modify` | 完整文件 CRUD |
 | **系统信息** | `sys_info/process/service/eventlog` | 只读系统查询 |
 | **IR 工具 (15+)** | `ir_scan/process/persistence/network/eventlog/file/driver/timeline/account/memdump/vss/analyzer/report/eml/pcap` | 专业应急响应工具链 |
-| **浏览器** | `browser_cdp` / `browser_skill` | Headless CDP + 交互式浏览器自动化 |
+| **浏览器** | `browser_cdp` | Headless CDP + 交互式浏览器自动化 |
 | **Computer Use** | `cu_screenshot/mouse/keyboard/...` | GUI 桌面自动化 |
 | **记忆** | `memory_md` / `todo_update` | 长期记忆 + 任务跟踪 |
 | **技能** | `list/install/remove_skill` | 技能的元工具 |
