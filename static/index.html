@@ -151,7 +151,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .output-hdr{display:flex;align-items:center;justify-content:space-between}
 .btn-open-folder{background:none;border:none;cursor:pointer;font-size:14px;padding:0 2px;opacity:.65;line-height:1}
 .btn-open-folder:hover{opacity:1}
-.output-list{overflow-y:auto;padding:6px 8px;font-size:11px;flex:0 0 auto;height:158px}
+.output-list{overflow:hidden;padding:6px 8px;font-size:11px;flex:0 0 auto;height:158px}
 .output-item{display:flex;align-items:center;gap:6px;padding:5px 7px;margin-bottom:4px;border-radius:5px;background:rgba(0,0,0,.03);border:1px solid var(--border)}
 .output-item:hover{background:rgba(0,0,0,.06)}
 .output-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--t2);cursor:pointer}
@@ -464,7 +464,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 
 /* Responsive */
 @media(max-width:1000px){.log-panel{display:none}.sidebar{width:160px}}
-@media(max-width:700px){body{padding:0}.container{height:100vh;border-radius:0;border:0}.sidebar{width:50px}.sidebar-hdr h2,.sidebar-hdr p,.nav-tab span,.sidebar-ftr{display:none}.msg-body{max-width:85%!important}}
+@media(max-width:700px){body{padding:0}.container{height:100vh;border-radius:0;border:0}.sidebar{width:50px}.sidebar-hdr h2,.sidebar-hdr p,.nav-tab span,.sidebar-ftr,.qa-nav{display:none}.msg-body{max-width:85%!important}}
 
 /* Checkpoint banner */
 .cp-banner{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:10px 14px;margin:0 12px 8px 12px;font-size:13px}
@@ -516,7 +516,43 @@ input:checked+.slider:before{transform:translateX(20px)}
 .action-btn.report:hover{border-color:#8b5cf6;box-shadow:0 8px 20px rgba(139,92,246,.15)}
 .action-btn.timeline:hover{border-color:#06b6d4;box-shadow:0 8px 20px rgba(6,182,212,.15)}
 .action-btn.hunt:hover{border-color:#f59e0b;box-shadow:0 8px 20px rgba(245,158,11,.15)}
-.activity-empty{color:#94a3b8;font-size:13px;text-align:center;padding:40px 20px}
+
+/* ===== Sidebar quick-action nav (gradient tiles) ===== */
+.qa-nav{margin:12px 10px 0;padding:10px;border-radius:14px;background:#263349;display:none;flex-direction:column;gap:9px;max-height:44vh;overflow-y:auto;flex-shrink:1}
+.qa-nav.has{display:flex}
+.qa-nav-title{font-size:10px;font-weight:700;letter-spacing:.6px;color:#7f93ad;text-transform:uppercase;margin-bottom:2px;padding:0 2px}
+.qa-nav-tile{display:flex;align-items:center;gap:12px;padding:12px 13px;border-radius:13px;color:#fff;cursor:pointer;transition:.2s;box-shadow:0 9px 20px rgba(0,0,0,.28);position:relative;overflow:hidden;border:none;text-align:left;font-family:inherit;width:100%}
+.qa-nav-tile::after{content:'';position:absolute;inset:0;background:linear-gradient(120deg,rgba(255,255,255,.18),transparent 45%);pointer-events:none}
+.qa-nav-tile:hover{transform:translateY(-3px);box-shadow:0 14px 28px rgba(0,0,0,.38)}
+.qa-nav-tile .ic{width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,.22);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.qa-nav-tile .qa-txt{flex:1;min-width:0}
+.qa-nav-tile b{display:block;font-size:12.5px;color:#fff}
+.qa-nav-tile small{display:block;font-size:10.5px;opacity:.88;color:#fff;margin-top:1px}
+.qa-nav-tile .go{margin-left:auto;font-size:14px;opacity:.85;flex-shrink:0;transition:.18s}
+.qa-nav-tile:hover .go{transform:translateX(2px);opacity:1}
+.qa-g1{background:linear-gradient(135deg,#2563eb,#06b6d4)}
+.qa-g2{background:linear-gradient(135deg,#f97316,#f43f5e)}
+.qa-g3{background:linear-gradient(135deg,#8b5cf6,#ec4899)}
+.qa-g4{background:linear-gradient(135deg,#16a34a,#06b6d4)}
+.qa-g5{background:linear-gradient(135deg,#0ea5e9,#6366f1)}
+.qa-g6{background:linear-gradient(135deg,#f59e0b,#ef4444)}
+.qa-g7{background:linear-gradient(135deg,#10b981,#3b82f6)}
+.qa-g8{background:linear-gradient(135deg,#64748b,#06b6d4)}
+.qa-g9{background:linear-gradient(135deg,#ef4444,#f97316)}
+.qa-g10{background:linear-gradient(135deg,#8b5cf6,#3b82f6)}
+.qa-g11{background:linear-gradient(135deg,#0d9488,#84cc16)}
+/* ===== Dashboard Quick Action checklist ===== */
+.qa-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(225px,1fr));gap:12px}
+.qa-option{display:flex;align-items:flex-start;gap:11px;padding:14px;border:2px solid #e2e8f0;border-radius:12px;background:linear-gradient(180deg,#fff 0%,#f8fafc 100%);cursor:pointer;transition:.2s;font-family:inherit}
+.qa-option:hover{border-color:#c7d2fe;transform:translateY(-1px)}
+.qa-option.on{border-color:#6366f1;background:linear-gradient(180deg,#eef2ff 0%,#f8fafc 100%)}
+.qa-option input{width:17px;height:17px;accent-color:#6366f1;margin-top:2px;flex-shrink:0;cursor:pointer}
+.qa-opt-ic{font-size:24px;flex-shrink:0;filter:drop-shadow(0 2px 3px rgba(0,0,0,.12))}
+.qa-opt-txt{flex:1}
+.qa-opt-txt b{display:block;font-size:13px;color:#0f172a}
+.qa-opt-txt small{display:block;font-size:11px;color:#64748b;margin-top:2px}
+.qa-opt-hint{display:inline-block;font-size:10px;color:#4f46e5;background:#eef2ff;border-radius:20px;padding:2px 8px;margin-top:6px}
+ .activity-empty{color:#94a3b8;font-size:13px;text-align:center;padding:40px 20px}
 .token-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:16px}
 .token-card{padding:18px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);border-radius:10px;border-left:4px solid #3498db;transition:transform .2s}
 .token-card:hover{transform:translateY(-2px)}
@@ -628,6 +664,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <button class="nav-tab" onclick="switchPage('cron',this)">&#9200; <span>CRON</span></button>
       <button class="nav-tab" onclick="switchPage('dashboard',this)">&#128202; <span>Dashboard</span></button>
     </div>
+    <div class="qa-nav" id="qaNav"></div>
     <div class="sidebar-ftr">
       <span class="status-dot" id="statusDot"></span>
       <span id="statusText">Disconnected</span>
@@ -975,24 +1012,7 @@ input:checked+.slider:before{transform:translateX(20px)}
           <div class="dash-section-header">
             <h3>&#9889; Quick Actions</h3>
           </div>
-          <div class="quick-actions">
-            <button class="action-btn triage" onclick="dashAction('triage')">
-              <span class="action-icon">&#128269;</span>
-              <span class="action-text">Quick Triage</span>
-            </button>
-            <button class="action-btn report" onclick="dashAction('report')">
-              <span class="action-icon">&#128203;</span>
-              <span class="action-text">Generate Report</span>
-            </button>
-            <button class="action-btn timeline" onclick="dashAction('timeline')">
-              <span class="action-icon">&#128336;</span>
-              <span class="action-text">View Timeline</span>
-            </button>
-            <button class="action-btn hunt" onclick="dashAction('hunt')">
-              <span class="action-icon">&#127919;</span>
-              <span class="action-text">Full Hunt</span>
-            </button>
-          </div>
+          <div class="qa-list" id="qaChecklist"></div>
         </div>
 
         <!-- Usage History (Collapsible) -->
@@ -2917,6 +2937,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   checkCheckpoints();
   loadOutputs();
   loadTodos();
+  renderQuickActions();
   if(!msgHist.length)addLog('RustAgent ready','info');
   updateStatus();
   const modelSel=document.getElementById('modelSel');
@@ -3003,20 +3024,44 @@ async function loadTodayUsage(){
   }catch(e){}
 }
 
-function dashAction(action){
-  const prompts={
-    'triage':'Run a quick incident triage: execute ir_scan, ir_process, ir_account, ir_persistence, ir_network in parallel, then analyze with ir_analyzer and generate a summary.',
-    'report':'Generate an IR report from the latest findings in PDF format.',
-    'timeline':'Show me a timeline of security events from the last 24 hours using ir_timeline.',
-    'hunt':'Perform a full threat hunt: run all IR collection tools, malware scan on suspicious files, deep analysis, and generate a comprehensive report.'
-  };
-  const prompt=prompts[action];
-  if(!prompt)return;
-  // Switch to chat and send
-  switchPage('chat',document.querySelector('.nav-tab'));
-  document.getElementById('msgInput').value=prompt;
-  sendMsg();
+
+// Quick Actions catalog
+const QUICK_ACTIONS=[
+  {id:'health',   icon:'🖥',  label:'系统健康检查',  sub:'CPU / 内存 / 磁盘 / 服务',  grad:'qa-g1',  def:true,  hint:'推荐常开',   prompt:"执行系统健康检查：采集 CPU、内存、磁盘、关键进程与服务状态（sys_info / sys_process / sys_service），给出健康度评估与瓶颈、异常提示。"},
+  {id:'network',  icon:'🌐',  label:'网络故障排查',  sub:'连通 / 路由 / DNS',         grad:'qa-g2',  def:true,  hint:'推荐常开',   prompt:"执行网络故障排查：检查本机连通性、路由表、DNS、活动网络连接（ipconfig / ping / tracert / netstat / ir_network），定位故障并给出建议。"},
+  {id:'security', icon:'🛡',  label:'安全快速分析',  sub:'进程 / 持久化 / IOC',       grad:'qa-g3',  def:true,  hint:'推荐常开',   prompt:"执行安全快速分析：并行采集进程、账户、持久化、网络痕迹（ir_scan / ir_process / ir_account / ir_persistence / ir_network），用 ir_analyzer 分析并输出 IOC 摘要与风险提示。"},
+  {id:'triage',   icon:'🔍',  label:'Quick Triage', sub:'快速告警分诊',               grad:'qa-g4',  def:false, hint:'应急',       prompt:"Run a quick incident triage: execute ir_scan, ir_process, ir_account, ir_persistence, ir_network in parallel, then analyze with ir_analyzer and generate a summary."},
+  {id:'report',   icon:'📋',  label:'Generate Report', sub:'生成调查 / 应急报告',     grad:'qa-g5',  def:false, hint:'报告',       prompt:"Generate an IR report from the latest findings in PDF format."},
+  {id:'timeline', icon:'🕘',  label:'View Timeline', sub:'近 24 小时安全事件时间线',  grad:'qa-g6',  def:false, hint:'调查',       prompt:"Show me a timeline of security events from the last 24 hours using ir_timeline."},
+  {id:'hunt',     icon:'🎯',  label:'Full Hunt',    sub:'全量威胁狩猎',               grad:'qa-g7',  def:false, hint:'深度',       prompt:"Perform a full threat hunt: run all IR collection tools, malware scan on suspicious files, deep analysis, and generate a comprehensive report."},
+  {id:'desktop',  icon:'🛠',  label:'桌面运维',      sub:'自启动 / 计划任务 / 日志',   grad:'qa-g8',  def:false, hint:'运维',       prompt:"执行桌面运维巡检：检查系统自启动项、计划任务、最近异常系统日志与磁盘/临时文件占用，排查影响桌面使用体验的问题并给出优化建议。"},
+  {id:'respond',  icon:'🚨',  label:'应急响应',      sub:'采集→分析→遏制',           grad:'qa-g9',  def:false, hint:'应急',       prompt:"启动应急响应：评估当前告警与已知 IOC，按采集→分析→遏制流程执行（采集使用 ir_* 工具，遏制类操作先确认），给出处置建议与后续跟踪。"},
+  {id:'forensic', icon:'🔬',  label:'数字取证',      sub:'证据采集 / 时间线 / 可追溯', grad:'qa-g10', def:false, hint:'取证',       prompt:"执行数字取证：采集事件日志、文件系统痕迹、进程与网络证据，重建事件时间线并整理可追溯的证据链，输出取证报告。"},
+  {id:'malware',  icon:'🦠',  label:'恶意软件分析',  sub:'静态 / 动态检测与判定',     grad:'qa-g11', def:false, hint:'深度',       prompt:"对可疑文件执行恶意软件分析：使用 malware_scan 扫描与 malware_deep 深度分析，给出是否恶意、家族与处置建议。"}
+];
+const QA_KEY='ra_quick_actions';
+function qaEnabled(){
+  let en={};
+  try{const s=localStorage.getItem(QA_KEY);if(s){const o=JSON.parse(s);QUICK_ACTIONS.forEach(a=>en[a.id]=!!o[a.id]);}}catch(e){}
+  QUICK_ACTIONS.forEach(a=>{if(en[a.id]===undefined)en[a.id]=a.def;});
+  return en;
 }
+function qaSave(en){try{localStorage.setItem(QA_KEY,JSON.stringify(en));}catch(e){}}
+function renderQuickActions(){
+  const en=qaEnabled();
+  const nav=document.getElementById('qaNav');
+  if(nav){
+    const sel=QUICK_ACTIONS.filter(a=>en[a.id]);
+    nav.classList.toggle('has',sel.length>0);
+    nav.innerHTML='<div class="qa-nav-title">⚡ 快捷诊断</div>'+sel.map(a=>'<button class="qa-nav-tile '+a.grad+'" title="'+a.prompt+'" onclick="runQuickAction(\''+a.id+'\')"><span class="ic">'+a.icon+'</span><span class="qa-txt"><b>'+a.label+'</b><small>'+a.sub+'</small></span><span class="go">→</span></button>').join('');
+  }
+  const list=document.getElementById('qaChecklist');
+  if(list){
+    list.innerHTML=QUICK_ACTIONS.map(a=>{const on=en[a.id]?' on':'';const ch=en[a.id]?'checked':'';return '<label class="qa-option'+on+'"><input type="checkbox" '+ch+' onchange="toggleQuickAction(\''+a.id+'\',this.checked)"><span class="qa-opt-ic">'+a.icon+'</span><span class="qa-opt-txt"><b>'+a.label+'</b><small>'+a.sub+(a.hint?'<span class="qa-opt-hint">'+a.hint+'</span>':'')+'</small></span></label>';}).join('');
+  }
+}
+function toggleQuickAction(id,on){const en=qaEnabled();en[id]=on;qaSave(en);renderQuickActions();}
+function runQuickAction(id){const a=QUICK_ACTIONS.find(x=>x.id===id);if(!a)return;switchPage('chat',document.querySelector('.nav-tab'));document.getElementById('msgInput').value=a.prompt;sendMsg();}
 
 function toggleTokenUsage(){
   const section=document.querySelector('.collapsible');
