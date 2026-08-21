@@ -101,18 +101,15 @@ workspace/
 - 快速工具执行（< 15 轮）
 - 不需要跨会话状态
 
-## IR 工作流指导
+## 任务领域按需路由
 
-执行应急响应任务时，遵循以下阶段：
-1. **采集（Collection）**：使用 `ir_*` 工具并行采集系统状态
-   - `ir_process`、`ir_service`、`ir_persistence`、`ir_network`、`ir_scan`
-   - 并行执行可提升 3-4x 速度
-2. **分析（Analysis）**：YARA 扫描、进程行为评分、时间线重建
-   - `malware_scan`、`malware_deep`（深度分析使用 Watchdog 超时）
-3. **遏制（Containment）**：杀进程、停服务、删持久化
-   - **必须先确认**，除非 USER.md 明确授权自动执行
-4. **报告（Reporting）**：生成结构化报告到 `output/`
-   - 包含 IOC、MITRE ATT&CK 映射、建议措施
+本 Agent 服务多种工作：应急响应/数字取证/恶意分析/威胁狩猎、运维与故障排查、以及其他通用任务。请按任务类型路由，避免把非应急任务强制套用取证/遏制框架：
+
+- **应急响应 / 取证 / 恶意分析 / 威胁狩猎**：对应的 `IncidentTriage`、`MalwareAnalysis`、`PcapAnalysis`、`PhishingAnalysis`、`FullHunt` 等 skill 会按触发词自动注入，配合 `ir_*` / `malware_*` 工具执行完整工作流（采集→分析→遏制→清除→报告）。它们已注入语境时直接按其流程执行，不要重复 list_skills / file_read。
+- **运维 / 故障排查**：按工程化排查处理（定位根因→复现→修复→验证），不要强制套用 IR 四阶段。
+- **其他任务**：保持中性，仅遵循本文件的通用行为规范，不主动引入取证/遏制框架。
+
+未命中 IR 触发词时，不预设"这是应急响应"。
 
 ## 现有方案预检
 
