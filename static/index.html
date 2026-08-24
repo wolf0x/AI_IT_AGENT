@@ -3053,11 +3053,11 @@ function renderQuickActions(){
   if(nav){
     const sel=QUICK_ACTIONS.filter(a=>en[a.id]);
     nav.classList.toggle('has',sel.length>0);
-    nav.innerHTML='<div class="qa-nav-title">⚡ Quick Actions</div>'+sel.map(a=>'<button class="qa-nav-tile '+a.grad+'" title="'+a.tip+'" onclick="runQuickAction(\''+a.id+'\')"><span class="ic">'+a.icon+'</span><span class="qa-txt"><b>'+a.label+'</b></span><span class="go">→</span></button>').join('');
+    nav.innerHTML='<div class="qa-nav-title">⚡ Quick Actions</div>'+sel.map(a=>'<button class="qa-nav-tile '+a.grad+'" title="'+a.tip+'" onclick="runQuickAction(\''+a.id+'\')"><span class="qa-txt"><b>'+a.label+'</b></span><span class="go">→</span></button>').join('');
   }
   const list=document.getElementById('qaChecklist');
   if(list){
-    list.innerHTML=QUICK_ACTIONS.map(a=>{const on=en[a.id]?' on':'';const ch=en[a.id]?'checked':'';return '<label class="qa-option'+on+'"><input type="checkbox" '+ch+' onchange="toggleQuickAction(\''+a.id+'\',this.checked)"><span class="qa-opt-ic">'+a.icon+'</span><span class="qa-opt-txt"><b>'+a.label+'</b></span></label>';}).join('');
+    list.innerHTML=QUICK_ACTIONS.map(a=>{const on=en[a.id]?' on':'';const ch=en[a.id]?'checked':'';return '<label class="qa-option'+on+'"><input type="checkbox" '+ch+' onchange="toggleQuickAction(\''+a.id+'\',this.checked)"><span class="qa-opt-txt"><b>'+a.label+'</b></span></label>';}).join('');
   }
 }
 function toggleQuickAction(id,on){const en=qaEnabled();en[id]=on;qaSave(en);renderQuickActions();}

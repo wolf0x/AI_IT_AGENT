@@ -336,6 +336,9 @@ impl SkillManager {
                 skills_dir: skills_dir.clone(),
                 skills: skills_ref.clone(),
             }) as Arc<dyn Tool>,
+            Arc::new(SkillReadFileTool {
+                skills: skills_ref.clone(),
+            }) as Arc<dyn Tool>,
         ]
     }
 
@@ -543,6 +546,82 @@ impl Tool for InstallSkillTool {
     }
 }
 
+struct SkillReadFileTool {
+    skills: Arc<RwLock<Vec<Skill>>>,
+}
+
+#[async_trait]
+impl Tool for SkillReadFileTool {
+    fn name(&self) -> &str { "skill_read_file" }
+    fn description(&self) -> &str {
+        "Progressive skill reading: read a supporting/reference file inside an already-loaded skill \
+directory (e.g. its 'reference.md' HTML template). Skills load their SKILL.md instructions \
+automatically; use this tool to fetch large companion files on demand. Pass an empty 'path' to \
+list the files available in the skill directory."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill": { "type": "string", "description": "Name of the loaded skill (e.g. 'VulnerabilityPrioritization')" },
+                "path": { "type": "string", "description": "Relative path within the skill directory, e.g. 'reference.md'. Empty string lists the directory contents." }
+            },
+            "required": ["skill", "path"]
+        })
+    }
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
+        let name = args["skill"].as_str().unwrap_or_default().trim();
+        if name.is_empty() { return Err("Missing 'skill'".into()); }
+        let rel = args["path"].as_str().unwrap_or("").trim().to_string();
+        let skills = self.skills.read().unwrap();
+        let name_lower = name.to_lowercase();
+        let found = skills.iter().find(|s| s.metadata.name == name)
+            .or_else(|| skills.iter().find(|s| s.metadata.name.to_lowercase() == name_lower))
+            .or_else(|| {
+                let dir_name = sanitize_dir_name(name).to_lowercase();
+                skills.iter().find(|s| Path::new(&s.skill_dir).file_name().map(|n| n.to_string_lossy().to_lowercase() == dir_name).unwrap_or(false))
+            });
+        let Some(skill) = found else {
+            let available: Vec<&str> = skills.iter().map(|s| s.metadata.name.as_str()).collect();
+            return Err(format!("Skill '{}' not found. Available skills: {:?}", name, available).into());
+        };
+        let skill_dir = PathBuf::from(&skill.skill_dir);
+        let Ok(skill_canon) = skill_dir.canonicalize() else {
+            return Err(format!("Skill directory not accessible: {}", skill_dir.display()).into());
+        };
+        // Empty path -> list directory entries so the model can discover reference files.
+        if rel.is_empty() {
+            let mut files: Vec<Value> = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(&skill_dir) {
+                for e in rd.filter_map(|e| e.ok()) {
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    files.push(json!({"name": e.file_name().to_string_lossy().into_owned(), "is_dir": is_dir}));
+                }
+            }
+            files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            return Ok(json!({"skill": name, "files": files}));
+        }
+        let target = skill_dir.join(&rel);
+        let Ok(target_canon) = target.canonicalize() else {
+            return Err(format!("File not found: '{}' in skill '{}'", rel, name).into());
+        };
+        if !target_canon.starts_with(&skill_canon) || !target_canon.is_file() {
+            return Err(format!("Refusing to read outside the skill directory: {}", rel).into());
+        }
+        match std::fs::read_to_string(&target_canon) {
+            Ok(content) => {
+                const CAP: usize = 60_000;
+                let preview = if content.len() > CAP {
+                    let mut end = CAP;
+                    while end > 0 && !content.is_char_boundary(end) { end -= 1; }
+                    format!("{}...\n[truncated at {} chars - ask for a specific section to read more]", &content[..end], end)
+                } else { content };
+                Ok(json!({"skill": name, "path": rel, "content": preview}))
+            }
+            Err(e) => Err(format!("Failed to read {}: {}", target_canon.display(), e).into()),
+        }
+    }
+}
 struct ListSkillsTool {
     skills: Arc<RwLock<Vec<Skill>>>,
 }

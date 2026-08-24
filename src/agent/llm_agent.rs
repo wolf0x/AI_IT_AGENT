@@ -633,10 +633,13 @@ You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI t
         if !matching_skills.is_empty() {
             prompt.push_str("\n## Active Skills Context\n");
             prompt.push_str(
-                "The following skill(s) are ALREADY loaded and active for this conversation — \
-matched and injected automatically. Follow their workflows directly. Do NOT re-load \
-them (no list_skills / file_read needed) and do NOT apologize for 'not loading' them; \
-their full content is present right here in your context.\n",
+                                "The following skill(s) are active - their SKILL.md instructions are injected \
+into your context; follow their workflows directly. \
+Skills load PROGRESSIVELY: large supporting/reference files (e.g. a skill's \
+'reference.md' HTML template) are NOT auto-injected. To read one, use \
+`skill_read_file` with skill=\"<name>\" and the relative path (e.g. \
+path=\"reference.md\"). Call it with an empty path to list the files a \
+skill has. Do NOT use generic `file_read`/`shell` to locate skill files.\n"
             );
             for (skill_content, score) in &matching_skills {
                 tracing::debug!("Skill matched with score {:.3}", score);
@@ -853,9 +856,12 @@ impl Agent for LlmAgent {
             const MAX_AUTO_RECONSIDERS: usize = 3;
             const RESULT_REPEAT_THRESHOLD: usize = 3;
             const NO_STATE_ITERS: usize = 3;
+            const TEXT_REPEAT_LIMIT: usize = 6;
             let mut last_result: std::collections::HashMap<String, (u64, usize)> = std::collections::HashMap::new();
             let mut no_new_state_iters: usize = 0;
             let mut reconsider_events: usize = 0;
+            let mut last_resp_digest: u64 = 0;
+            let mut consecutive_resp: usize = 0;
             // Track which model we're using (for fallback)
             let mut active_model = model.clone();
             let mut used_fallback = false;
@@ -920,6 +926,27 @@ impl Agent for LlmAgent {
 
                 match result {
                     Ok((content, reasoning, tool_calls, usage)) => {
+                        // Text-loop detection: halt when the assistant emits the same
+                        // textual turn repeatedly with no visible progress. This catches
+                        // loops that identical-tool-call / identical-result checks miss
+                        // (e.g. varying read attempts or narration-only turns).
+                        let resp_digest = content_digest(&format!("{}\n{}", content, reasoning));
+                        if resp_digest == last_resp_digest {
+                            consecutive_resp += 1;
+                        } else {
+                            last_resp_digest = resp_digest;
+                            consecutive_resp = 1;
+                        }
+                        if consecutive_resp >= TEXT_REPEAT_LIMIT {
+                            warn!("[session:{}] Text-loop: identical assistant turn repeated {} times; terminating with summary", session_id, consecutive_resp);
+                            let _ = tx.send(Ok(AgentEvent::text(
+                                &format!("\n\n*[Auto-stop] The agent repeated the same response {} times without progress. Stopping. Send a new message to continue.*\n\n", consecutive_resp),
+                                &invocation_id, &author
+                            ))).await;
+                            let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
+                            for s in &cleanup_sessions { let _ = s.close().await; }
+                            return;
+                        }
                         // Emit token usage event if available
                         if let Some(ref u) = usage {
                             let prompt_t = u.prompt_tokens.unwrap_or(0);
