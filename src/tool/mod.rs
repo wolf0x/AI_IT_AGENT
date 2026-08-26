@@ -149,6 +149,11 @@ pub trait Tool: Send + Sync {
     /// Whether this tool is a built-in tool (vs user-provided or MCP).
     fn is_builtin(&self) -> bool { false }
 
+    /// Whether this tool is "peripheral" (e.g. MCP or external). Peripheral tools
+    /// are NOT sent in full to the LLM every request; they are exposed on demand
+    /// via the `load_tool_schema` helper to keep the per-request payload small.
+    fn is_peripheral(&self) -> bool { false }
+
     /// Whether this tool only reads data without modifying anything.
     /// Read-only tools can be executed concurrently in Parallel strategy.
     fn is_read_only(&self) -> bool { false }
@@ -310,6 +315,30 @@ impl ToolRegistry {
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|t| t.to_definition()).collect()
+    }
+
+    /// Full definitions of core (always-on) tools. Peripheral tools
+    /// (e.g. MCP / external) are exposed on-demand via `load_tool_schema`.
+    pub fn core_definitions(&self) -> Vec<ToolDefinition> {
+        self.tools
+            .values()
+            .filter(|t| !t.is_peripheral())
+            .map(|t| t.to_definition())
+            .collect()
+    }
+
+    /// Compact (name, one-line) summary of peripheral tools for the catalog.
+    pub fn peripheral_tools(&self) -> Vec<(String, String)> {
+        self.tools
+            .values()
+            .filter(|t| t.is_peripheral())
+            .map(|t| (t.name().to_string(), t.description().lines().next().unwrap_or("").to_string()))
+            .collect()
+    }
+
+    /// Resolve the full definition of a tool by name (any tool).
+    pub fn get_definition(&self, name: &str) -> Option<ToolDefinition> {
+        self.tools.get(name).map(|t| t.to_definition())
     }
 
     pub fn tool_names(&self) -> Vec<String> {

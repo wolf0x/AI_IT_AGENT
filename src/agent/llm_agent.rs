@@ -729,9 +729,47 @@ impl Agent for LlmAgent {
 
         // Build system prompt and history in the spawned task
         let system_prompt = self.build_system_prompt(user_message, &ctx.conversation_history);
-        let tool_defs = self.tools.read().await.definitions();
+        // Tool selectivity: core tools are always sent in full; peripheral tools
+        // (MCP / external) are exposed on demand via `load_tool_schema`, and a
+        // peripheral tool is re-added once loaded. This bounds the per-request
+        // tool payload regardless of how many servers/tools are registered.
+        let (core_tool_defs, load_schema_def) = {
+            let reg = self.tools.read().await;
+            let periph = reg.peripheral_tools();
+            let defs = reg.core_definitions();
+            let ls = if periph.is_empty() {
+                None
+            } else {
+                let list = periph
+                    .iter()
+                    .map(|(n, d)| format!("- `{}`: {}", n, d))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(crate::model::ToolDefinition {
+                    tool_type: "function".to_string(),
+                    function: crate::model::FunctionDefinition {
+                        name: "load_tool_schema".to_string(),
+                        description: format!(
+                            "Tool schemas are loaded on demand to keep the request small. Available peripheral tool(s):\n{}\n\nCall with the exact tool name to get its full JSON schema, then invoke that tool normally.",
+                            list
+                        ),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Exact name of the peripheral tool to load" }
+                            },
+                            "required": ["name"]
+                        }),
+                    },
+                })
+            };
+            (defs, ls)
+        };
         let session_id = ctx.base.session_id.clone();
-        info!("[session:{}] Agent sending {} tool definitions to LLM", session_id, tool_defs.len());
+        info!("[session:{}] Core tool set: {} tool(s), +{} peripheral on demand", session_id, core_tool_defs.len(), {
+            let reg = self.tools.read().await;
+            reg.peripheral_tools().len()
+        });
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let working_dir = self.working_dir.clone();
@@ -903,6 +941,22 @@ impl Agent for LlmAgent {
                 let mut messages = Vec::with_capacity(1 + history.len());
                 messages.push(ChatMessage::system(&effective_system_prompt));
                 messages.extend(history.iter().cloned());
+
+                // Build tool definitions for this request: core tools + the
+                // load_tool_schema helper + any peripheral tools already loaded.
+                let tool_defs = {
+                    let mut defs = core_tool_defs.clone();
+                    if let Some(ls) = &load_schema_def {
+                        defs.push(ls.clone());
+                    }
+                    let reg = tools.read().await;
+                    for name in revealed_tool_names(&history) {
+                        if let Some(d) = reg.get_definition(&name) {
+                            defs.push(d);
+                        }
+                    }
+                    defs
+                };
 
                 // Call LLM via legacy chat_stream (uses mpsc for text deltas).
                 // During re-prompt iterations, suppress text streaming to the UI
@@ -1692,6 +1746,23 @@ async fn execute_tool_call(
 ) -> ChatMessage {
     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
+
+    // On-demand peripheral tool schema resolution (keeps per-request payload small).
+    if tool_name == "load_tool_schema" {
+        let targs: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+        let target = targs["name"].as_str().unwrap_or("").to_string();
+        let result = if target.is_empty() {
+            serde_json::json!({ "error": "load_tool_schema: missing 'name'" })
+        } else {
+            let reg = tools.read().await;
+            match reg.get_definition(&target) {
+                Some(def) => serde_json::json!({ "tool": target, "loaded": true, "definition": def }),
+                None => serde_json::json!({ "error": format!("Tool '{}' not found", target) }),
+            }
+        };
+        return ChatMessage::tool_result(&tc.id, tool_name, &result.to_string());
+    }
+
     let args: serde_json::Value = match serde_json::from_str(args_str) {
         Ok(v) => v,
         Err(e) => {
@@ -1995,6 +2066,27 @@ async fn execute_tools_concurrent<'a>(
 /// reached (and resets the counter so it can trigger again later).
 /// Stable-enough content digest for a tool result (whitespace-trimmed hash).
 /// Used by the automatic stall detector to recognize "the same state came back".
+/// Names of peripheral tools the model has loaded via `load_tool_schema`,
+/// derived from history so the session stays stateless.
+fn revealed_tool_names(history: &[ChatMessage]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for m in history {
+        if m.role == "tool" && m.name.as_deref() == Some("load_tool_schema") {
+            if let Some(txt) = m.content_as_text() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    if let Some(n) = v.get("tool").and_then(|x| x.as_str()) {
+                        let n = n.to_string();
+                        if !names.contains(&n) {
+                            names.push(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
 fn content_digest(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();

@@ -47,6 +47,9 @@ impl Tool for ExternalToolExecutor {
         &self.description
     }
 
+    /// External tools are peripheral: full schemas are loaded on demand via load_tool_schema.
+    fn is_peripheral(&self) -> bool { true }
+
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",

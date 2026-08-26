@@ -472,6 +472,10 @@ impl Tool for McpProxyTool {
     fn description(&self) -> &str {
         &self.info.description
     }
+
+    /// MCP tools are peripheral: full schemas are loaded on demand via load_tool_schema.
+    fn is_peripheral(&self) -> bool { true }
+
     fn parameters_schema(&self) -> Value {
         self.info.input_schema.clone()
     }
