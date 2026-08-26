@@ -3051,17 +3051,17 @@ async function loadTodayUsage(){
 // Quick Actions catalog
 // Quick Actions (Dashboard only, editable; no sidebar nav / no checkboxes)
 const DEFAULT_QA=[
-  {id:'health',  label:'System Health',            grad:'qa-g1',  prompt:"执行系统健康检查：采集 CPU、内存、磁盘、关键进程与系统服务状态，给出健康度评估与瓶颈、异常提示。"},
-  {id:'network', label:'Network Troubleshooting',  grad:'qa-g2',  prompt:"执行网络故障排查：检查本机连通性、路由表、DNS 与活动网络连接，定位故障原因并给出修复建议。"},
-  {id:'security',label:'Security Quick Scan',      grad:'qa-g3',  prompt:"执行安全快速分析：并行采集进程、账户、持久化与网络痕迹，分析并输出 IOC 摘要与风险提示。"},
-  {id:'triage',  label:'Quick Triage',             grad:'qa-g4',  prompt:"执行快速告警分诊：采集进程、账户、持久化与网络痕迹并进行分析，输出处置摘要与建议。"},
-  {id:'report',  label:'Generate Report',          grad:'qa-g5',  prompt:"根据最新调查发现，生成一份 PDF 格式的调查 / 应急报告。"},
-  {id:'timeline',label:'View Timeline',            grad:'qa-g6',  prompt:"展示最近 24 小时的安全事件时间线。"},
-  {id:'hunt',    label:'Full Hunt',                grad:'qa-g7',  prompt:"执行全量威胁狩猎：采集所有可用痕迹，对可疑文件进行恶意软件扫描与深度分析，并生成综合报告。"},
-  {id:'desktop', label:'Desktop Ops',              grad:'qa-g8',  prompt:"执行桌面运维巡检：检查系统自启动项、计划任务、最近异常系统日志与磁盘 / 临时文件占用，排查影响使用体验的问题并给出优化建议。"},
-  {id:'respond', label:'Incident Response',        grad:'qa-g9',  prompt:"启动应急响应：评估当前告警与已知 IOC，按采集、分析、遏制流程执行，给出处置建议与后续跟踪。"},
-  {id:'forensic',label:'Digital Forensics',        grad:'qa-g10', prompt:"执行数字取证：采集事件日志、文件系统痕迹、进程与网络证据，重建事件时间线并整理可追溯的证据链，输出取证报告。"},
-  {id:'malware', label:'Malware Analysis',         grad:'qa-g11', prompt:"对可疑文件执行恶意软件分析，判定是否恶意、所属家族并给出处置建议。"}
+  {id:'health',  label:'System Health',            grad:'qa-g1',  prompt:"Run a system health check: collect CPU, memory, disk, key processes and service states, then give a health assessment with bottleneck and anomaly hints."},
+  {id:'network', label:'Network Troubleshooting',  grad:'qa-g2',  prompt:"Run network troubleshooting: check local connectivity, routing table, DNS and active network connections, locate the fault cause and give fix suggestions."},
+  {id:'security',label:'Security Quick Scan',      grad:'qa-g3',  prompt:"Run a security quick scan: collect processes, accounts, persistence and network traces in parallel, analyze and output an IOC summary with risk notes."},
+  {id:'triage',  label:'Quick Triage',             grad:'qa-g4',  prompt:"Run a quick incident triage: collect processes, accounts, persistence and network traces, analyze them, and output a disposition summary with recommendations."},
+  {id:'report',  label:'Generate Report',          grad:'qa-g5',  prompt:"Generate a PDF investigation / incident report from the latest findings."},
+  {id:'timeline',label:'View Timeline',            grad:'qa-g6',  prompt:"Show a timeline of security events from the last 24 hours."},
+  {id:'hunt',    label:'Full Hunt',                grad:'qa-g7',  prompt:"Run a full threat hunt: collect all available traces, scan suspicious files for malware with deep analysis, and generate a comprehensive report."},
+  {id:'desktop', label:'Desktop Ops',              grad:'qa-g8',  prompt:"Run a desktop operations inspection: check startup items, scheduled tasks, recent abnormal system logs and disk / temp usage, then give optimization advice."},
+  {id:'respond', label:'Incident Response',        grad:'qa-g9',  prompt:"Start incident response: assess current alerts and known IOCs, execute collect-analyze-contain steps, and give handling advice with follow-up."},
+  {id:'forensic',label:'Digital Forensics',        grad:'qa-g10', prompt:"Run digital forensics: collect event logs, file system traces, process and network evidence, rebuild the event timeline and an auditable evidence chain, and output a forensic report."},
+  {id:'malware', label:'Malware Analysis',         grad:'qa-g11', prompt:"Analyze the suspect file, determine whether it is malicious and its family, and give handling advice."}
 ]
 const QA_KEY='ra_qa_list';
 function getQAList(){
@@ -3118,7 +3118,7 @@ function qaAddRow(){qaDraft.push({label:'New Action',grad:'qa-g1',prompt:''});re
 function qaRemoveRow(i){qaDraft.splice(i,1);renderQAEditorRows();}
 function saveQAEditor(){
   const list=qaDraft.filter(a=>a&&String(a.label||'').trim()&&String(a.prompt||'').trim());
-  if(!list.length){list.push({label:'Quick Action',grad:'qa-g1',prompt:'执行该快捷操作并汇报结果。'});}
+  if(!list.length){list.push({label:'Quick Action',grad:'qa-g1',prompt:'Execute this quick action and report the results.'});}
   saveQAList(list);
   closeQAEditor();
   renderQuickActions();
