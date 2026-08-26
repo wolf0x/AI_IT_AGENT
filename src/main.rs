@@ -16,6 +16,7 @@ mod error;
 mod event_log;
 mod external_tools;
 mod heartbeat;
+mod knowledge;
 mod log;
 #[allow(dead_code)]
 mod managed;
@@ -517,9 +518,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.register(Arc::new(crate::tool::cron_manage::CronManageTool::new(scheduler.clone())));
         reg.register(Arc::new(crate::tool::memory_md::MemoryMdTool::new(workspace_dir.clone())));
         reg.register(Arc::new(crate::tool::todo_update::TodoUpdateTool::new(workspace_dir.clone())));
+        reg.register(Arc::new(crate::tool::knowledge_search::KnowledgeSearchTool::new(workspace_dir.clone())));
+        reg.register(Arc::new(crate::tool::knowledge_ingest::KnowledgeIngestTool::new(workspace_dir.clone())));
         reg.register(Arc::new(crate::tool::browser_cdp::BrowserCdpTool::new(browser_session)));
     }
     info!("Registered cron_manage + memory_md + todo_update + browser_cdp tools");
+    if let Err(e) = crate::knowledge::build_index(&workspace_dir) {
+        tracing::warn!("Failed to build knowledge index: {}", e);
+    }
 
     // Conditionally register Computer Use tools based on config
     let computer_use_enabled = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.computer_use));
