@@ -497,7 +497,7 @@ pub async fn plan_next(
     let resp = provider
         .chat_stream(model, &messages, &[], dummy_tx.clone(), &contract.id, "manager")
         .await;
-    let (content, _reasoning, _tool_calls, _usage) = match resp {
+    let (content, _reasoning, _tool_calls, _usage, _finish_reason) = match resp {
         Ok(r) => r,
         Err(e) => {
             let fb = fallback_model.filter(|f| !f.is_empty() && f != &model);
@@ -550,7 +550,7 @@ pub async fn summarize_prior(
     tokio::spawn(async move {
         while dummy_rx.recv().await.is_some() {}
     });
-    let (content, _, _, _) = provider
+    let (content, _, _, _, _) = provider
         .chat_stream(model, &messages, &[], dummy_tx, "prior-summary", "manager")
         .await
         .map_err(|e| format!("Prior summary LLM call failed: {}", e))?;

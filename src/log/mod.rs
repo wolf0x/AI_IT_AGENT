@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -8,9 +9,35 @@ use tracing::warn;
 
 use crate::agent::AgentEvent;
 
+/// Flush the aggregated text/thinking block once it grows past this many chars,
+/// so an abnormal exit mid-stream only ever loses at most one bounded chunk.
+const FLUSH_CHARS: usize = 4000;
+
 pub struct ConversationLogger {
     log_dir: PathBuf,
     file: Mutex<Option<(String, std::fs::File)>>,
+    // Buffers consecutive streaming deltas (thinking / text) so the JSONL transcript
+    // is aggregated into readable blocks instead of one line per token fragment.
+    // Keyed by session so concurrent sessions can never mix content into one block.
+    pending: Mutex<HashMap<String, PendingBlock>>,
+}
+
+/// An in-progress aggregated assistant text/thinking block.
+struct PendingBlock {
+    kind: &'static str,
+    content: String,
+    session: String,
+    ts: String,
+}
+
+fn pending_to_json(p: &PendingBlock) -> Value {
+    json!({
+        "ts": p.ts,
+        "session": p.session,
+        "role": "assistant",
+        "type": p.kind,
+        "content": p.content,
+    })
 }
 
 impl ConversationLogger {
@@ -20,6 +47,7 @@ impl ConversationLogger {
         Self {
             log_dir: dir,
             file: Mutex::new(None),
+            pending: Mutex::new(HashMap::new()),
         }
     }
 
@@ -49,6 +77,7 @@ impl ConversationLogger {
     }
 
     pub fn log_user_message(&self, session_id: &str, content: &str) {
+        self.flush_pending();
         let entry = json!({
             "ts": Utc::now().to_rfc3339(),
             "session": session_id,
@@ -59,21 +88,28 @@ impl ConversationLogger {
     }
 
     pub fn log_event(&self, session_id: &str, event: &AgentEvent) {
+        match event {
+            // Streaming deltas are buffered and aggregated.
+            AgentEvent::Thinking { content, .. } => {
+                self.accumulate("thinking", session_id, content);
+                return;
+            }
+            AgentEvent::TextDelta { content, .. } => {
+                self.accumulate("text", session_id, content);
+                return;
+            }
+            // Turn boundaries flush whatever text/thinking is still buffered.
+            AgentEvent::Done { .. } | AgentEvent::Progress { .. } => {
+                self.flush_pending();
+                return;
+            }
+            _ => {}
+        }
+
+        // Any non-streaming event delimits a block: write buffered text first.
+        self.flush_pending();
+
         let entry = match event {
-            AgentEvent::Thinking { content, .. } => json!({
-                "ts": Utc::now().to_rfc3339(),
-                "session": session_id,
-                "role": "assistant",
-                "type": "thinking",
-                "content": content,
-            }),
-            AgentEvent::TextDelta { content, .. } => json!({
-                "ts": Utc::now().to_rfc3339(),
-                "session": session_id,
-                "role": "assistant",
-                "type": "text",
-                "content": content,
-            }),
             AgentEvent::ToolCall { name, call_id, args, .. } => json!({
                 "ts": Utc::now().to_rfc3339(),
                 "session": session_id,
@@ -115,9 +151,6 @@ impl ConversationLogger {
                 "request_id": request_id,
                 "allowed": allowed,
             }),
-            AgentEvent::Done { .. } => return,
-            // Skip logging heartbeat/progress events to avoid noise
-            AgentEvent::Progress { .. } => return,
             AgentEvent::Usage { model, prompt_tokens, completion_tokens, total_tokens, .. } => json!({
                 "ts": Utc::now().to_rfc3339(),
                 "session": session_id,
@@ -128,8 +161,71 @@ impl ConversationLogger {
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
             }),
+            _ => return,
         };
         self.write_entry(&entry);
+    }
+
+    /// Aggregate a streaming delta into the current text/thinking block for the
+    /// given session. When the block type switches (thinking -> text or vice
+    /// versa) the previous block is flushed as a single aggregated JSON entry.
+    /// Blocks are additionally flushed once they exceed `FLUSH_CHARS` to bound
+    /// any loss on abnormal exit. Blocks are keyed by session so concurrent
+    /// sessions never mix content into one block.
+    fn accumulate(&self, kind: &'static str, session_id: &str, content: &str) {
+        let session = session_id.to_string();
+        let mut to_write: Vec<PendingBlock> = Vec::new();
+        {
+            let mut map = self.pending.lock().unwrap();
+            // Pull this session's buffered block out (if any) so we can either
+            // extend it in place or flush it on a kind switch.
+            match map.remove(&session) {
+                // Same kind: extend the existing block.
+                Some(mut p) if p.kind == kind => {
+                    p.content.push_str(content);
+                    if p.content.chars().count() >= FLUSH_CHARS {
+                        // Flush this block; the next delta starts a fresh one.
+                        to_write.push(p);
+                    } else {
+                        map.insert(session.clone(), p);
+                    }
+                }
+                // Kind switch (thinking -> text or vice versa): flush the old
+                // block and begin a new one for this same session.
+                Some(p) => {
+                    to_write.push(p);
+                    map.insert(session.clone(), PendingBlock {
+                        kind,
+                        content: content.to_string(),
+                        session: session.clone(),
+                        ts: Utc::now().to_rfc3339(),
+                    });
+                }
+                // No buffered block for this session yet: start one.
+                None => {
+                    map.insert(session.clone(), PendingBlock {
+                        kind,
+                        content: content.to_string(),
+                        session: session.clone(),
+                        ts: Utc::now().to_rfc3339(),
+                    });
+                }
+            }
+        }
+        for p in to_write {
+            self.write_entry(&pending_to_json(&p));
+        }
+    }
+
+    /// Write any buffered text/thinking blocks (all sessions) as aggregated entries.
+    fn flush_pending(&self) {
+        let all: Vec<PendingBlock> = {
+            let mut map = self.pending.lock().unwrap();
+            map.drain().map(|(_k, p)| p).collect()
+        };
+        for p in all {
+            self.write_entry(&pending_to_json(&p));
+        }
     }
 
     fn write_entry(&self, entry: &Value) {
@@ -171,5 +267,12 @@ impl ConversationLogger {
                     .map(String::from)
             })
             .collect()
+    }
+}
+
+impl Drop for ConversationLogger {
+    fn drop(&mut self) {
+        // Best-effort flush of any buffered block on graceful teardown.
+        self.flush_pending();
     }
 }

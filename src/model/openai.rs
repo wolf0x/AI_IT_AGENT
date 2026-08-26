@@ -229,7 +229,7 @@ impl OpenAiProvider {
         tx: mpsc::Sender<AgentResult<crate::agent::AgentEvent>>,
         invocation_id: &str,
         author: &str,
-    ) -> Result<(String, String, Vec<ToolCallDelta>, Option<crate::model::UsageMetadata>), String> {
+    ) -> Result<(String, String, Vec<ToolCallDelta>, Option<crate::model::UsageMetadata>, Option<String>), String> {
         let model = self.find_model(model_name).await.ok_or("No model configured")?;
         let api_key = model.resolved_api_key();
         let url = format!("{}/chat/completions", model.api_base.trim_end_matches('/'));
@@ -267,6 +267,7 @@ impl OpenAiProvider {
         let mut tool_calls_map: Vec<ToolCallAccum> = Vec::new();
         let mut byte_buf: Vec<u8> = Vec::new();
         let mut captured_usage: Option<crate::model::UsageMetadata> = None;
+        let mut finish_reason: Option<String> = None;
 
         // If the consumer (agent stream / WebSocket) drops the receiver, there is
         // no point continuing to read the HTTP stream. We watch for that with a
@@ -295,6 +296,9 @@ impl OpenAiProvider {
                         Ok(chunk) => {
                             if let Some(choices) = chunk.choices {
                                 for choice in choices {
+                                    if let Some(fr) = &choice.finish_reason {
+                                        finish_reason = Some(fr.clone());
+                                    }
                                     // Handle reasoning_content (thinking phase for DeepSeek V4 etc.)
                                     if let Some(reasoning) = &choice.delta.reasoning_content {
                                         full_reasoning.push_str(reasoning);
@@ -381,7 +385,7 @@ impl OpenAiProvider {
             })
             .collect();
 
-        Ok((full_content, full_reasoning, tool_calls, captured_usage))
+        Ok((full_content, full_reasoning, tool_calls, captured_usage, finish_reason))
     }
 }
 

@@ -1197,7 +1197,7 @@ Be concise and specific. Focus on practical next steps."#;
             while dummy_rx.recv().await.is_some() {}
         });
 
-        let (content, _reasoning, _tool_calls, _usage) = provider
+        let (content, _reasoning, _tool_calls, _usage, _finish_reason) = provider
             .chat_stream(manager_model, &messages, &[], dummy_tx, &contract.id, "human_guidance")
             .await
             .map_err(|e| format!("LLM call failed: {}", e))?;

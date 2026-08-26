@@ -925,7 +925,7 @@ impl Agent for LlmAgent {
                     .await;
 
                 match result {
-                    Ok((content, reasoning, tool_calls, usage)) => {
+                    Ok((content, reasoning, tool_calls, usage, finish_reason)) => {
                         // Text-loop detection: halt when the assistant emits the same
                         // textual turn repeatedly with no visible progress. This catches
                         // loops that identical-tool-call / identical-result checks miss
@@ -1057,6 +1057,12 @@ impl Agent for LlmAgent {
                         }
                         if tool_calls.is_empty() {
                             // Text response - done
+                            // PROBE: completion signal for diagnosis (real finish_reason + stub detection)
+                            let _probe_rlen = reasoning.chars().count();
+                            let _probe_clen = content.chars().count();
+                            let _probe_stub = _probe_clen == 0 || (_probe_rlen > 256 && _probe_clen * 4 < _probe_rlen);
+                            info!("[session:{}] COMPLETE_PROBE finish_reason={:?} content={}chars reasoning={}chars stub={} has_executed_tools={} reprompt_count={}",
+                                  session_id, finish_reason, _probe_clen, _probe_rlen, _probe_stub, has_executed_tools, reprompt_count);
                             info!("[session:{}] Agent completed with text response ({} chars, {} tool calls)", session_id, content.len(), tool_calls.len());
                             if content.len() < 100 {
                                 info!("[session:{}] Short response content: {}", session_id, content);
@@ -1075,7 +1081,7 @@ impl Agent for LlmAgent {
                                 summary_msgs.extend(history.clone());
                                 // One more LLM call for summary (no tools) - streams to client
                                 match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
-                                    Ok((summary_content, _, _, _)) => {
+                                    Ok((summary_content, _, _, _, _)) => {
                                         if summary_content.trim().is_empty() {
                                             (generate_static_summary(&history, iteration + 1), false)
                                         } else {
@@ -1260,14 +1266,19 @@ impl Agent for LlmAgent {
                                     saw_new_state = true;
                                 }
                             }
-                            if !saw_new_state && !stalled {
+                            if saw_new_state {
+                                // Real progress this iteration: reset the per-tool
+                                // identical-result counter so NON-consecutive repeats
+                                // (e.g. re-reading an unchanged file between other work)
+                                // do not accumulate into a false stall across the session.
+                                last_result.clear();
+                                no_new_state_iters = 0;
+                            } else if !stalled {
                                 no_new_state_iters += 1;
                                 if no_new_state_iters >= NO_STATE_ITERS {
                                     info!("[session:{}] Stall: no new state for {} iterations", session_id, no_new_state_iters);
                                     stalled = true;
                                 }
-                            } else {
-                                no_new_state_iters = 0;
                             }
                         }
 
@@ -1383,7 +1394,7 @@ impl Agent for LlmAgent {
             let mut summary_msgs = vec![ChatMessage::system(&system_prompt)];
             summary_msgs.extend(history.clone());
             match provider.chat_stream(&active_model, &summary_msgs, &[], tx.clone(), &invocation_id, &author).await {
-                Ok((summary_content, _, _, _)) => {
+                Ok((summary_content, _, _, _, _)) => {
                     if summary_content.trim().is_empty() {
                         // LLM returned empty, send static summary
                         let fallback = generate_static_summary(&history, max_iter);
