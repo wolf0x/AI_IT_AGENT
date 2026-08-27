@@ -612,6 +612,45 @@ input:checked+.slider:before{transform:translateX(20px)}
 .modern-page table tr{transition:background .15s}
 .modern-page table tr:hover{background:rgba(248,250,252,.85)}
 
+/* ---- CRON page (modern) ---- */
+.cron-page{max-width:1080px;margin:0 auto}
+.cron-page .settings-section h3{font-size:16px}
+.cron-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.cron-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.cron-field-full{grid-column:1 / -1}
+.cron-field label{font-size:12px;font-weight:600;color:#64748b;letter-spacing:.2px}
+.cron-field input,.cron-field select,.cron-field textarea{width:100%;padding:11px 13px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;color:#0f172a;font-size:14px;font-family:inherit;outline:0;box-sizing:border-box;transition:border-color .15s,box-shadow .15s}
+.cron-field input:focus,.cron-field select:focus,.cron-field textarea:focus{border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,.12)}
+.cron-repeat{display:flex;gap:8px}
+.cron-repeat input[type=number]{flex:1.1}
+.cron-repeat select{flex:1}
+.cron-range{display:flex;align-items:center;gap:8px}
+.cron-range input[type=date]{flex:1}
+.cron-range-sep{color:#94a3b8;font-weight:600}
+.cron-field-add{display:flex;align-items:flex-end}
+.cron-btn-add{width:100%;padding:11px 16px;background:linear-gradient(135deg,#3498db,#2a7fc0);color:#fff;border:0;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;transition:.2s;box-shadow:0 4px 12px rgba(52,152,219,.25)}
+.cron-btn-add:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(52,152,219,.35)}
+.cron-list{display:flex;flex-direction:column;gap:12px}
+.cron-empty{color:#94a3b8;text-align:center;padding:26px 0;font-size:13px}
+.cron-item{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #cbd5e1;border-radius:12px;transition:box-shadow .15s,transform .15s}
+.cron-item:hover{box-shadow:0 6px 18px rgba(15,23,42,.06);transform:translateY(-1px)}
+.cron-item.on{border-left-color:#27ae60}
+.cron-item-main{flex:1;min-width:0}
+.cron-item-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.cron-item-name{font-weight:700;color:#0f172a;font-size:14px}
+.cron-badge{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px}
+.cron-status{font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px}
+.cron-status.on{color:#15803d;background:#dcfce7}
+.cron-status.off{color:#64748b;background:#e2e8f0}
+.cron-item-msg{color:#475569;font-size:13px;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:680px}
+.cron-meta{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#94a3b8;align-items:center}
+.cron-meta-chip{background:#fef3c7;color:#92400e;border:1px solid #fde68a;padding:1px 7px;border-radius:14px}
+.cron-actions{display:flex;gap:8px;flex-shrink:0}
+.cron-act{padding:7px 14px;border:0;border-radius:9px;font-size:12px;font-weight:600;cursor:pointer;transition:.15s;font-family:inherit}
+.cron-act.on{background:#27ae60;color:#fff}.cron-act.on:hover{background:#219a52}
+.cron-act.off{background:#64748b;color:#fff}.cron-act.off:hover{background:#475569}
+.cron-act.danger{background:#fff;color:#dc2626;border:1px solid #fecaca}.cron-act.danger:hover{background:#fee2e2}
+@media(max-width:900px){.cron-grid{grid-template-columns:1fr}.cron-field-add{align-items:stretch}}
 /* MCP card layout */
 .mcp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
 .mcp-card{background:linear-gradient(135deg,#f8fafc,#f1f5f9);border:1px solid #e2e8f0;border-radius:12px;padding:16px;transition:transform .2s,box-shadow .2s}
@@ -932,34 +971,52 @@ input:checked+.slider:before{transform:translateX(20px)}
 
     <!-- CRON Page -->
     <div id="cron" class="page">
-      <div class="settings-scroll modern-page">
-        <div class="settings-section">
-          <h3>&#9200; CRON Tasks</h3>
-          <div style="padding:10px 12px;background:#fffaf3;border-left:3px solid #f39c12;border-radius:var(--rs);margin-bottom:14px;font-size:12px;color:#7d6608;line-height:1.5">
-            <strong>Note:</strong> CRON tasks are application-level 鈥?results are shown in chat.
-            For system-level tasks that run independently (even when RustAgent is closed),
-            ask the agent to create a Windows scheduled task via <code>schtasks</code>.
-          </div>
-          <div id="cronAddForm" style="margin-bottom:16px">
-            <div class="form-group">
-              <label>Task Name</label>
+      <div class="settings-scroll modern-page cron-page">
+        <div class="settings-section cron-create-card">
+          <h3>&#9200; New Scheduled Task</h3>
+          <div class="cron-grid">
+            <div class="cron-field">
+              <label>Task name</label>
               <input type="text" id="cronName" placeholder="e.g. System Health Check">
             </div>
-            <div class="form-group">
-              <label>Schedule (e.g. every 5m, every 1h, every 30s)</label>
-              <input type="text" id="cronSchedule" placeholder="every 1h" value="every 1h">
+            <div class="cron-field">
+              <label>Repeat every</label>
+              <div class="cron-repeat">
+                <input type="number" id="cronInterval" min="1" value="5">
+                <select id="cronUnit">
+                  <option value="s">seconds</option>
+                  <option value="m" selected>minutes</option>
+                  <option value="h">hours</option>
+                  <option value="d">days</option>
+                </select>
+              </div>
             </div>
-            <div class="form-group">
-              <label>Message (what to ask the agent)</label>
-              <textarea id="cronMessage" rows="3" style="width:100%;padding:10px 12px;background:white;border:1px solid #bdc3c7;border-radius:var(--rs);color:var(--t1);font-size:14px;font-family:inherit;resize:vertical" placeholder="e.g. Check system health and report any issues"></textarea>
+            <div class="cron-field">
+              <label>Active window (optional)</label>
+              <div class="cron-range">
+                <input type="date" id="cronStartDate" title="Active from">
+                <span class="cron-range-sep">&rarr;</span>
+                <input type="date" id="cronEndDate" title="Active until">
+              </div>
             </div>
-            <div class="form-group">
+            <div class="cron-field cron-field-full">
+              <label>What should the agent do?</label>
+              <textarea id="cronMessage" rows="2" placeholder="e.g. Check system health and report any issues"></textarea>
+            </div>
+            <div class="cron-field">
               <label>Model</label>
               <select id="cronModel"><option value="">Default</option></select>
             </div>
-            <button class="btn btn-p" onclick="createCronTask()">Add Task</button>
+            <div class="cron-field cron-field-add">
+              <button class="btn cron-btn-add" onclick="createCronTask()">+ Add Task</button>
+            </div>
           </div>
-          <div id="cronTaskList" style="font-size:13px;color:var(--t2)">Loading...</div>
+        </div>
+
+        <div class="settings-section cron-list-card">
+          <h3>&#9200; Scheduled Tasks</h3>
+          <p style="font-size:12px;color:#94a3b8;margin:-8px 0 14px 0">Runs while RustAgent is open. For tasks that must run when the app is closed, use a Windows scheduled task (schtasks).</p>
+          <div id="cronTaskList" class="cron-list">Loading...</div>
         </div>
       </div>
     </div>
@@ -2279,32 +2336,50 @@ async function loadCron(){
     const r=await fetch('/api/cron');const d=await r.json();
     const el=document.getElementById('cronTaskList');
     const tasks=d.tasks||[];
-    // Populate cron model dropdown
     const cmSel=document.getElementById('cronModel');
     const mSel=document.getElementById('modelSel');
     cmSel.innerHTML='<option value="">Default</option>';
     for(const opt of mSel.options){
       if(opt.value){const o=document.createElement('option');o.value=opt.value;o.textContent=opt.value;cmSel.appendChild(o)}
     }
-    if(!tasks.length){el.innerHTML='<span style="color:var(--t3)">No scheduled tasks</span>';return}
-    el.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:8px 4px">Name</th><th>Schedule</th><th>Message</th><th>Status</th><th>Last Run</th><th>Actions</th></tr></thead><tbody>'+tasks.map(t=>{
-      const status=t.enabled?'<span style="color:var(--green)">&#9679; Active</span>':'<span style="color:var(--t3)">&#9679; Disabled</span>';
-      const lastRun=t.last_run?fmtDateTime(new Date(t.last_run)):'Never';
-      const msgPreview=(t.message||'').substring(0,40)+(t.message&&t.message.length>40?'...':'');
-      return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 4px"><strong>'+esc(t.name)+'</strong></td><td>'+esc(t.schedule)+'</td><td style="color:var(--t3)">'+esc(msgPreview)+'</td><td>'+status+'</td><td style="font-size:11px;color:var(--t3)">'+lastRun+'</td><td><button class="btn btn-s" style="padding:4px 8px;font-size:11px" onclick="toggleCron(\''+t.id+'\')">'+(t.enabled?'Disable':'Enable')+'</button> <button class="btn btn-d" style="padding:4px 8px;font-size:11px" onclick="deleteCron(\''+t.id+'\')">Delete</button></td></tr>';
-    }).join('')+'</tbody></table>';
-  }catch(e){document.getElementById('cronTaskList').innerHTML='<span style="color:var(--red)">Failed to load</span>'}
+    if(!tasks.length){el.innerHTML='<div class="cron-empty">No scheduled tasks yet</div>';return}
+    el.innerHTML=tasks.map(t=>{
+      const on=t.enabled;
+      const win=(t.start_date||t.end_date)?'<span class="cron-meta-chip">&#128197; '+esc((t.start_date||'')+' ~ '+(t.end_date||''))+'</span>':'';
+      const last=t.last_run?fmtDateTime(new Date(t.last_run)):'Never';
+      const next=t.next_run?fmtDateTime(new Date(t.next_run)):'&#8212;';
+      return '<div class="cron-item'+(on?' on':'')+'">'+
+        '<div class="cron-item-main">'+
+          '<div class="cron-item-head"><span class="cron-item-name">'+esc(t.name)+'</span><span class="cron-badge">&#128339; '+esc(t.schedule)+'</span>'+(on?'<span class="cron-status on">&#9679; Active</span>':'<span class="cron-status off">&#9679; Disabled</span>')+'</div>'+
+          '<div class="cron-item-msg">'+esc((t.message||'').substring(0,90))+(t.message&&t.message.length>90?'&#8230;':'')+'</div>'+
+          '<div class="cron-meta"><span>Last: '+esc(last)+'</span><span>Next: '+next+'</span>'+win+'</div>'+
+        '</div>'+
+        '<div class="cron-actions">'+
+          '<button class="cron-act '+(on?'on':'off')+'" onclick="toggleCron(\''+t.id+'\')" title="'+(on?'Click to disable':'Click to enable')+'">'+(on?'Pause':'Resume')+'</button>'+
+          '<button class="cron-act danger" onclick="deleteCron(\''+t.id+'\')" title="Delete task">&#128465; Delete</button>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+  }catch(e){document.getElementById('cronTaskList').innerHTML='<div class="cron-empty" style="color:var(--red)">Failed to load</div>'}
 }
 async function createCronTask(){
   const name=document.getElementById('cronName').value.trim();
-  const schedule=document.getElementById('cronSchedule').value.trim();
+  const itv=parseInt(document.getElementById('cronInterval').value,10);
+  const unit=document.getElementById('cronUnit').value;
   const message=document.getElementById('cronMessage').value.trim();
   const model=document.getElementById('cronModel').value;
+  const startDate=document.getElementById('cronStartDate').value;
+  const endDate=document.getElementById('cronEndDate').value;
   if(!name||!message){alert('Name and message are required');return}
+  if(!itv||itv<1){alert('Please enter a valid repeat interval');return}
+  if(startDate&&endDate&&startDate>endDate){alert('Start date must be before end date');return}
+  const schedule='every '+itv+unit;
   try{
-    await fetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule,message,model})});
+    await fetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule,message,model,start_date:startDate,end_date:endDate})});
     document.getElementById('cronName').value='';
     document.getElementById('cronMessage').value='';
+    document.getElementById('cronStartDate').value='';
+    document.getElementById('cronEndDate').value='';
     loadCron();
   }catch(e){alert('Failed to create task')}
 }

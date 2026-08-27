@@ -42,9 +42,21 @@ pub struct CronTask {
     /// Interval in seconds (computed from schedule)
     #[serde(default)]
     pub interval_secs: u64,
+    /// Optional active window start date (YYYY-MM-DD, inclusive). Empty = no lower bound.
+    #[serde(default)]
+    pub start_date: Option<String>,
+    /// Optional active window end date (YYYY-MM-DD, inclusive). Empty = no upper bound.
+    #[serde(default)]
+    pub end_date: Option<String>,
 }
 
 fn default_true() -> bool { true }
+
+/// Normalize an optional date string: trim and treat empty as None.
+fn normalize_opt_date(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
+}
 
 /// The scheduler manages periodic tasks.
 pub struct Scheduler {
@@ -104,6 +116,16 @@ impl Scheduler {
                         Ok(tasks) => {
                             info!("Loaded {} cron tasks", tasks.len());
                             self.tasks = tasks;
+                            // Backfill next_run for enabled tasks missing it (legacy or
+                            // malformed JSON) so they do not silently never fire.
+                            let mut changed = false;
+                            for t in self.tasks.iter_mut() {
+                                if t.enabled && t.next_run.is_none() {
+                                    t.next_run = Some(Self::compute_next_run_from_schedule(&t.schedule));
+                                    changed = true;
+                                }
+                            }
+                            if changed { self.save(); }
                         }
                         Err(e) => warn!("Failed to parse cron tasks: {}", e),
                     }
@@ -131,32 +153,31 @@ impl Scheduler {
     pub fn parse_interval(schedule: &str) -> u64 {
         let s = schedule.trim().to_lowercase();
 
-        // "every N..." syntax
-        if let Some(rest) = s.strip_prefix("every ") {
-            let rest = rest.trim();
-            // Extract the number and the unit
-            let (num_str, unit) = rest.split_at(
-                rest.find(|c: char| c.is_alphabetic()).unwrap_or(rest.len())
-            );
-            let num_str = num_str.trim();
-            let unit = unit.trim();
+        // Accept both "every 5m" and a bare "5m" / "5 min". Previously a bare
+        // schedule (e.g. "5m") skipped interval parsing and silently fell back to
+        // 60s -- so "run every 5 minutes" actually ran every ~1 minute.
+        let body = s.strip_prefix("every ").map(str::trim).unwrap_or(&s);
 
-            if let Ok(n) = num_str.parse::<u64>() {
-                // Match unit: seconds, minutes, hours (and abbreviations)
-                if unit.is_empty() || unit == "s" || unit.starts_with("sec") {
-                    return n;
-                } else if unit == "m" || unit.starts_with("min") {
-                    return n * 60;
-                } else if unit == "h" || unit.starts_with("hour") || unit.starts_with("hr") {
-                    return n * 3600;
-                } else if unit == "d" || unit.starts_with("day") {
-                    return n * 86400;
-                }
-            }
-            // Try parsing as plain number (seconds)
-            if let Ok(n) = rest.parse::<u64>() {
+        // Extract the number and the unit
+        let (num_str, unit) = body.split_at(
+            body.find(|c: char| c.is_alphabetic()).unwrap_or(body.len())
+        );
+        let num_str = num_str.trim();
+        let unit = unit.trim();
+
+        if let Ok(n) = num_str.parse::<u64>() {
+            // Match unit: seconds, minutes, hours (and abbreviations).
+            // Empty unit = plain number in seconds (e.g. "every 30" or "30").
+            if unit.is_empty() || unit == "s" || unit.starts_with("sec") {
                 return n;
+            } else if unit == "m" || unit.starts_with("min") {
+                return n * 60;
+            } else if unit == "h" || unit.starts_with("hour") || unit.starts_with("hr") {
+                return n * 3600;
+            } else if unit == "d" || unit.starts_with("day") {
+                return n * 86400;
             }
+            // Unrecognized unit (e.g. a typo) -> fall through to warn + default.
         }
 
         // Basic 5-field cron: compute the interval to the next matching time
@@ -173,6 +194,7 @@ impl Scheduler {
             return 3600; // Fallback: 1 hour if cron parse fails
         }
 
+        warn!("[scheduler] Unrecognized schedule '{}', defaulting to 60s", schedule);
         60 // Default fallback
     }
 
@@ -280,6 +302,24 @@ impl Scheduler {
         next.to_rfc3339()
     }
 
+    /// Whether `now` falls within the task's optional [start_date, end_date] window.
+    /// Dates are compared as YYYY-MM-DD strings (lexicographic == chronological).
+    fn within_active_window(task: &CronTask, now: &chrono::DateTime<chrono::Utc>) -> bool {
+        // Interpret the date window in the LOCAL calendar day so a UTC+8 user setting
+        // "Sep 1 - Sep 10" gets the intended local days (UTC would be ~8h off).
+        let today = now.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        // Only enforce bounds that are well-formed YYYY-MM-DD so a bad date string
+        // does not silently disable the task.
+        let well_formed = |d: &String| d.len() == 10 && d.chars().nth(4) == Some('-') && d.chars().nth(7) == Some('-');
+        if let Some(ref st) = task.start_date {
+            if well_formed(st) && today < *st { return false; }
+        }
+        if let Some(ref en) = task.end_date {
+            if well_formed(en) && today > *en { return false; }
+        }
+        true
+    }
+
     /// List all tasks.
     pub fn list(&self) -> &[CronTask] {
         &self.tasks
@@ -297,7 +337,8 @@ impl Scheduler {
 
     /// Update an existing task.
     pub fn update(&mut self, id: &str, name: Option<String>, schedule: Option<String>,
-                  message: Option<String>, model: Option<String>) -> bool {
+                  message: Option<String>, model: Option<String>,
+                  start_date: Option<String>, end_date: Option<String>) -> bool {
         if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
             if let Some(n) = name { task.name = n; }
             if let Some(s) = schedule {
@@ -307,6 +348,8 @@ impl Scheduler {
             }
             if let Some(m) = message { task.message = m; }
             if let Some(m) = model { task.model = m; }
+            if let Some(d) = start_date { task.start_date = normalize_opt_date(&d); }
+            if let Some(d) = end_date { task.end_date = normalize_opt_date(&d); }
             self.save();
             true
         } else {
@@ -347,6 +390,10 @@ impl Scheduler {
 
         for (i, task) in self.tasks.iter().enumerate() {
             if !task.enabled {
+                continue;
+            }
+            // Skip tasks outside their optional active date window.
+            if !Self::within_active_window(task, &now) {
                 continue;
             }
             if let Some(ref next_run_str) = task.next_run {
@@ -464,5 +511,63 @@ impl Scheduler {
             let mut scheduler = self_arc.lock().await;
             scheduler.tick().await;
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cron_task(schedule: &str) -> CronTask {
+        CronTask {
+            id: String::new(),
+            name: String::new(),
+            schedule: schedule.to_string(),
+            message: String::new(),
+            model: String::new(),
+            enabled: true,
+            last_run: None,
+            next_run: None,
+            interval_secs: 0,
+            start_date: None,
+            end_date: None,
+        }
+    }
+
+    #[test]
+    fn parse_interval_accepts_bare_and_every() {
+        assert_eq!(Scheduler::parse_interval("5m"), 300);
+        assert_eq!(Scheduler::parse_interval("every 5m"), 300);
+        assert_eq!(Scheduler::parse_interval("5 min"), 300);
+        assert_eq!(Scheduler::parse_interval("1h"), 3600);
+        assert_eq!(Scheduler::parse_interval("30s"), 30);
+        assert_eq!(Scheduler::parse_interval("every 1d"), 86400);
+        assert_eq!(Scheduler::parse_interval("every 2 hours"), 7200);
+        assert_eq!(Scheduler::parse_interval("90"), 90);
+    }
+
+    #[test]
+    fn parse_interval_cron_and_invalid() {
+        let cron = Scheduler::parse_interval("*/5 * * * *");
+        assert!((60..=300).contains(&cron), "cron gave {}", cron);
+        assert_eq!(Scheduler::parse_interval("bogus"), 60);
+        assert_eq!(Scheduler::parse_interval("5x"), 60);
+    }
+
+    #[test]
+    fn active_window_inclusive_and_bounds() {
+        let mut t = cron_task("5m");
+        t.start_date = Some("2026-09-01".into());
+        t.end_date = Some("2026-09-10".into());
+        let dc = |r: &str| chrono::DateTime::parse_from_rfc3339(r).unwrap().with_timezone(&chrono::Utc);
+        assert!(Scheduler::within_active_window(&t, &dc("2026-09-05T00:00:00Z")));
+        assert!(!Scheduler::within_active_window(&t, &dc("2026-08-20T00:00:00Z")));
+        assert!(!Scheduler::within_active_window(&t, &dc("2026-09-20T00:00:00Z")));
+    }
+
+    #[test]
+    fn active_window_ignores_malformed_date() {
+        let mut t = cron_task("5m");
+        t.start_date = Some("not-a-date".into());
+        assert!(Scheduler::within_active_window(&t, &chrono::Utc::now()));
     }
 }

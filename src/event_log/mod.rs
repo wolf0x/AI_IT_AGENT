@@ -23,17 +23,14 @@
 //! - `RunCompleted`: Task finished successfully
 //! - `RunFailed`: Task failed with error
 //! - `Usage`: Token usage statistics
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-
 /// Unique identifier for a run session.
 pub type RunId = String;
-
 /// A single event in the JSONL event log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type")]
@@ -47,7 +44,6 @@ pub enum LogEvent {
         model: String,
         session_id: String,
     },
-
     /// Agent begins a new reasoning turn.
     #[serde(rename = "turn_started")]
     TurnStarted {
@@ -55,7 +51,6 @@ pub enum LogEvent {
         timestamp: DateTime<Utc>,
         turn_number: u32,
     },
-
     /// LLM thinking/reasoning output.
     #[serde(rename = "thinking")]
     Thinking {
@@ -64,7 +59,6 @@ pub enum LogEvent {
         turn_number: u32,
         content: String,
     },
-
     /// LLM text output to user.
     #[serde(rename = "text_output")]
     TextOutput {
@@ -73,7 +67,6 @@ pub enum LogEvent {
         turn_number: u32,
         content: String,
     },
-
     /// Tool call initiated (before execution).
     #[serde(rename = "tool_call_started")]
     ToolCallStarted {
@@ -84,7 +77,6 @@ pub enum LogEvent {
         tool_name: String,
         args: Value,
     },
-
     /// Tool call finished with result.
     #[serde(rename = "tool_call_completed")]
     ToolCallCompleted {
@@ -97,7 +89,6 @@ pub enum LogEvent {
         success: bool,
         duration_ms: u64,
     },
-
     /// Periodic state snapshot for resume.
     #[serde(rename = "checkpoint")]
     Checkpoint {
@@ -108,7 +99,6 @@ pub enum LogEvent {
         conversation_summary: Option<String>,
         state: Value,
     },
-
     /// Task finished successfully.
     #[serde(rename = "run_completed")]
     RunCompleted {
@@ -118,7 +108,6 @@ pub enum LogEvent {
         total_tokens: u64,
         duration_ms: u64,
     },
-
     /// Task failed with error.
     #[serde(rename = "run_failed")]
     RunFailed {
@@ -127,7 +116,6 @@ pub enum LogEvent {
         total_turns: u32,
         error: String,
     },
-
     /// Token usage statistics.
     #[serde(rename = "usage")]
     Usage {
@@ -140,7 +128,6 @@ pub enum LogEvent {
         total_tokens: u64,
     },
 }
-
 impl LogEvent {
     /// Check if this event should trigger fsync.
     pub fn requires_sync(&self) -> bool {
@@ -153,7 +140,6 @@ impl LogEvent {
         )
     }
 }
-
 /// Append-only JSONL event log writer.
 ///
 /// Writes events to a file in JSONL format (one JSON object per line).
@@ -162,7 +148,6 @@ pub struct EventLog {
     file: File,
     events_written: u64,
 }
-
 impl EventLog {
     /// Create a new event log, appending to existing file if present.
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
@@ -171,32 +156,25 @@ impl EventLog {
             .create(true)
             .append(true)
             .open(&path)?;
-
         // Count existing events
         let events_written = Self::count_events(&path).unwrap_or(0);
-
         Ok(Self {
             file,
             events_written,
         })
     }
-
     /// Append an event to the log.
     pub fn append(&mut self, event: &LogEvent) -> std::io::Result<()> {
         let json = serde_json::to_string(event)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
         writeln!(self.file, "{}", json)?;
         self.events_written += 1;
-
         // Fsync for critical events
         if event.requires_sync() {
             self.file.sync_data()?;
         }
-
         Ok(())
     }
-
     /// Count events in an existing log file.
     fn count_events(path: &Path) -> std::io::Result<u64> {
         let file = File::open(path)?;
@@ -204,14 +182,12 @@ impl EventLog {
         Ok(reader.lines().count() as u64)
     }
 }
-
 /// Read events from a JSONL log file.
 #[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn read_events(path: impl AsRef<Path>) -> std::io::Result<Vec<LogEvent>> {
     let file = File::open(path.as_ref())?;
     let reader = BufReader::new(file);
     let mut events = Vec::new();
-
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -224,16 +200,13 @@ pub fn read_events(path: impl AsRef<Path>) -> std::io::Result<Vec<LogEvent>> {
             }
         }
     }
-
     Ok(events)
 }
-
 /// Find the last checkpoint in an event log.
 #[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn find_last_checkpoint(events: &[LogEvent]) -> Option<&LogEvent> {
     events.iter().rev().find(|e| matches!(e, LogEvent::Checkpoint { .. }))
 }
-
 /// Get the run_id from a log file (from the first RunStarted event).
 #[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn get_run_id(events: &[LogEvent]) -> Option<&str> {
@@ -242,7 +215,6 @@ pub fn get_run_id(events: &[LogEvent]) -> Option<&str> {
         _ => None,
     })
 }
-
 /// Replay statistics for a run.
 #[allow(dead_code)] // replay API — reserved for crash-resume feature
 #[derive(Debug, Default)]
@@ -257,7 +229,6 @@ pub struct ReplayStats {
     pub failed: bool,
     pub error: Option<String>,
 }
-
 /// Compute replay statistics from events.
 #[allow(dead_code)] // replay API — reserved for crash-resume feature
 pub fn compute_replay_stats(events: &[LogEvent]) -> ReplayStats {
@@ -265,7 +236,6 @@ pub fn compute_replay_stats(events: &[LogEvent]) -> ReplayStats {
         total_events: events.len(),
         ..Default::default()
     };
-
     for event in events {
         match event {
             LogEvent::TurnStarted { turn_number, .. } => {
@@ -293,24 +263,19 @@ pub fn compute_replay_stats(events: &[LogEvent]) -> ReplayStats {
             _ => {}
         }
     }
-
     stats
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-
     #[test]
     fn test_event_log_write_and_read() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.jsonl");
-
         // Write events
-        let mut log = EventLog::create_new(&path).unwrap();
-
+        let mut log = EventLog::open(&path).unwrap();
         let event1 = LogEvent::RunStarted {
             run_id: "test-run-1".to_string(),
             timestamp: Utc::now(),
@@ -319,24 +284,20 @@ mod tests {
             session_id: "session-1".to_string(),
         };
         log.append(&event1).unwrap();
-
         let event2 = LogEvent::TurnStarted {
             run_id: "test-run-1".to_string(),
             timestamp: Utc::now(),
             turn_number: 1,
         };
         log.append(&event2).unwrap();
-
-        log.sync().unwrap();
+        
         drop(log);
-
         // Read events back
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], LogEvent::RunStarted { .. }));
         assert!(matches!(events[1], LogEvent::TurnStarted { .. }));
     }
-
     #[test]
     fn test_checkpoint_detection() {
         let events = vec![
@@ -366,14 +327,12 @@ mod tests {
                 turn_number: 2,
             },
         ];
-
         let checkpoint = find_last_checkpoint(&events);
         assert!(checkpoint.is_some());
         if let Some(LogEvent::Checkpoint { turn_number, .. }) = checkpoint {
             assert_eq!(*turn_number, 1);
         }
     }
-
     #[test]
     fn test_replay_stats() {
         let events = vec![
@@ -402,7 +361,6 @@ mod tests {
                 duration_ms: 1000,
             },
         ];
-
         let stats = compute_replay_stats(&events);
         assert_eq!(stats.total_events, 3);
         assert_eq!(stats.tool_calls, 1);

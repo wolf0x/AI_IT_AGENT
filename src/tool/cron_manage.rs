@@ -59,6 +59,14 @@ impl Tool for CronManageTool {
                     "type": "string",
                     "description": "Model name (optional, empty = default)"
                 },
+                "start_date": {
+                    "type": "string",
+                    "description": "Active window start date YYYY-MM-DD (optional, empty = no lower bound)"
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "Active window end date YYYY-MM-DD (optional, empty = no upper bound)"
+                },
                 "task_id": {
                     "type": "string",
                     "description": "Task ID (required for delete and toggle)"
@@ -78,6 +86,8 @@ impl Tool for CronManageTool {
                 let schedule = args["schedule"].as_str().unwrap_or("").trim().to_string();
                 let message = args["message"].as_str().unwrap_or("").trim().to_string();
                 let model = args["model"].as_str().unwrap_or("").trim().to_string();
+                let start_date = args["start_date"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                let end_date = args["end_date"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
                 if name.is_empty() || schedule.is_empty() || message.is_empty() {
                     return Ok(json!({
@@ -96,6 +106,8 @@ impl Tool for CronManageTool {
                     last_run: None,
                     next_run: None,
                     interval_secs: 0,
+                    start_date,
+                    end_date,
                 };
 
                 let created = sched.create(task);
@@ -110,6 +122,8 @@ impl Tool for CronManageTool {
                         "enabled": created.enabled,
                         "interval_secs": created.interval_secs,
                         "next_run": created.next_run,
+                        "start_date": created.start_date,
+                        "end_date": created.end_date,
                     }
                 }))
             }

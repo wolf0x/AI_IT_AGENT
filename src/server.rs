@@ -937,6 +937,12 @@ async fn cron_create_handler(
         last_run: None,
         next_run: None,
         interval_secs: 0,
+        start_date: body["start_date"].as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        end_date: body["end_date"].as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
     };
     let mut scheduler = state.scheduler.lock().await;
     let created = scheduler.create(task);
@@ -955,6 +961,8 @@ async fn cron_update_handler(
         body["schedule"].as_str().map(|s| s.to_string()),
         body["message"].as_str().map(|s| s.to_string()),
         body["model"].as_str().map(|s| s.to_string()),
+        body["start_date"].as_str().map(|s| s.to_string()),
+        body["end_date"].as_str().map(|s| s.to_string()),
     );
     Json(json!({ "success": ok }))
 }

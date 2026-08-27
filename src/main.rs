@@ -474,7 +474,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build permission state
     let (permission_resolver, permission_pending) = PermissionResolver::new();
-    let permissions = Arc::new(Mutex::new(default_permissions()));
+    let permissions = Arc::new(Mutex::new({
+        // Seed from config so persisted tool_permissions survive restart and are
+        // inherited by CRON tasks (which share this same permission map).
+        let mut perms = default_permissions();
+        for (k, v) in &config.agent.tool_permissions {
+            perms.insert(k.clone(), *v);
+        }
+        perms
+    }));
 
     // Build scheduler (resolve cron path from workspace)
     let cron_path = std::path::Path::new(&workspace_dir).join("cron_tasks.json");
