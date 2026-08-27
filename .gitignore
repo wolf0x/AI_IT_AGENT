@@ -51,3 +51,7 @@ skills/
 
 # Local-only documentation (not synced to GitHub)
 SPEC.md
+
+# Runtime workspace + distilled knowledge (local-only, never upload)
+workspace/
+knowledge/
