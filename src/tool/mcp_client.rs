@@ -82,7 +82,29 @@ impl McpClientManager {
                 });
                 continue;
             }
-            self.connect_server(config).await;
+            // Per-server connect timeout so a hung/slow MCP server cannot
+            // block application startup.
+            const CONNECT_TIMEOUT_SECS: u64 = 15;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+                self.connect_server(config),
+            )
+            .await
+            {
+                Ok(_) => {}
+                Err(_) => {
+                    warn!(
+                        "MCP server '{}' connect timed out after {}s, skipping",
+                        config.name, CONNECT_TIMEOUT_SECS
+                    );
+                    self.servers.push(McpServerHandle {
+                        config: config.clone(),
+                        status: ServerStatus::Error("connect timed out".to_string()),
+                        service: None,
+                        tools: Vec::new(),
+                    });
+                }
+            }
         }
     }
 

@@ -359,7 +359,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register all MCP tools into the tool registry
     let mcp_tools = mcp_manager.get_tools();
     for tool in &mcp_tools {
-        info!("MCP tool: {} ({})", tool.name(), tool.description());
+        let one_liner = tool
+            .description()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect::<String>();
+        info!("MCP tool: {} - {}", tool.name(), one_liner);
         registry.register(tool.clone());
     }
     if !mcp_tools.is_empty() {
