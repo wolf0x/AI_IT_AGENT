@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "RustAgent"
-version = "0.33.17"
+version = "0.33.18"
 dependencies = [
  "aes-gcm",
  "async-stream",
