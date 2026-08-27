@@ -51,6 +51,13 @@ pub struct CronTask {
 }
 
 fn default_true() -> bool { true }
+/// Directive appended to every CRON task so it runs unattended: execute the full goal
+/// autonomously, report only verified facts/findings, and never ask the user for
+/// permission, clarification, or offer follow-up questions/recommendations.
+/// Used with string concat (not a format arg), so braces are fine as-is.
+const CRON_MODE_DIRECTIVE: &str =
+    "[CRON定时任务] 这是一条无人值守的定时任务。请自主完整地执行任务目标，一次性完成全部工作。只陈述已核实的事实和发现，不要向用户询问许可或澄清，不要反问“是否需要我……”，不要给出建议、推荐或下一步行动指引。若某项信息不可得，直接作为事实说明。完成后即停止。";
+
 
 /// Normalize an optional date string: trim and treat empty as None.
 fn normalize_opt_date(s: &str) -> Option<String> {
@@ -468,7 +475,10 @@ impl Scheduler {
                 task.model.clone()
             };
 
-            let message = task.message.clone();
+            // CRON runs unattended: append the mode directive so the agent completes the
+            // full goal and reports only facts, instead of asking permission or follow-ups.
+            let mut message = task.message.clone();
+            message.push_str(CRON_MODE_DIRECTIVE);
             let runner = self.runner.clone();
             let permissions = self.permissions.clone();
             let permission_pending = self.permission_pending.clone();
