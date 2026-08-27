@@ -226,6 +226,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/cron/{id}", put(cron_update_handler))
         .route("/api/cron/{id}", delete(cron_delete_handler))
         .route("/api/cron/{id}/toggle", post(cron_toggle_handler))
+        .route("/api/cron/settings", get(cron_settings_handler))
+        .route("/api/cron/settings", post(cron_settings_update_handler))
         .route("/api/notify", post(notify_handler))
         .route("/api/memory/dates", get(memory_dates_handler))
         .route("/api/memory/summaries", get(memory_summaries_handler))
@@ -988,6 +990,21 @@ async fn cron_toggle_handler(
         None
     };
     Json(json!({ "success": ok, "enabled": enabled }))
+}
+
+async fn cron_settings_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let scheduler = state.scheduler.lock().await;
+    Json(json!({ "auto_approve": scheduler.auto_approve() }))
+}
+
+async fn cron_settings_update_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let on = body["auto_approve"].as_bool().unwrap_or(false);
+    let mut scheduler = state.scheduler.lock().await;
+    scheduler.set_auto_approve(on);
+    Json(json!({ "success": true, "auto_approve": scheduler.auto_approve() }))
 }
 
 /// POST /api/notify — push a notification message to all connected WebSocket clients.

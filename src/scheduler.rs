@@ -62,6 +62,8 @@ fn normalize_opt_date(s: &str) -> Option<String> {
 pub struct Scheduler {
     tasks: Vec<CronTask>,
     storage_path: String,
+    /// Global switch: auto-approve arbitrary commands for CRON tasks (default off).
+    auto_approve: bool,
     runner: Arc<Runner>,
     model_configs: Arc<tokio::sync::RwLock<Vec<crate::config::ModelConfig>>>,
     permissions: Arc<Mutex<HashMap<String, bool>>>,
@@ -91,6 +93,7 @@ impl Scheduler {
         let mut scheduler = Self {
             tasks: Vec::new(),
             storage_path: storage_path.to_string(),
+            auto_approve: false,
             runner,
             model_configs,
             permissions,
@@ -103,6 +106,7 @@ impl Scheduler {
             notify_tx,
         };
         scheduler.load();
+        scheduler.load_settings();
         scheduler
     }
 
@@ -144,6 +148,48 @@ impl Scheduler {
                 }
             }
             Err(e) => error!("Failed to serialize cron tasks: {}", e),
+        }
+    }
+
+
+    /// Path to the cron settings file (sibling of cron_tasks.json).
+    fn settings_path(&self) -> String {
+        if self.storage_path.ends_with("cron_tasks.json") {
+            self.storage_path[..self.storage_path.len() - "cron_tasks.json".len()].to_string() + "cron_settings.json"
+        } else {
+            self.storage_path.clone() + ".settings"
+        }
+    }
+
+    /// Load the global CRON auto-approve flag from the settings file (default off).
+    fn load_settings(&mut self) {
+        let path = self.settings_path();
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Some(v) = serde_json::from_str::<serde_json::Value>(&content).ok()
+                .and_then(|j| j["auto_approve"].as_bool()) {
+                self.auto_approve = v;
+            }
+        }
+    }
+
+    fn save_settings(&self) {
+        let json = serde_json::json!({ "auto_approve": self.auto_approve });
+        if let Err(e) = std::fs::write(self.settings_path(), serde_json::to_string_pretty(&json).unwrap_or_default()) {
+            error!("Failed to save cron settings: {}", e);
+        }
+    }
+
+    /// Whether CRON tasks auto-approve arbitrary commands.
+    pub fn auto_approve(&self) -> bool {
+        self.auto_approve
+    }
+
+    /// Set the global CRON auto-approve flag and persist it.
+    pub fn set_auto_approve(&mut self, on: bool) {
+        if self.auto_approve != on {
+            self.auto_approve = on;
+            self.save_settings();
+            info!("CRON auto-approve set to {}", on);
         }
     }
 
@@ -433,15 +479,23 @@ impl Scheduler {
             let tool_timeout = self.tool_timeout_secs;
             let task_name = task.name.clone();
             let notify_tx = self.notify_tx.clone();
+            let auto_approve = self.auto_approve;
 
             // Execute the task as an independent sub-agent (own session, empty history)
             tokio::spawn(async move {
                 let session_id = format!("cron-{}", uuid::Uuid::new_v4());
                 let start = std::time::Instant::now();
+                let preauth = if auto_approve {
+                    let mut profile = crate::managed::permission_profile::PermissionProfile::new(session_id.clone());
+                    profile.allow_all = true;
+                    Some(std::sync::Arc::new(profile))
+                } else {
+                    None
+                };
                 match runner.run(
                     &message, &session_id, &model, max_iter, vec![],
                     permissions, permission_pending,
-                    None, // no pre-authorization profile (scheduled task)
+                    preauth, // allow_all when CRON auto-approve toggle is on (default off)
                     None, rabbit_hole,
                     ctx_window, ctx_window_threshold,
                     tool_timeout,

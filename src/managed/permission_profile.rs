@@ -33,6 +33,9 @@ pub struct PermissionProfile {
     pub task_id: String,
     /// Action classes that are pre-authorized.
     pub preauthorized: HashSet<PreauthorizedAction>,
+    /// When true, bypasses the permission gate entirely (global CRON auto-approve).
+    #[serde(default)]
+    pub allow_all: bool,
     /// When this profile was created.
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// When this profile expires (optional — defaults to task completion).
@@ -65,6 +68,7 @@ impl PermissionProfile {
         Self {
             task_id,
             preauthorized: HashSet::new(),
+            allow_all: false,
             created_at: chrono::Utc::now(),
             expires_at: None,
         }
@@ -138,6 +142,11 @@ pub fn check_preauthorization(
 ) -> bool {
     if profile.is_expired() {
         return false;
+    }
+    // Global CRON auto-approve: run arbitrary commands without pausing for approval.
+    // Only set when the CRON "auto-approve commands" toggle is on (default off).
+    if profile.allow_all {
+        return true;
     }
 
     // Map tool calls to pre-authorized actions

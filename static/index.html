@@ -627,9 +627,16 @@ input:checked+.slider:before{transform:translateX(20px)}
 .cron-range{display:flex;align-items:center;gap:8px}
 .cron-range input[type=date]{flex:1}
 .cron-range-sep{color:#94a3b8;font-weight:600}
-.cron-field-add{display:flex;align-items:flex-end}
+.cron-field-add{display:flex;flex-direction:column;gap:6px;grid-column:span 2}
 .cron-btn-add{width:100%;padding:11px 16px;background:linear-gradient(135deg,#3498db,#2a7fc0);color:#fff;border:0;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;transition:.2s;box-shadow:0 4px 12px rgba(52,152,219,.25)}
 .cron-btn-add:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(52,152,219,.35)}
+.cron-add-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.cron-auto-toggle{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:#64748b;white-space:nowrap;cursor:pointer;margin:0;padding:7px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px}
+.cron-auto-toggle:hover{border-color:#3498db}
+.cron-btn-save{width:100%;padding:11px 16px;background:linear-gradient(135deg,#27ae60,#1e8e4f);color:#fff;border:0;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;transition:.2s;box-shadow:0 4px 12px rgba(39,174,96,.25)}
+.cron-act.edit{background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe}.cron-act.edit:hover{background:#e0e7ff}
+.cron-edit-cancel{background:#fff;color:#64748b;border:1px solid #cbd5e1}.cron-edit-cancel:hover{background:#f1f5f9}
+.hidden{display:none!important}
 .cron-list{display:flex;flex-direction:column;gap:12px}
 .cron-empty{color:#94a3b8;text-align:center;padding:26px 0;font-size:13px}
 .cron-item{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #cbd5e1;border-radius:12px;transition:box-shadow .15s,transform .15s}
@@ -1008,7 +1015,12 @@ input:checked+.slider:before{transform:translateX(20px)}
               <select id="cronModel"><option value="">Default</option></select>
             </div>
             <div class="cron-field cron-field-add">
-              <button class="btn cron-btn-add" onclick="createCronTask()">+ Add Task</button>
+              <label>&nbsp;</label>
+              <div class="cron-add-row">
+                <label class="cron-auto-toggle" title="When on, scheduled tasks may run any command (incl. shell_exec) without asking">Auto-approve commands<span class="perm-toggle"><input type="checkbox" id="cronAutoApprove" onchange="setCronAutoApprove(this.checked)"><span class="slider"></span></span></label>
+                <button class="btn cron-btn-add" id="cronSubmitBtn" onclick="submitCronTask()">+ Add Task</button>
+                <button class="cron-act cron-edit-cancel hidden" id="cronCancelEdit" onclick="cancelCronEdit()">Cancel</button>
+              </div>
             </div>
           </div>
         </div>
@@ -2331,11 +2343,15 @@ async function toggleTool(name){
 }
 
 // 閳光偓閳光偓 CRON Tasks 閳光偓閳光偓
+let cronTasks=[];let editingCronId=null;let editingInterval=true;
+
 async function loadCron(){
   try{
     const r=await fetch('/api/cron');const d=await r.json();
     const el=document.getElementById('cronTaskList');
     const tasks=d.tasks||[];
+    cronTasks=tasks;
+    loadCronSettings();
     const cmSel=document.getElementById('cronModel');
     const mSel=document.getElementById('modelSel');
     cmSel.innerHTML='<option value="">Default</option>';
@@ -2355,6 +2371,7 @@ async function loadCron(){
           '<div class="cron-meta"><span>Last: '+esc(last)+'</span><span>Next: '+next+'</span>'+win+'</div>'+
         '</div>'+
         '<div class="cron-actions">'+
+          '<button class="cron-act edit" onclick="editCron(\''+t.id+'\')" title="Edit task">&#9998; Edit</button>'+
           '<button class="cron-act '+(on?'on':'off')+'" onclick="toggleCron(\''+t.id+'\')" title="'+(on?'Click to disable':'Click to enable')+'">'+(on?'Pause':'Resume')+'</button>'+
           '<button class="cron-act danger" onclick="deleteCron(\''+t.id+'\')" title="Delete task">&#128465; Delete</button>'+
         '</div>'+
@@ -2389,6 +2406,77 @@ async function toggleCron(id){
 async function deleteCron(id){
   if(!confirm('Delete this task?'))return;
   try{await fetch('/api/cron/'+id,{method:'DELETE'});loadCron()}catch(e){alert('Failed')}
+}
+async function submitCronTask(){
+  if(editingCronId){ await saveCronTask(); } else { await createCronTask(); }
+}
+async function loadCronSettings(){
+  try{
+    const r=await fetch('/api/cron/settings');const d=await r.json();
+    const cb=document.getElementById('cronAutoApprove');
+    if(cb) cb.checked=!!d.auto_approve;
+  }catch(e){}
+}
+async function setCronAutoApprove(on){
+  try{ await fetch('/api/cron/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_approve:!!on})}); }
+  catch(e){ alert('Failed to update auto-approve'); }
+}
+function parseScheduleInterval(schedule){
+  const m=(schedule||'').match(/^every\s+(\d+)([smhd])$/);
+  return m?{itv:m[1],unit:m[2]}:null;
+}
+function editCron(id){
+  const t=cronTasks.find(x=>x.id===id); if(!t)return;
+  document.getElementById('cronName').value=t.name||'';
+  const p=parseScheduleInterval(t.schedule);
+  editingInterval=!!p;
+  if(p){ document.getElementById('cronInterval').value=p.itv; document.getElementById('cronUnit').value=p.unit; }
+  document.getElementById('cronMessage').value=t.message||'';
+  document.getElementById('cronModel').value=t.model||'';
+  document.getElementById('cronStartDate').value=t.start_date||'';
+  document.getElementById('cronEndDate').value=t.end_date||'';
+  editingCronId=t.id;
+  const btn=document.getElementById('cronSubmitBtn');
+  btn.textContent='Save Task';
+  btn.classList.remove('cron-btn-add'); btn.classList.add('cron-btn-save');
+  const cc=document.getElementById('cronCancelEdit'); if(cc) cc.classList.remove('hidden');
+  const card=document.querySelector('.cron-create-card'); if(card) card.scrollIntoView({behavior:'smooth'});
+}
+function resetCronEdit(){
+  editingCronId=null; editingInterval=true;
+  const btn=document.getElementById('cronSubmitBtn');
+  btn.textContent='+ Add Task';
+  btn.classList.add('cron-btn-add'); btn.classList.remove('cron-btn-save');
+  const cc=document.getElementById('cronCancelEdit'); if(cc) cc.classList.add('hidden');
+}
+function cancelCronEdit(){
+  resetCronEdit();
+  document.getElementById('cronName').value='';
+  document.getElementById('cronInterval').value=5;
+  document.getElementById('cronUnit').value='m';
+  document.getElementById('cronMessage').value='';
+  document.getElementById('cronStartDate').value='';
+  document.getElementById('cronEndDate').value='';
+}
+async function saveCronTask(){
+  const id=editingCronId; if(!id)return;
+  const name=document.getElementById('cronName').value.trim();
+  const itv=parseInt(document.getElementById('cronInterval').value,10);
+  const unit=document.getElementById('cronUnit').value;
+  const message=document.getElementById('cronMessage').value.trim();
+  const model=document.getElementById('cronModel').value;
+  const startDate=document.getElementById('cronStartDate').value;
+  const endDate=document.getElementById('cronEndDate').value;
+  if(!name||!message){alert('Name and message are required');return}
+  if(editingInterval && (!itv||itv<1)){alert('Please enter a valid repeat interval');return}
+  if(startDate&&endDate&&startDate>endDate){alert('Start date must be before end date');return}
+  const body={name,message,model,start_date:startDate,end_date:endDate};
+  if(editingInterval) body.schedule='every '+itv+unit;
+  try{
+    await fetch('/api/cron/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    resetCronEdit();
+    loadCron();
+  }catch(e){alert('Failed to save task')}
 }
 
 // >>> Config Files (AGENTS.md, SOUL.md, TOOLS.md) <<<
