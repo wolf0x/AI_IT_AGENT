@@ -185,7 +185,7 @@ body{font-family:var(--font);background:linear-gradient(135deg,#667eea 0%,#764ba
 .msg-role{font-size:10px;font-weight:600;margin-bottom:2px;padding:0 6px}
 .msg.user .msg-role{color:var(--accent)}
 .msg.assistant .msg-role{color:var(--green)}
-.msg-content{padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.6;word-wrap:break-word;overflow-x:auto}
+.msg-content{padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.6;word-wrap:break-word;overflow-wrap:anywhere;overflow-x:auto;min-width:0;max-width:100%}
 .msg.user .msg-content{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
 .msg.assistant .msg-content{background:#ecf0f1;color:#2c3e50;border-bottom-left-radius:4px}
 .msg-time{font-size:10px;color:var(--t3);margin-top:2px;padding:0 6px}
