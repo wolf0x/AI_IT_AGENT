@@ -892,8 +892,9 @@ impl Agent for LlmAgent {
             // no_new_state_iters: consecutive iterations that produced no new result.
             // reconsider_events: number of automatic strategy-reconsiderations fired.
             const MAX_AUTO_RECONSIDERS: usize = 3;
-            const RESULT_REPEAT_THRESHOLD: usize = 3;
-            const NO_STATE_ITERS: usize = 3;
+            // Stall sensitivity derives from the user-configurable (and hot-reloadable)
+            // rabbit_hole_threshold, so a single knob tunes both loop and stall detection.
+            let stall_repeat_threshold = rabbit_hole_threshold.max(2);
             const TEXT_REPEAT_LIMIT: usize = 6;
             let mut last_result: std::collections::HashMap<String, (u64, usize)> = std::collections::HashMap::new();
             let mut no_new_state_iters: usize = 0;
@@ -1310,7 +1311,7 @@ impl Agent for LlmAgent {
                                 let entry = last_result.entry(name.clone()).or_insert((dig, 0));
                                 if entry.0 == dig {
                                     entry.1 += 1;
-                                    if entry.1 >= RESULT_REPEAT_THRESHOLD {
+                                    if entry.1 >= stall_repeat_threshold {
                                         info!("[session:{}] Stall: '{}' returned identical result {}x", session_id, name, entry.1);
                                         stalled = true;
                                     }
@@ -1329,7 +1330,7 @@ impl Agent for LlmAgent {
                                 no_new_state_iters = 0;
                             } else if !stalled {
                                 no_new_state_iters += 1;
-                                if no_new_state_iters >= NO_STATE_ITERS {
+                                if no_new_state_iters >= stall_repeat_threshold {
                                     info!("[session:{}] Stall: no new state for {} iterations", session_id, no_new_state_iters);
                                     stalled = true;
                                 }
