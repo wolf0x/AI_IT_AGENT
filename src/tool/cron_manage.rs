@@ -67,6 +67,14 @@ impl Tool for CronManageTool {
                     "type": "string",
                     "description": "Active window end date YYYY-MM-DD (optional, empty = no upper bound)"
                 },
+                "start_time": {
+                    "type": "string",
+                    "description": "Active window start time HH:MM local 24h (optional, empty = no lower bound)"
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": "Active window end time HH:MM local 24h (optional, empty = no upper bound)"
+                },
                 "task_id": {
                     "type": "string",
                     "description": "Task ID (required for delete and toggle)"
@@ -88,6 +96,8 @@ impl Tool for CronManageTool {
                 let model = args["model"].as_str().unwrap_or("").trim().to_string();
                 let start_date = args["start_date"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                 let end_date = args["end_date"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                let start_time = args["start_time"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                let end_time = args["end_time"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
                 if name.is_empty() || schedule.is_empty() || message.is_empty() {
                     return Ok(json!({
@@ -108,6 +118,8 @@ impl Tool for CronManageTool {
                     interval_secs: 0,
                     start_date,
                     end_date,
+                    start_time,
+                    end_time,
                 };
 
                 let created = sched.create(task);

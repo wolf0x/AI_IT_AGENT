@@ -1005,6 +1005,11 @@ input:checked+.slider:before{transform:translateX(20px)}
                 <span class="cron-range-sep">&rarr;</span>
                 <input type="date" id="cronEndDate" title="Active until">
               </div>
+              <div class="cron-range" style="margin-top:6px">
+                <input type="time" id="cronStartTime" title="Active from time (HH:MM, local)">
+                <span class="cron-range-sep">&rarr;</span>
+                <input type="time" id="cronEndTime" title="Active until time (HH:MM, local)">
+              </div>
             </div>
             <div class="cron-field cron-field-full">
               <label>What should the agent do?</label>
@@ -2361,7 +2366,9 @@ async function loadCron(){
     if(!tasks.length){el.innerHTML='<div class="cron-empty">No scheduled tasks yet</div>';return}
     el.innerHTML=tasks.map(t=>{
       const on=t.enabled;
-      const win=(t.start_date||t.end_date)?'<span class="cron-meta-chip">&#128197; '+esc((t.start_date||'')+' ~ '+(t.end_date||''))+'</span>':'';
+      const winDays=(t.start_date||t.end_date)?'&#128197; '+esc((t.start_date||'')+' ~ '+(t.end_date||'')):'';
+      const winTime=(t.start_time||t.end_time)?'&#128337; '+esc((t.start_time||'')+' ~ '+(t.end_time||'')):'';
+      const win=(winDays||winTime)?'<span class="cron-meta-chip">'+winDays+(winDays&&winTime?' &nbsp; ':'')+winTime+'</span>':'';
       const last=t.last_run?fmtDateTime(new Date(t.last_run)):'Never';
       const next=t.next_run?fmtDateTime(new Date(t.next_run)):'&#8212;';
       return '<div class="cron-item'+(on?' on':'')+'">'+
@@ -2387,16 +2394,21 @@ async function createCronTask(){
   const model=document.getElementById('cronModel').value;
   const startDate=document.getElementById('cronStartDate').value;
   const endDate=document.getElementById('cronEndDate').value;
+  const startTime=document.getElementById('cronStartTime').value;
+  const endTime=document.getElementById('cronEndTime').value;
   if(!name||!message){alert('Name and message are required');return}
   if(!itv||itv<1){alert('Please enter a valid repeat interval');return}
   if(startDate&&endDate&&startDate>endDate){alert('Start date must be before end date');return}
+  if(startTime&&endTime&&startTime>endTime){alert('Start time must be before end time');return}
   const schedule='every '+itv+unit;
   try{
-    await fetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule,message,model,start_date:startDate,end_date:endDate})});
+    await fetch('/api/cron',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,schedule,message,model,start_date:startDate,end_date:endDate,start_time:startTime,end_time:endTime})});
     document.getElementById('cronName').value='';
     document.getElementById('cronMessage').value='';
     document.getElementById('cronStartDate').value='';
     document.getElementById('cronEndDate').value='';
+    document.getElementById('cronStartTime').value='';
+    document.getElementById('cronEndTime').value='';
     loadCron();
   }catch(e){alert('Failed to create task')}
 }
@@ -2435,6 +2447,8 @@ function editCron(id){
   document.getElementById('cronModel').value=t.model||'';
   document.getElementById('cronStartDate').value=t.start_date||'';
   document.getElementById('cronEndDate').value=t.end_date||'';
+  document.getElementById('cronStartTime').value=t.start_time||'';
+  document.getElementById('cronEndTime').value=t.end_time||'';
   editingCronId=t.id;
   const btn=document.getElementById('cronSubmitBtn');
   btn.textContent='Save Task';
@@ -2457,6 +2471,8 @@ function cancelCronEdit(){
   document.getElementById('cronMessage').value='';
   document.getElementById('cronStartDate').value='';
   document.getElementById('cronEndDate').value='';
+  document.getElementById('cronStartTime').value='';
+  document.getElementById('cronEndTime').value='';
 }
 async function saveCronTask(){
   const id=editingCronId; if(!id)return;
@@ -2467,10 +2483,13 @@ async function saveCronTask(){
   const model=document.getElementById('cronModel').value;
   const startDate=document.getElementById('cronStartDate').value;
   const endDate=document.getElementById('cronEndDate').value;
+  const startTime=document.getElementById('cronStartTime').value;
+  const endTime=document.getElementById('cronEndTime').value;
   if(!name||!message){alert('Name and message are required');return}
   if(editingInterval && (!itv||itv<1)){alert('Please enter a valid repeat interval');return}
   if(startDate&&endDate&&startDate>endDate){alert('Start date must be before end date');return}
-  const body={name,message,model,start_date:startDate,end_date:endDate};
+  if(startTime&&endTime&&startTime>endTime){alert('Start time must be before end time');return}
+  const body={name,message,model,start_date:startDate,end_date:endDate,start_time:startTime,end_time:endTime};
   if(editingInterval) body.schedule='every '+itv+unit;
   try{
     await fetch('/api/cron/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

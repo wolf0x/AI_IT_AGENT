@@ -48,6 +48,12 @@ pub struct CronTask {
     /// Optional active window end date (YYYY-MM-DD, inclusive). Empty = no upper bound.
     #[serde(default)]
     pub end_date: Option<String>,
+    /// Optional active window start time (HH:MM, local 24h). Empty = no lower bound.
+    #[serde(default)]
+    pub start_time: Option<String>,
+    /// Optional active window end time (HH:MM, local 24h). Empty = no upper bound.
+    #[serde(default)]
+    pub end_time: Option<String>,
 }
 
 fn default_true() -> bool { true }
@@ -63,6 +69,22 @@ const CRON_MODE_DIRECTIVE: &str =
 fn normalize_opt_date(s: &str) -> Option<String> {
     let t = s.trim();
     if t.is_empty() { None } else { Some(t.to_string()) }
+}
+
+/// Normalize an optional clock-time string: trim and treat empty as None.
+fn normalize_opt_time(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
+}
+
+/// Parse a "HH:MM" clock string into minutes-since-midnight; None if malformed.
+fn parse_hhmm(s: &str) -> Option<u32> {
+    let t = s.trim();
+    let mut it = t.split(':');
+    let hh: u32 = it.next()?.trim().parse().ok()?;
+    let mm: u32 = it.next()?.trim().parse().ok()?;
+    if it.next().is_some() || hh >= 24 || mm >= 60 { return None; }
+    Some(hh * 60 + mm)
 }
 
 /// The scheduler manages periodic tasks.
@@ -358,17 +380,34 @@ impl Scheduler {
     /// Whether `now` falls within the task's optional [start_date, end_date] window.
     /// Dates are compared as YYYY-MM-DD strings (lexicographic == chronological).
     fn within_active_window(task: &CronTask, now: &chrono::DateTime<chrono::Utc>) -> bool {
-        // Interpret the date window in the LOCAL calendar day so a UTC+8 user setting
-        // "Sep 1 - Sep 10" gets the intended local days (UTC would be ~8h off).
-        let today = now.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
-        // Only enforce bounds that are well-formed YYYY-MM-DD so a bad date string
-        // does not silently disable the task.
+        // Interpret the date/time window in the LOCAL calendar so a UTC+8 user setting
+        // "Sep 1 - Sep 10" or "09:00-17:00" gets the intended local days/hours.
+        let local = now.with_timezone(&chrono::Local);
+        let today = local.format("%Y-%m-%d").to_string();
+        // Only enforce bounds that are well-formed; a bad string does not disable the task.
         let well_formed = |d: &String| d.len() == 10 && d.chars().nth(4) == Some('-') && d.chars().nth(7) == Some('-');
         if let Some(ref st) = task.start_date {
             if well_formed(st) && today < *st { return false; }
         }
         if let Some(ref en) = task.end_date {
             if well_formed(en) && today > *en { return false; }
+        }
+        // Time-of-day window (local), inclusive, with overnight wraparound (start > end).
+        let cur = local.hour() * 60 + local.minute();
+        match (
+            task.start_time.as_deref().and_then(parse_hhmm),
+            task.end_time.as_deref().and_then(parse_hhmm),
+        ) {
+            (Some(s), Some(e)) => {
+                if s <= e {
+                    if cur < s || cur > e { return false; }
+                } else if cur < s && cur > e {
+                    return false;
+                }
+            }
+            (Some(s), None) => { if cur < s { return false; } }
+            (None, Some(e)) => { if cur > e { return false; } }
+            (None, None) => {}
         }
         true
     }
@@ -391,7 +430,8 @@ impl Scheduler {
     /// Update an existing task.
     pub fn update(&mut self, id: &str, name: Option<String>, schedule: Option<String>,
                   message: Option<String>, model: Option<String>,
-                  start_date: Option<String>, end_date: Option<String>) -> bool {
+                  start_date: Option<String>, end_date: Option<String>,
+                  start_time: Option<String>, end_time: Option<String>) -> bool {
         if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
             if let Some(n) = name { task.name = n; }
             if let Some(s) = schedule {
@@ -403,6 +443,8 @@ impl Scheduler {
             if let Some(m) = model { task.model = m; }
             if let Some(d) = start_date { task.start_date = normalize_opt_date(&d); }
             if let Some(d) = end_date { task.end_date = normalize_opt_date(&d); }
+            if let Some(t) = start_time { task.start_time = normalize_opt_time(&t); }
+            if let Some(t) = end_time { task.end_time = normalize_opt_time(&t); }
             self.save();
             true
         } else {
@@ -580,6 +622,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn cron_task(schedule: &str) -> CronTask {
         CronTask {
@@ -594,6 +637,8 @@ mod tests {
             interval_secs: 0,
             start_date: None,
             end_date: None,
+            start_time: None,
+            end_time: None,
         }
     }
 
@@ -633,5 +678,33 @@ mod tests {
         let mut t = cron_task("5m");
         t.start_date = Some("not-a-date".into());
         assert!(Scheduler::within_active_window(&t, &chrono::Utc::now()));
+    }
+
+    #[test]
+    fn active_window_time_range() {
+        let mut t = cron_task("5m");
+        t.start_time = Some("09:00".into());
+        t.end_time = Some("17:00".into());
+        let local = |h: u32, m: u32| {
+            chrono::Local.with_ymd_and_hms(2026, 9, 5, h, m, 0).single().unwrap().with_timezone(&chrono::Utc)
+        };
+        assert!(Scheduler::within_active_window(&t, &local(9, 0)));
+        assert!(Scheduler::within_active_window(&t, &local(12, 0)));
+        assert!(Scheduler::within_active_window(&t, &local(17, 0)));
+        assert!(!Scheduler::within_active_window(&t, &local(8, 59)));
+        assert!(!Scheduler::within_active_window(&t, &local(17, 1)));
+    }
+
+    #[test]
+    fn active_window_time_overnight() {
+        let mut t = cron_task("5m");
+        t.start_time = Some("22:00".into());
+        t.end_time = Some("06:00".into());
+        let local = |h: u32, m: u32| {
+            chrono::Local.with_ymd_and_hms(2026, 9, 5, h, m, 0).single().unwrap().with_timezone(&chrono::Utc)
+        };
+        assert!(Scheduler::within_active_window(&t, &local(23, 0)));
+        assert!(Scheduler::within_active_window(&t, &local(2, 0)));
+        assert!(!Scheduler::within_active_window(&t, &local(12, 0)));
     }
 }
