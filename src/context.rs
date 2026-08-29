@@ -156,6 +156,10 @@ pub struct InvocationContext {
     pub fallback_model: Option<String>,
     pub max_iterations: usize,
     pub rabbit_hole_threshold: usize,
+    /// When true, trailing tool calls that exactly duplicate calls already
+    /// executed this session are dropped if the model has produced a final
+    /// text answer (guarded by config).
+    pub trim_redundant_tool_calls: bool,
     /// Model context window size in tokens
     pub context_window: usize,
     /// Context usage threshold percentage (e.g. 80 = trim at 80%)
@@ -207,6 +211,7 @@ impl InvocationContext {
             fallback_model: None,
             max_iterations,
             rabbit_hole_threshold: 5,
+            trim_redundant_tool_calls: true,
             context_window: 128000,
             context_window_threshold: 80,
             tool_timeout_secs: 300,
@@ -254,6 +259,13 @@ impl InvocationContext {
     /// Set rabbit hole detection threshold.
     pub fn with_rabbit_hole_threshold(mut self, threshold: usize) -> Self {
         self.rabbit_hole_threshold = threshold;
+        self
+    }
+
+    /// Enable/disable dropping redundant trailing tool calls after a final
+    /// text answer.
+    pub fn with_trim_redundant_tool_calls(mut self, v: bool) -> Self {
+        self.trim_redundant_tool_calls = v;
         self
     }
 

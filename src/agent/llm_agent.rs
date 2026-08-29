@@ -803,6 +803,7 @@ impl Agent for LlmAgent {
         let preauth_profile = ctx.preauth_profile.clone();
         let fallback_model = ctx.fallback_model.clone();
         let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
+        let trim_redundant_tool_calls = ctx.trim_redundant_tool_calls;
         let tool_timeout_secs = ctx.tool_timeout_secs;
         let max_tool_retries = ctx.max_tool_retries;
         let context_window = ctx.context_window;
@@ -1041,7 +1042,7 @@ impl Agent for LlmAgent {
                         // reasoning_content (DeepSeek thinking mode puts
                         // everything in reasoning_content, leaving content
                         // empty).
-                        let tool_calls = if tool_calls.is_empty() {
+                        let mut tool_calls = if tool_calls.is_empty() {
                             info!("[session:{}] No native tool_calls from API, attempting text extraction (content={} chars, reasoning={} chars)",
                                   session_id, content.len(), reasoning.len());
                             let mut extracted = extract_tool_calls_from_content(&content);
@@ -1198,6 +1199,57 @@ impl Agent for LlmAgent {
                             // Cleanup: close browser sessions after agent completes
                             for s in &cleanup_sessions { let _ = s.close().await; }
                             return;
+                        }
+
+                        // ── Trim redundant trailing tool calls after a final text ──
+                        // If the model already ran tools and is now summarizing, but also
+                        // emitted trailing tool call(s) that EXACTLY repeat calls already
+                        // executed this session, drop the duplicates and honor the final text.
+                        // Guarded by config.trim_redundant_tool_calls; narrow (dup-only) so a
+                        // genuinely new tool call is never dropped.
+                        if trim_redundant_tool_calls && has_executed_tools
+                            && content.trim().len() >= 40 && !tool_calls.is_empty() {
+                            let kept = tool_calls.iter().filter(|tc| {
+                                let sig = format!("{}:{}",
+                                    tc.function.name.as_deref().unwrap_or("unknown"),
+                                    tc.function.arguments.as_deref().unwrap_or("{}"));
+                                call_signatures.get(&sig).copied().unwrap_or(0) == 0
+                            }).cloned().collect::<Vec<_>>();
+                            let dropped = tool_calls.len() - kept.len();
+                            if dropped > 0 {
+                                info!("[session:{}] Trimmed {} redundant trailing tool call(s) after final text ({} kept). Text: {}...",
+                                      session_id, dropped, kept.len(),
+                                      content.trim().chars().take(70).collect::<String>());
+                                let _ = tx.send(Ok(AgentEvent::text(
+                                    &format!("\n\n*[Trimmed {} redundant trailing tool call(s) — using the answer above]*\n\n", dropped),
+                                    &invocation_id, &author
+                                ))).await;
+                                if kept.is_empty() {
+                                    // All trailing calls were redundant; the answer text is
+                                    // already streamed to the client, so just finish.
+                                    history.push(ChatMessage::assistant(&content));
+                                    // Mirror the normal completion path: clear checkpoint & log done.
+                                    if let Some(ref cp) = checkpointer {
+                                        if let Some(ref cp_id) = checkpoint_id {
+                                            let _ = cp.delete(cp_id);
+                                            info!("[session:{}] Checkpoint deleted (task completed after trim)", session_id);
+                                        }
+                                    }
+                                    if let Some(ref mut log) = event_log {
+                                        let _ = log.append(&LogEvent::RunCompleted {
+                                            run_id: session_id.clone(),
+                                            timestamp: chrono::Utc::now(),
+                                            total_turns: iteration as u32 + 1,
+                                            total_tokens: 0,
+                                            duration_ms: 0,
+                                        });
+                                    }
+                                    let _ = tx.send(Ok(AgentEvent::done(&invocation_id, &author))).await;
+                                    for s in &cleanup_sessions { let _ = s.close().await; }
+                                    return;
+                                }
+                                tool_calls = kept;
+                            }
                         }
 
                         // Tool calls - execute them

@@ -476,6 +476,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .logger(logger.clone())
         .checkpointer(checkpointer)
         .app_name("RustAgent")
+        .trim_redundant_tool_calls(config.agent.trim_redundant_tool_calls)
         .build()
         .map_err(|e| format!("Failed to build runner: {}", e))?;
     let runner = Arc::new(runner);

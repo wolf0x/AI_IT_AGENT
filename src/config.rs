@@ -28,6 +28,11 @@ pub struct AgentConfig {
     pub max_iterations: usize,
     #[serde(default = "default_rabbit_hole_threshold")]
     pub rabbit_hole_threshold: usize,
+    /// Drop trailing tool calls that exactly repeat work already executed in
+    /// this session when the model has already produced a final text answer.
+    /// Narrow, conservative guard: only exact-duplicate calls are removed.
+    #[serde(default = "default_trim_redundant_tool_calls")]
+    pub trim_redundant_tool_calls: bool,
     /// Context window usage threshold percentage (default: 80 = trim at 80% of model context)
     #[serde(default = "default_context_window_threshold")]
     pub context_window_threshold: usize,
@@ -173,6 +178,7 @@ impl Default for Config {
                 workspace_dir: default_workspace_dir(),
                 max_iterations: default_max_iterations(),
                 rabbit_hole_threshold: default_rabbit_hole_threshold(),
+                trim_redundant_tool_calls: default_trim_redundant_tool_calls(),
                 context_window_threshold: default_context_window_threshold(),
                 tool_timeout_secs: default_tool_timeout_secs(),
                 max_tool_retries: default_max_tool_retries(),
@@ -204,6 +210,7 @@ fn default_workspace_dir() -> String {
 }
 fn default_max_iterations() -> usize { 100 }
 fn default_rabbit_hole_threshold() -> usize { 5 }
+fn default_trim_redundant_tool_calls() -> bool { true }
 fn default_context_window() -> usize { 128000 }
 fn default_context_window_threshold() -> usize { 80 }
 fn default_tool_timeout_secs() -> usize { 300 }
@@ -370,6 +377,7 @@ workspace_dir = "%USERPROFILE%\\.RustAgent\\Workspace"
 working_dir = "."
 max_iterations = 100
 rabbit_hole_threshold = 5
+trim_redundant_tool_calls = true
 context_window_threshold = 80
 tool_timeout_secs = 300
 max_tool_retries = 2
