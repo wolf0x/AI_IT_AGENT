@@ -22,7 +22,7 @@ use crate::model::ChatMessage;
 use crate::permission::PendingMap;
 use crate::runner::{Runner, SubAgentRunParams};
 use crate::server::NotifyTx;
-use crate::tool::{Tool, ToolContext};
+use crate::tool::{TimeoutStage, Tool, ToolContext};
 
 /// In-memory registry of launched sub-agent jobs (job_id -> state).
 #[derive(Clone)]
@@ -203,6 +203,7 @@ pub async fn launch_sub_agent_job(
 
     Ok(job_id)
 }
+use std::time::{Duration, Instant};
 /// Tool: fetch_agent_result — read a launched sub-agent's report.
 pub struct FetchAgentResultTool { pub jobs: SharedJobs }
 
@@ -223,5 +224,101 @@ impl Tool for FetchAgentResultTool {
             Some(s) => Ok(json!({ "job_id": job_id, "status": s.status, "agent": s.agent, "report": s.report, "error": s.error })),
             None => Err(AgentError::tool("fetch_agent_result", format!("Unknown job: {}", job_id))),
         }
+    }
+}
+
+/// Tool: wait_agents — block until the listed sub-agent job(s) reach a terminal
+/// state, then return all their reports at once so the main loop can write a
+/// consolidated final summary. The sub-agents already run concurrently; this
+/// call simply waits for the slowest one and returns the aggregated results.
+pub struct WaitAgentsTool {
+    pub jobs: SharedJobs,
+}
+
+#[async_trait]
+impl Tool for WaitAgentsTool {
+    fn name(&self) -> &str { "wait_agents" }
+
+    fn description(&self) -> &str {
+        "Wait for previously launched sub-agent job(s) (job_ids from run_agent) to finish, then return all their reports at once. Call this AFTER dispatching run_agent so the main loop can collect results and write the final consolidated summary. Provide `job_ids` (array of the job_id strings returned by run_agent) and optionally `timeout_secs` (default 240). If the timeout passes before every job finishes, partial results are returned with all_complete=false."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "job_ids": { "type": "array", "items": { "type": "string" }, "description": "job_id(s) returned by run_agent" },
+                "timeout_secs": { "type": "integer", "minimum": 1, "description": "Max seconds to wait before returning partial results (default 240)" }
+            },
+            "required": ["job_ids"]
+        })
+    }
+
+    fn is_builtin(&self) -> bool { true }
+
+    fn is_read_only(&self) -> bool { true }
+
+    /// Background wait is long-running: no hard wall-clock (Watchdog governs) and
+    /// we periodically send progress so the liveness watchdog never fires early.
+    fn timeout_stage(&self) -> TimeoutStage { TimeoutStage::Watchdog }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> AgentResult<Value> {
+        let job_ids: Vec<String> = args["job_ids"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if job_ids.is_empty() {
+            return Err(AgentError::tool("wait_agents", "job_ids is required (array of job_id strings from run_agent)"));
+        }
+        let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(240).max(1);
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+        let progress = ctx.progress_tx();
+
+        loop {
+            let (all_done, has_unknown) = {
+                let j = self.jobs.0.lock().await;
+                let mut all_done = true;
+                let mut has_unknown = false;
+                for id in &job_ids {
+                    match j.get(id) {
+                        Some(st) => { if st.status != "done" && st.status != "error" { all_done = false; } }
+                        None => { has_unknown = true; }
+                    }
+                }
+                (all_done, has_unknown)
+            };
+            if all_done || has_unknown || Instant::now() >= deadline { break; }
+            if let Some(tx) = &progress {
+                let _ = tx.send(format!("Waiting for sub-agent job(s) to finish...")).await;
+            }
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+        }
+
+        let mut results = Vec::new();
+        let mut all_complete = true;
+        {
+            let j = self.jobs.0.lock().await;
+            for id in &job_ids {
+                match j.get(id) {
+                    Some(st) => {
+                        if st.status != "done" && st.status != "error" { all_complete = false; }
+                        let report = st.report.clone();
+                        let report = if report.chars().count() > 6000 {
+                            let head: String = report.chars().take(6000).collect();
+                            format!("{}
+...[report truncated to 6000 chars, job_id={}]", head, id)
+                        } else { report };
+                        results.push(json!({
+                            "job_id": id, "agent": st.agent, "status": st.status,
+                            "report": report, "error": st.error
+                        }));
+                    }
+                    None => {
+                        all_complete = false;
+                        results.push(json!({ "job_id": id, "status": "unknown", "report": "", "error": "unknown job_id (never launched in this process)" }));
+                    }
+                }
+            }
+        }
+        Ok(json!({ "job_ids": job_ids, "all_complete": all_complete, "results": results }))
     }
 }

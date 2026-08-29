@@ -569,6 +569,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 default_model: default_model.clone(),
             }));
             reg.register(Arc::new(crate::tool::subagent::FetchAgentResultTool { jobs: sub_jobs.clone() }));
+            reg.register(Arc::new(crate::tool::subagent::WaitAgentsTool { jobs: sub_jobs.clone() }));
 
         }
 
