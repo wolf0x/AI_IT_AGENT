@@ -611,7 +611,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expert_tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.expert_tool_timeout_secs)),
         expert_max_tool_retries: Arc::new(AtomicUsize::new(config.agent.expert_max_tool_retries)),
         expert_max_managed_rounds: Arc::new(AtomicUsize::new(config.agent.expert_max_managed_rounds)),
-        sessions: Mutex::new(std::collections::HashMap::new()),
+        sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
         permissions,
         permission_resolver,
         permission_pending,

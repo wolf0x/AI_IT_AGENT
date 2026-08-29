@@ -163,7 +163,7 @@ pub struct AppState {
     pub expert_max_tool_retries: Arc<AtomicUsize>,
     pub expert_max_managed_rounds: Arc<AtomicUsize>,
     /// Per-session conversation history for multi-turn context
-    pub sessions: Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>,
+    pub sessions: Arc<Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>>,
     /// Permission settings (category -> allowed), shared across connections
     pub permissions: Arc<Mutex<std::collections::HashMap<String, bool>>>,
     /// Resolver for pending permission requests
@@ -1939,6 +1939,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 &state.permissions, &state.permission_pending,
                                 max_iter, rh, 128000, ctxthr, to, retr,
                                 &default_model, &agent_name, &task,
+                                Some(session_id.clone()), Some(state.sessions.clone()),
                             ).await;
                             let ev = match &job {
                                 Ok(job_id) => {

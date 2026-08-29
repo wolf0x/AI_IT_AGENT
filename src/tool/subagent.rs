@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use crate::agent::AgentEvent;
 use crate::agent_store::AgentStore;
 use crate::error::{AgentError, AgentResult};
+use crate::model::ChatMessage;
 use crate::permission::PendingMap;
 use crate::runner::{Runner, SubAgentRunParams};
 use crate::server::NotifyTx;
@@ -96,6 +97,7 @@ async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
         self.max_tool_retries.load(Ordering::SeqCst),
         &self.default_model,
         &agent_name, &task,
+        None, None,
     ).await.map_err(|e| AgentError::tool("run_agent", e))?;
     Ok(json!({ "job_id": job_id, "status": "started", "agent": agent_name,
         "note": "Sub-agent runs in the background; use fetch_agent_result(job_id) for the report." }))
@@ -117,6 +119,11 @@ pub async fn launch_sub_agent_job(
     default_model: &str,
     agent_name: &str,
     task: &str,
+    // Optional main-session id + sessions store: inject the sub-agent's
+    // outcome into the main session history so the main LLM sees it as
+    // context on subsequent turns.
+    main_session: Option<String>,
+    sessions: Option<Arc<Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>>>,
 ) -> Result<String, String> {
     let agent_name = agent_name.trim().trim_start_matches('@').to_string();
     let task = task.trim().to_string();
@@ -174,6 +181,19 @@ pub async fn launch_sub_agent_job(
             if let Some(s) = j.get_mut(&c_job_id) { s.status = status.clone(); s.report = report.clone(); s.error = err.clone(); }
         }
         let _ = std::fs::write(std::path::Path::new(&c_workdir).join("report.md"), format!("# Sub-agent: {}\n\n{}", c_agent, report));
+        // Inject the sub-agent's outcome into the MAIN session history so the
+        // main LLM sees it as context on subsequent turns.
+        if let (Some(ms), Some(sessions)) = (main_session, sessions) {
+            let mut store = sessions.lock().await;
+            let entry = store.entry(ms).or_default();
+            let heading = if err.is_empty() {
+                format!("[Sub-agent '{}' completed - job {}]\n", c_agent, c_job_id)
+            } else {
+                format!("[Sub-agent '{}' FAILED - job {}]\nERROR: {}\n", c_agent, c_job_id, err)
+            };
+            let body = if report.trim().is_empty() { "(no text output)".to_string() } else { report.clone() };
+            entry.push(ChatMessage::system(&format!("{}\n{}", heading, body)));
+        }
         let elapsed = start.elapsed().as_secs();
         let body = if report.trim().is_empty() { err } else { report };
         let summary = format!("🤖 **Sub-agent '{}' finished** ({}s)\n\n{}", c_agent, elapsed, body);
