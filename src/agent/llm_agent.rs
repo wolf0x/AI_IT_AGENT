@@ -932,6 +932,15 @@ impl Agent for LlmAgent {
                     return;
                 }
 
+                // Drain any mid-run user interjections and feed them into the
+                // running agent as the next user turn (no stop required).
+                let interjections = crate::interject::drain(&session_id);
+                if !interjections.is_empty() {
+                    info!("[session:{}] Injecting {} interjection(s) into running context", session_id, interjections.len());
+                    for msg in interjections {
+                        history.push(ChatMessage::user(&msg));
+                    }
+                }
                 // Trim history if approaching context limit using token-based budget
                 let total_tokens: usize = history.iter().map(|m| estimate_tokens(m.content_as_text().as_deref().unwrap_or(""))).sum();
                 if total_tokens > history_budget {

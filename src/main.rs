@@ -17,6 +17,7 @@ mod event_log;
 mod external_tools;
 mod heartbeat;
 mod knowledge;
+mod interject;
 mod log;
 #[allow(dead_code)]
 mod managed;

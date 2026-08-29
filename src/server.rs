@@ -1665,6 +1665,17 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                                                     }
                                                                     info!("Permissions updated: {:?}", *perms);
                                                                 }
+                                                                "interject" => {
+                                                                    let content = p["content"].as_str().unwrap_or("").to_string();
+                                                                    if !content.is_empty() {
+                                                                        info!("[session:{}] Interjection queued for running session", session_id);
+                                                                        crate::interject::push(&session_id, content.clone());
+                                                                        {
+                                                                            let mut sessions = state.sessions.lock().await;
+                                                                            sessions.entry(session_id.clone()).or_default().push(ChatMessage::user(&content));
+                                                                        }
+                                                                    }
+                                                                }
                                                                 _ => {}
                                                             }
                                                         }
@@ -2593,3 +2604,4 @@ async fn usage_today_handler(
         Err(e) => Json(json!({ "error": e })),
     }
 }
+

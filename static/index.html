@@ -348,6 +348,13 @@ input:checked+.slider:before{transform:translateX(20px)}
 .input-bar textarea{resize:none;overflow-y:auto;line-height:1.4;min-height:44px;max-height:120px}
 .input-bar input:focus,.input-bar textarea:focus{border-color:#3498db;box-shadow:0 0 0 3px rgba(52,152,219,.1)}
 .input-bar .btn{height:44px;display:flex;align-items:center;padding:10px 24px}
+.interject-bar{display:flex;flex-wrap:wrap;gap:8px;padding:8px 16px;background:#eef4ff;border-top:1px solid #d9e5f7;font-size:13px}
+.ij-item{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #c3d6f2;border-radius:16px;padding:4px 10px;max-width:100%;color:#1f2937}
+.ij-item b{font-weight:600;white-space:normal}
+.ij-inject{background:#2563eb;color:#fff;border:none;border-radius:10px;padding:2px 8px;cursor:pointer;font-size:12px;white-space:nowrap}
+.ij-inject:hover{background:#1d4ed8}
+.ij-x{background:transparent;border:none;color:#94a3b8;cursor:pointer;font-size:13px;padding:0 2px}
+.ij-x:hover{color:#e74c3c}
 
 /* ── Grok 风格输入框（Demo E 复刻：整体圆角容器） ── */
 .grok-bar{
@@ -1183,6 +1190,7 @@ input:checked+.slider:before{transform:translateX(20px)}
           </div>
           <div style="position:relative">
           <div class="slash-popup" id="slashPopup"></div>
+          <div class="interject-bar" id="interjectBar" style="display:none"></div>
           <div class="input-bar grok-bar">
             <input type="file" id="attachFileInput" multiple tabindex="-1" style="display:none" accept="image/*,.pdf,.docx,.xlsx,.txt,.md,.csv,.json,.xml,.yaml,.py,.js,.ts,.rs,.go,.java,.c,.cpp,.sql,.sh,.html,.css">
             <!-- 附件按钮（最左）：点击 / 拖拽 / 粘贴 -->
@@ -1244,6 +1252,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 // 閳光偓閳光偓 State 閳光偓閳光偓
 let ws=null,connected=false,msgHist=[],logHist=[];
 let curThinkEl=null,curTextEl=null,textAccum='',curToolMap={},agentRunning=false,msgQueue=[];
+let interjectList=[];
 let lastInvId=null; // Expert mode multi-round: track invocation_id to segment output blocks
 // Persistent session id: survives WebSocket reconnects so Expert-mode TaskContract
 // resume (keyed by session_id on the server) keeps working. Regenerated on "clear chat".
@@ -1908,6 +1917,14 @@ function sendMsg(){
   }
 
 
+  if(agentRunning&&txt&&pendingImages.length===0&&pendingFiles.length===0){
+    interjectList.push(txt);
+    renderInterjectBar();
+    inp.value='';inp.style.height='auto';
+    updateSendState();
+    return;
+  }
+
   if(pendingFiles.length){
     const names=pendingFiles.map(f=>f.name).join(', ');
     sendTxt=(txt?txt+'\n\n':'')+'[附件: '+names+']';
@@ -2040,6 +2057,7 @@ function stopAgent(){
 }
 function setAgentRunning(running){
   agentRunning=running;
+  if(!running){interjectList=[];renderInterjectBar();}
   const sendBtn=document.getElementById('sendBtn');
   const stopBtn=document.getElementById('stopBtn');
   const sidebarLogo=document.getElementById('sidebarLogo');
@@ -2062,6 +2080,29 @@ function updateSendState(){
   const hasContent=inp.value.trim().length>0||pendingImages.length>0||pendingFiles.length>0;
   sendBtn.disabled=!connected||(agentRunning?false:!hasContent);
 }
+function renderInterjectBar(){
+  const bar=document.getElementById('interjectBar');
+  if(!bar)return;
+  if(!interjectList.length){bar.style.display='none';bar.innerHTML='';return;}
+  bar.style.display='flex';
+  bar.innerHTML=interjectList.map(function(t,i){
+    return '<span class="ij-item"><b>'+esc(t)+'</b>'+
+      '<button class="ij-inject" title="Inject into running session" onclick="injectInterject('+i+')">&#8680; Inject</button>'+
+      '<button class="ij-x" title="Remove" onclick="dropInterject('+i+')">&#10005;</button></span>';
+  }).join('');
+}
+function injectInterject(i){
+  if(i<0||i>=interjectList.length)return;
+  const content=interjectList[i];
+  interjectList.splice(i,1);
+  if(ws&&connected){ws.send(JSON.stringify({type:'interject',content:content,session:SESSION_ID}));}
+  showUserMsg(content,[]);
+  renderInterjectBar();updateSendState();
+}
+function dropInterject(i){
+  if(i>=0&&i<interjectList.length){interjectList.splice(i,1);renderInterjectBar();updateSendState();}
+}
+
 function showUserMsg(txt,imgsOrTime,time){
   if(typeof txt==='string'){lastUserLang=isChinese(txt)?'zh':'en';}
   let imgs=null;
