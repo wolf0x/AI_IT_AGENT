@@ -1060,6 +1060,7 @@ input:checked+.slider:before{transform:translateX(20px)}
             <div class="cron-field cron-field-full"><label>System Prompt</label><textarea id="agentPrompt" rows="5" placeholder="Persona / expertise / constraints"></textarea></div>
             <div class="cron-field cron-field-full">
               <div class="cron-add-row">
+                <label class="cron-auto-toggle" title="When on, this sub-agent may run any command (incl. shell_exec) without asking">Auto-approve commands<span class="perm-toggle"><input type="checkbox" id="agentAutoApprove"><span class="slider"></span></span></label>
                 <button class="btn cron-btn-add" onclick="saveAgent()">+ Create / Update Agent</button>
                 <button class="cron-act cron-edit-cancel hidden" id="agentCancelEdit" onclick="cancelAgentEdit()">Cancel Edit</button>
               </div>
@@ -2383,6 +2384,7 @@ async function loadAgents(){
             '</div>'+
             (a.description?'<div class="cron-item-msg">'+esc(a.description)+'</div>':'')+
             '<div class="cron-meta">'+
+              (a.auto_approve?'<span class="cron-meta-chip">Auto-approve</span>':'')+
               (a.workdir?'<span>Workdir: '+esc(a.workdir)+'</span>':'')+
             '</div>'+
           '</div>'+
@@ -2407,16 +2409,18 @@ function editAgent(id){
     document.getElementById('agentDesc').value=a.description||'';
     document.getElementById('agentModel').value=a.model||'';
     document.getElementById('agentPrompt').value=a.system_prompt||'';
+    document.getElementById('agentAutoApprove').checked=!!a.auto_approve;
     document.getElementById('agentCancelEdit').classList.remove('hidden');
   });
 }
 function cancelAgentEdit(){
   editingAgentId=null;
   ['agentName','agentDesc','agentModel','agentPrompt'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('agentAutoApprove').checked=false;
   document.getElementById('agentCancelEdit').classList.add('hidden');
 }
 async function saveAgent(){
-  const body={name:document.getElementById('agentName').value.trim(),description:document.getElementById('agentDesc').value.trim(),system_prompt:document.getElementById('agentPrompt').value.trim(),model:document.getElementById('agentModel').value.trim()};
+  const body={name:document.getElementById('agentName').value.trim(),description:document.getElementById('agentDesc').value.trim(),system_prompt:document.getElementById('agentPrompt').value.trim(),model:document.getElementById('agentModel').value.trim(),auto_approve:document.getElementById('agentAutoApprove').checked};
   if(!body.name){alert('Name is required');return;}
   try{
     if(editingAgentId){

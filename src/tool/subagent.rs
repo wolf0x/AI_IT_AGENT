@@ -41,6 +41,22 @@ pub struct SubJobState {
     pub error: String,
 }
 
+/// Derive a strict reply-language rule for a sub-agent from its task text (same
+/// heuristic as the main prompt): CJK -> Chinese, otherwise English. Keeps the
+/// sub-agent's reply language consistent with the main session.
+fn subagent_language_rule(task: &str) -> String {
+    let has_cjk = task.chars().any(|ch| ('\u{4E00}'..='\u{9FFF}').contains(&ch) || ('\u{3400}'..='\u{4DBF}').contains(&ch));
+    let lower = task.to_lowercase();
+    let explicit_cn = task.contains("中文") && !task.contains("英文");
+    let explicit_en = task.contains("英文")
+        || (lower.contains("english") && (lower.contains("reply") || lower.contains("respond") || lower.contains("use")));
+    if explicit_cn || (has_cjk && !explicit_en) {
+        "Write your ENTIRE reply in Chinese (headings, bullets, table cells, greetings and closings included). Do not switch to English or mix languages.".to_string()
+    } else {
+        "Write your ENTIRE reply in English (headings, bullets, table cells, greetings and closings included). Do not switch to Chinese or mix languages.".to_string()
+    }
+}
+
 /// Tool: run_agent — launch a predefined sub-agent in the background.
 pub struct RunAgentTool {
     pub agent_store: Arc<Mutex<AgentStore>>,
@@ -136,7 +152,17 @@ pub async fn launch_sub_agent_job(
     let model = if def.model.trim().is_empty() { default_model.to_string() } else { def.model.clone() };
     let job_id = format!("sub-{}", uuid::Uuid::new_v4());
     let agent_display = def.name.clone();
-    let system_prompt = def.system_prompt.clone();
+    let language_rule = subagent_language_rule(&task);
+    let system_prompt = format!("{}\n\n## LANGUAGE RULE (STRICT)\n{}", def.system_prompt, language_rule);
+    // Per-agent Auto-Approve: when enabled, this sub-agent may run ANY tool
+    // (incl. shell_exec) without asking — mirrors the CRON auto-approve toggle.
+    let preauth = if def.auto_approve {
+        let mut profile = crate::managed::permission_profile::PermissionProfile::new(job_id.clone());
+        profile.allow_all = true;
+        Some(std::sync::Arc::new(profile))
+    } else {
+        None
+    };
     let workdir = def.workdir.clone();
     {
         let mut j = jobs.0.lock().await;
@@ -161,7 +187,7 @@ pub async fn launch_sub_agent_job(
             context_window: ctxwin, context_window_threshold: ctxthr,
             tool_timeout_secs: to as u64, max_tool_retries: retr,
         };
-        let res = runner.run_sub_agent(params, perms, pend).await;
+        let res = runner.run_sub_agent(params, perms, pend, preauth).await;
         let mut report = String::new();
         let mut err = String::new();
         match res {
@@ -180,7 +206,13 @@ pub async fn launch_sub_agent_job(
             let mut j = jobs2.0.lock().await;
             if let Some(s) = j.get_mut(&c_job_id) { s.status = status.clone(); s.report = report.clone(); s.error = err.clone(); }
         }
-        let _ = std::fs::write(std::path::Path::new(&c_workdir).join("report.md"), format!("# Sub-agent: {}\n\n{}", c_agent, report));
+        // Persist the report: write a unique per-job artifact (immune to
+        // concurrent overwrites) and also refresh report.md as the "latest".
+        let wd_path = std::path::Path::new(&c_workdir);
+        let _ = std::fs::create_dir_all(wd_path);
+        let report_body = format!("# Sub-agent: {}\n\n{}", c_agent, report);
+        let _ = std::fs::write(wd_path.join(format!("report-{}.md", c_job_id)), &report_body);
+        let _ = std::fs::write(wd_path.join("report.md"), &report_body);
         // Inject the sub-agent's outcome into the MAIN session history so the
         // main LLM sees it as context on subsequent turns.
         if let (Some(ms), Some(sessions)) = (main_session, sessions) {

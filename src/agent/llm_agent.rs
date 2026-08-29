@@ -482,6 +482,15 @@ injected into your context as SYSTEM messages labeled **[Memory Context]** or **
   earlier conversations.\n",
         );
 
+        prompt.push_str(
+            "\n## CHECK AVAILABLE CONTEXT BEFORE CALLING TOOLS\n\
+If a sub-agent report, a [Memory Context]/[Memory Recall] block, or your own earlier findings in this conversation already answer the user's question, use that data directly and summarize it — do NOT re-run the same diagnostics from scratch.\n\
+- Injected sub-agent reports appear as blocks like `[Sub-agent 'X' completed - job ...]` followed by the report; read them first before repeating the analysis.\n\
+- Memory blocks are the authoritative record of prior conversations — use them instead of reopening memory files.\n\
+- This rule prevents redundant re-runs of work already captured in the conversation context.\n\
+- EXCEPTION: if the user asks about live system state (IP, running processes, disk usage, services, network, etc.) or explicitly wants a fresh check, you MUST still call the tool to get real current data.\n",
+        );
+
         // ── Permission Respect Rules ──
         prompt.push_str(
             "\n## CRITICAL: Permission Denial Rules\n\

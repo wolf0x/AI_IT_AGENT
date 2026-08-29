@@ -281,8 +281,9 @@ async fn agents_create_handler(State(state): State<Arc<AppState>>, Json(body): J
     let description = body["description"].as_str().unwrap_or("").to_string();
     let system_prompt = body["system_prompt"].as_str().unwrap_or("").to_string();
     let model = body["model"].as_str().unwrap_or("").to_string();
+    let auto_approve = body["auto_approve"].as_bool().unwrap_or(false);
     let mut store = state.agent_store.lock().await;
-    match store.create(&name, &description, &system_prompt, &model) {
+    match store.create(&name, &description, &system_prompt, &model, auto_approve) {
         Ok(def) => Json(json!({ "success": true, "agent": def, "error": "" })),
         Err(e) => Json(json!({ "success": false, "agent": serde_json::Value::Null, "error": e })),
     }
@@ -297,6 +298,7 @@ async fn agents_update_handler(State(state): State<Arc<AppState>>, Path(id): Pat
         body["system_prompt"].as_str().map(|s| s.to_string()),
         body["model"].as_str().map(|s| s.to_string()),
         body["enabled"].as_bool(),
+        body["auto_approve"].as_bool(),
     ) {
         Ok(def) => Json(json!({ "success": true, "agent": def })),
         Err(e) => Json(json!({ "success": false, "error": e })),
@@ -1929,10 +1931,6 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                 let _ = sink.send(Message::Text(ev.to_ws_message().into())).await;
                                 continue;
                             }
-                            let workdir = {
-                                let st = state.agent_store.lock().await;
-                                st.workdir_of(&agent_name).unwrap_or_default()
-                            };
                             let default_model = {
                                 let dm = state.primary_model.read().unwrap().clone();
                                 if let Some(d) = dm { d } else {
@@ -1954,9 +1952,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                             ).await;
                             let ev = match &job {
                                 Ok(job_id) => {
-                                    let wd = if workdir.is_empty() { "its working directory".to_string() } else { workdir.clone() };
-                                    AgentEvent::text(&format!("**Sub-agent '{}' launched** — job `{}` running in the background.
-The main session is not blocked. You'll be notified when it finishes; read the report via fetch_agent_result({}) or from {}.", agent_name, job_id, job_id, wd), &session_id, "system")
+                                    AgentEvent::text(&format!("**Sub-agent '{}' launched** — job `{}` running in the background.", agent_name, job_id), &session_id, "system")
                                 }
                                 Err(e) => AgentEvent::error(&e, &session_id, "system"),
                             };

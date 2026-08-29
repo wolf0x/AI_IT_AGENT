@@ -196,6 +196,7 @@ impl Runner {
         params: SubAgentRunParams,
         permissions: Arc<Mutex<HashMap<String, bool>>>,
         permission_pending: PendingMap,
+        preauth: Option<Arc<PermissionProfile>>,
     ) -> AgentResult<EventStream> {
         let invocation_id = uuid::Uuid::new_v4().to_string();
         let base_ctx = ReadonlyContext::new(invocation_id, self.agent.name().to_string(), params.session_id.clone());
@@ -210,6 +211,7 @@ impl Runner {
             .with_max_tool_retries(params.max_tool_retries)
             .with_system_prompt_override(Some(params.system_prompt))
             .with_tool_output_dir(Some(params.output_dir));
+        let ctx = if let Some(pa) = preauth { ctx.with_preauth_profile(Some(pa)) } else { ctx };
         self.logger.log_user_message(&params.session_id, &params.message);
         let event_stream = self.agent.run(&ctx, &params.message, Vec::new()).await?;
         let logger = self.logger.clone();

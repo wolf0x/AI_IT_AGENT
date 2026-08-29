@@ -26,6 +26,9 @@ pub struct SubAgentDef {
     /// Reservoir path (absolute) where this sub-agent stores its own outputs.
     #[serde(default)]
     pub workdir: String,
+    /// When enabled, this sub-agent may run ANY tool (incl. shell_exec) without asking.
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 fn default_true() -> bool { true }
@@ -106,6 +109,7 @@ impl AgentStore {
         description: &str,
         system_prompt: &str,
         model: &str,
+        auto_approve: bool,
     ) -> Result<SubAgentDef, String> {
         let name = name.trim();
         if name.is_empty() { return Err("name is required".into()); }
@@ -122,6 +126,7 @@ impl AgentStore {
             description: description.trim().to_string(),
             system_prompt: system_prompt.trim().to_string(),
             model: model.trim().to_string(),
+            auto_approve: auto_approve,
             enabled: true,
             workdir: String::new(),
         };
@@ -140,6 +145,7 @@ impl AgentStore {
         system_prompt: Option<String>,
         model: Option<String>,
         enabled: Option<bool>,
+        auto_approve: Option<bool>,
     ) -> Result<SubAgentDef, String> {
         let idx = self.agents.iter().position(|a| a.id == id)
             .ok_or_else(|| "agent not found".to_string())?;
@@ -158,6 +164,7 @@ impl AgentStore {
         }
         if let Some(m) = model { self.agents[idx].model = m.trim().to_string(); }
         if let Some(e) = enabled { self.agents[idx].enabled = e; }
+        if let Some(aa) = auto_approve { self.agents[idx].auto_approve = aa; }
         // Refresh workdir if the name changed or it was missing.
         let def = self.agents[idx].clone();
         match self.ensure_workdir(&def) {
@@ -183,11 +190,6 @@ impl AgentStore {
         if next.is_some() { self.save(); }
         next
     }
-
-    /// Workdir lookup by name or id.
-    pub fn workdir_of(&self, name_or_id: &str) -> Option<String> {
-        self.find(name_or_id).map(|a| a.workdir.clone())
-    }
 }
 
 #[cfg(test)]
@@ -205,16 +207,16 @@ mod tests {
     fn create_update_find_delete() {
         let root = tmp_dir();
         let mut store = AgentStore::open(root.to_str().unwrap());
-        let a = store.create("Disk Analysis", "analyses disk volumes", "You are a disk analysis expert.", "").unwrap();
+        let a = store.create("Disk Analysis", "analyses disk volumes", "You are a disk analysis expert.", "", false).unwrap();
         assert!(!a.id.is_empty());
         assert!(a.workdir.contains("agents"));
         assert!(Path::new(&a.workdir).exists());
 
         // duplicate name rejected
-        assert!(store.create("Disk Analysis", "x", "y", "").is_err());
+        assert!(store.create("Disk Analysis", "x", "y", "", false).is_err());
 
         // update prompt + model
-        let upd = store.update(&a.id, None, None, Some("You are a forensic disk analyst.".to_string()), Some("gpt-x".to_string()), None).unwrap();
+        let upd = store.update(&a.id, None, None, Some("You are a forensic disk analyst.".to_string()), Some("gpt-x".to_string()), None, None).unwrap();
         assert_eq!(upd.system_prompt, "You are a forensic disk analyst.");
         assert_eq!(upd.model, "gpt-x");
 
