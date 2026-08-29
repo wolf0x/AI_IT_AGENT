@@ -728,7 +728,10 @@ impl Agent for LlmAgent {
         let (tx, rx) = tokio::sync::mpsc::channel::<AgentResult<AgentEvent>>(200);
 
         // Build system prompt and history in the spawned task
-        let system_prompt = self.build_system_prompt(user_message, &ctx.conversation_history);
+        let system_prompt = match &ctx.system_prompt_override {
+            Some(p) if !p.trim().is_empty() => p.clone(),
+            _ => self.build_system_prompt(user_message, &ctx.conversation_history),
+        };
         // Tool selectivity: core tools are always sent in full; peripheral tools
         // (MCP / external) are exposed on demand via `load_tool_schema`, and a
         // peripheral tool is re-added once loaded. This bounds the per-request

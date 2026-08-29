@@ -23,10 +23,12 @@ use crate::permission::{PermissionResolver, PendingMap};
 use crate::runner::Runner;
 use crate::runner::ResumeState;
 use crate::scheduler::{Scheduler, CronTask};
+use crate::agent_store::AgentStore;
 use crate::skill::SkillManager;
 use crate::config::McpServerConfig;
 use crate::external_tools::ExternalToolsManager;
 use crate::tool::mcp_client::McpClientManager;
+use crate::tool::subagent::SharedJobs;
 use crate::tool::ToolRegistry;
 use crate::web::StaticServer;
 use crate::model::openai::OpenAiProvider;
@@ -173,6 +175,10 @@ pub struct AppState {
     /// resets the connection-level `cancelled`) cannot un-cancel a task that is
     /// still winding down — preventing two managed loops on the same contract.
     pub expert_tasks: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>>,
+    /// Predefined sub-agent store
+    pub agent_store: Arc<Mutex<AgentStore>>,
+    /// Shared sub-agent job registry (run_agent / orchestrate / /agent WS).
+    pub sub_jobs: SharedJobs,
     /// CRON task scheduler
     pub scheduler: Arc<Mutex<Scheduler>>,
     /// Broadcast channel for push notifications (sys_remind, etc.)
@@ -228,6 +234,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/cron/{id}/toggle", post(cron_toggle_handler))
         .route("/api/cron/settings", get(cron_settings_handler))
         .route("/api/cron/settings", post(cron_settings_update_handler))
+        .route("/api/agents", get(agents_list_handler))
+        .route("/api/agents", post(agents_create_handler))
+        .route("/api/agents/{id}", put(agents_update_handler))
+        .route("/api/agents/{id}", delete(agents_delete_handler))
+        .route("/api/agents/{id}/toggle", post(agents_toggle_handler))
         .route("/api/notify", post(notify_handler))
         .route("/api/memory/dates", get(memory_dates_handler))
         .route("/api/memory/summaries", get(memory_summaries_handler))
@@ -256,6 +267,52 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/todos", get(todos_handler))
         .route("/workspace/{*path}", get(workspace_file_handler))
         .with_state(state)
+}
+
+
+// 閸€Predefined Sub-Agents 閸€
+async fn agents_list_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let store = state.agent_store.lock().await;
+    Json(json!({ "agents": store.list(), "count": store.list().len() }))
+}
+
+async fn agents_create_handler(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Json<Value> {
+    let name = body["name"].as_str().unwrap_or("").to_string();
+    let description = body["description"].as_str().unwrap_or("").to_string();
+    let system_prompt = body["system_prompt"].as_str().unwrap_or("").to_string();
+    let model = body["model"].as_str().unwrap_or("").to_string();
+    let mut store = state.agent_store.lock().await;
+    match store.create(&name, &description, &system_prompt, &model) {
+        Ok(def) => Json(json!({ "success": true, "agent": def, "error": "" })),
+        Err(e) => Json(json!({ "success": false, "agent": serde_json::Value::Null, "error": e })),
+    }
+}
+
+async fn agents_update_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>, Json(body): Json<Value>) -> Json<Value> {
+    let mut store = state.agent_store.lock().await;
+    match store.update(
+        &id,
+        body["name"].as_str().map(|s| s.to_string()),
+        body["description"].as_str().map(|s| s.to_string()),
+        body["system_prompt"].as_str().map(|s| s.to_string()),
+        body["model"].as_str().map(|s| s.to_string()),
+        body["enabled"].as_bool(),
+    ) {
+        Ok(def) => Json(json!({ "success": true, "agent": def })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
+async fn agents_delete_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Json<Value> {
+    let mut store = state.agent_store.lock().await;
+    let ok = store.delete(&id);
+    Json(json!({ "success": ok }))
+}
+
+async fn agents_toggle_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Json<Value> {
+    let mut store = state.agent_store.lock().await;
+    let enabled = store.toggle(&id);
+    Json(json!({ "success": enabled.is_some(), "enabled": enabled }))
 }
 
 async fn index_handler(State(state): State<Arc<AppState>>) -> Response {
@@ -1846,6 +1903,56 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                     let mut sink = ws_sink.lock().await;
                                     let _ = sink.send(Message::Text(msg_str.into())).await;
                                 }
+                            }
+                        }
+                        "agent_job" => {
+                            // Launch a predefined sub-agent as a ONE-TIME background job.
+                            // The main session is NOT blocked (no agentRunning, no LLM loop).
+                            // A completion notification is broadcast when it finishes; the
+                            // full report is retrievable via fetch_agent_result / report.md.
+                            let agent_name = parsed["agent"].as_str().unwrap_or("").to_string();
+                            let task = parsed["task"].as_str().unwrap_or("").to_string();
+                            if agent_name.is_empty() || task.is_empty() {
+                                let ev = AgentEvent::error("agent and task are required for /agent", &session_id, "system");
+                                let mut sink = ws_sink.lock().await;
+                                let _ = sink.send(Message::Text(ev.to_ws_message().into())).await;
+                                continue;
+                            }
+                            let workdir = {
+                                let st = state.agent_store.lock().await;
+                                st.workdir_of(&agent_name).unwrap_or_default()
+                            };
+                            let default_model = {
+                                let dm = state.primary_model.read().unwrap().clone();
+                                if let Some(d) = dm { d } else {
+                                    let mc = state.model_configs.read().await;
+                                    mc.first().map(|m| m.name.clone()).unwrap_or_else(|| "gpt-4o".to_string())
+                                }
+                            };
+                            let max_iter = state.max_iterations.load(Ordering::SeqCst);
+                            let rh = state.rabbit_hole_threshold.load(Ordering::SeqCst);
+                            let ctxthr = state.context_window_threshold.load(Ordering::SeqCst);
+                            let to = state.tool_timeout_secs.load(Ordering::SeqCst);
+                            let retr = state.max_tool_retries.load(Ordering::SeqCst);
+                            let job = crate::tool::subagent::launch_sub_agent_job(
+                                &state.agent_store, &state.runner, &state.sub_jobs, &state.notify_tx,
+                                &state.permissions, &state.permission_pending,
+                                max_iter, rh, 128000, ctxthr, to, retr,
+                                &default_model, &agent_name, &task,
+                            ).await;
+                            let ev = match &job {
+                                Ok(job_id) => {
+                                    let wd = if workdir.is_empty() { "its working directory".to_string() } else { workdir.clone() };
+                                    AgentEvent::text(&format!("**Sub-agent '{}' launched** — job `{}` running in the background.
+The main session is not blocked. You'll be notified when it finishes; read the report via fetch_agent_result({}) or from {}.", agent_name, job_id, job_id, wd), &session_id, "system")
+                                }
+                                Err(e) => AgentEvent::error(&e, &session_id, "system"),
+                            };
+                            let mut sink = ws_sink.lock().await;
+                            let _ = sink.send(Message::Text(ev.to_ws_message().into())).await;
+                            if job.is_ok() {
+                                let done = AgentEvent::done(&session_id, "system");
+                                let _ = sink.send(Message::Text(done.to_ws_message().into())).await;
                             }
                         }
                         "permissions" => {

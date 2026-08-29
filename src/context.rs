@@ -134,6 +134,11 @@ impl ToolContext {
 
     /// Report progress to the frontend. Non-blocking: drops the message if
     /// the receiver is gone or the channel is full.
+    /// Clone of the progress sender so a background task can stream updates.
+    pub fn progress_tx(&self) -> Option<tokio::sync::mpsc::Sender<String>> {
+        self.progress_tx.clone()
+    }
+
     pub fn report_progress(&self, message: &str) {
         if let Some(ref tx) = self.progress_tx {
             let _ = tx.try_send(message.to_string());
@@ -159,6 +164,8 @@ pub struct InvocationContext {
     pub tool_timeout_secs: u64,
     /// Maximum automatic retries for retryable tool failures
     pub max_tool_retries: usize,
+    /// Optional system prompt override (used for sub-agents). None = default prompt.
+    pub system_prompt_override: Option<String>,
     pub conversation_history: Vec<ChatMessage>,
     pub shared_state: HashMap<String, Value>,
     /// Permission settings (category -> allowed)
@@ -204,6 +211,7 @@ impl InvocationContext {
             context_window_threshold: 80,
             tool_timeout_secs: 300,
             max_tool_retries: 2,
+            system_prompt_override: None,
             conversation_history: Vec::new(),
             shared_state: HashMap::new(),
             permissions: Arc::new(Mutex::new(crate::permission::default_permissions())),
@@ -274,6 +282,11 @@ impl InvocationContext {
     }
 
     /// Set resume state from a checkpoint (history + starting iteration).
+    pub fn with_system_prompt_override(mut self, prompt: Option<String>) -> Self {
+        self.system_prompt_override = prompt;
+        self
+    }
+
     pub fn with_resume_state(mut self, history: Vec<ChatMessage>, start_iteration: usize) -> Self {
         self.resume_history = Some(history);
         self.resume_iteration = Some(start_iteration);

@@ -188,6 +188,45 @@ impl Runner {
         Ok(Box::pin(wrapped_stream))
     }
 
+
+    /// Run a predefined sub-agent as an isolated clean-session job with a
+    /// custom system prompt and its own dedicated working directory.
+    pub async fn run_sub_agent(
+        &self,
+        params: SubAgentRunParams,
+        permissions: Arc<Mutex<HashMap<String, bool>>>,
+        permission_pending: PendingMap,
+    ) -> AgentResult<EventStream> {
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let base_ctx = ReadonlyContext::new(invocation_id, self.agent.name().to_string(), params.session_id.clone());
+        let ctx = InvocationContext::new(base_ctx, self.agent.name().to_string(), params.model, params.max_iterations)
+            .with_history(Vec::new())
+            .with_permissions(permissions)
+            .with_permission_pending(permission_pending)
+            .with_rabbit_hole_threshold(params.rabbit_hole_threshold)
+            .with_context_window(params.context_window)
+            .with_context_window_threshold(params.context_window_threshold)
+            .with_tool_timeout_secs(params.tool_timeout_secs)
+            .with_max_tool_retries(params.max_tool_retries)
+            .with_system_prompt_override(Some(params.system_prompt))
+            .with_tool_output_dir(Some(params.output_dir));
+        self.logger.log_user_message(&params.session_id, &params.message);
+        let event_stream = self.agent.run(&ctx, &params.message, Vec::new()).await?;
+        let logger = self.logger.clone();
+        let sid = params.session_id;
+        let wrapped_stream = async_stream::stream! {
+            tokio::pin!(event_stream);
+            while let Some(result) = event_stream.next().await {
+                match &result {
+                    Ok(event) => { logger.log_event(&sid, event); }
+                    Err(e) => { tracing::warn!("Event stream error: {}", e); }
+                }
+                yield result;
+            }
+        };
+        Ok(Box::pin(wrapped_stream))
+    }
+
     pub fn agent(&self) -> &dyn Agent {
         self.agent.as_ref()
     }
@@ -195,6 +234,23 @@ impl Runner {
     pub fn session_service(&self) -> &dyn SessionService {
         self.session_service.as_ref()
     }
+}
+
+/// Parameters to run a predefined sub-agent as an isolated job.
+pub struct SubAgentRunParams {
+    pub message: String,
+    pub session_id: String,
+    pub model: String,
+    /// The sub-agent's own system prompt (persona / expertise).
+    pub system_prompt: String,
+    /// Dedicated working directory for the sub-agent's outputs.
+    pub output_dir: String,
+    pub max_iterations: usize,
+    pub rabbit_hole_threshold: usize,
+    pub context_window: usize,
+    pub context_window_threshold: usize,
+    pub tool_timeout_secs: u64,
+    pub max_tool_retries: usize,
 }
 
 use futures::StreamExt;

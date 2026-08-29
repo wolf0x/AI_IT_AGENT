@@ -28,6 +28,7 @@ mod policy;
 #[allow(dead_code)]
 mod runner;
 mod scheduler;
+mod agent_store;
 mod server;
 #[allow(dead_code)]
 mod session;
@@ -291,6 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("models.json", "models.json"),
         ("cron_tasks.json", "cron_tasks.json"),
         ("mcp_servers.json", "mcp_servers.json"),
+        ("agents.json", "agents.json"),
         ("memory.db", "memory/memory.db"),
     ];
     for (src_name, dst_rel) in &migrations {
@@ -401,6 +403,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(OpenAiProvider::new_with_shared(shared_models.clone()));
     let provider_for_state = provider.clone();
     info!("Models available: {:?}", model_names);
+    let default_model = config.agent.primary_model.clone()
+        .filter(|m| !m.is_empty())
+        .or_else(|| model_names.first().cloned())
+        .unwrap_or_else(|| "gpt-4o".to_string());
+
 
     // Build logger (resolve log dir from workspace)
     let log_dir = std::path::Path::new(&workspace_dir).join("logs");
@@ -500,6 +507,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notify_tx.clone(),
     )));
 
+    // Predefined sub-agent store (agents.json + per-agent workdirs)
+    let agent_store = Arc::new(Mutex::new(agent_store::AgentStore::open(&workspace_dir)));
+
+    // Shared sub-agent job registry (run_agent tool + /agent WS path).
+    let sub_jobs = crate::tool::subagent::SharedJobs::new();
+
     // Spawn scheduler background loop
     let scheduler_loop = scheduler.clone();
     tokio::spawn(async move {
@@ -537,6 +550,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.register(Arc::new(crate::tool::knowledge_search::KnowledgeSearchTool::new(workspace_dir.clone())));
         reg.register(Arc::new(crate::tool::knowledge_ingest::KnowledgeIngestTool::new(workspace_dir.clone())));
         reg.register(Arc::new(crate::tool::browser_cdp::BrowserCdpTool::new(browser_session)));
+        // Sub-agent tools: launch predefined sub-agents as background jobs.
+        // Shared sub-agent job registry (also exposed to AppState for the /agent WS path).
+        {
+            reg.register(Arc::new(crate::tool::subagent::RunAgentTool {
+                agent_store: agent_store.clone(),
+                runner: runner.clone(),
+                notify_tx: notify_tx.clone(),
+                permissions: permissions.clone(),
+                permission_pending: permission_pending.clone(),
+                jobs: sub_jobs.clone(),
+                max_iterations: Arc::new(AtomicUsize::new(config.agent.max_iterations)),
+                rabbit_hole_threshold: Arc::new(AtomicUsize::new(config.agent.rabbit_hole_threshold)),
+                context_window: 128000,
+                context_window_threshold: Arc::new(AtomicUsize::new(config.agent.context_window_threshold)),
+                tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.tool_timeout_secs)),
+                max_tool_retries: Arc::new(AtomicUsize::new(config.agent.max_tool_retries)),
+                default_model: default_model.clone(),
+            }));
+            reg.register(Arc::new(crate::tool::subagent::FetchAgentResultTool { jobs: sub_jobs.clone() }));
+
+        }
+
     }
     info!("Registered cron_manage + memory_md + todo_update + browser_cdp tools");
     if let Err(e) = crate::knowledge::build_index(&workspace_dir) {
@@ -581,6 +616,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         permission_resolver,
         permission_pending,
         expert_tasks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        agent_store: agent_store.clone(),
+        sub_jobs: sub_jobs.clone(),
         scheduler,
         notify_tx,
         workspace_dir,

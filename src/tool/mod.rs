@@ -59,6 +59,7 @@ pub mod ir_case;
 pub mod ir_attackpath;
 pub mod ir_eml;
 pub mod partial_result;
+pub mod subagent;
 
 use async_trait::async_trait;
 use serde_json::Value;

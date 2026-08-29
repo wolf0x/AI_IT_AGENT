@@ -719,6 +719,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <button class="nav-tab" onclick="switchPage('mcp',this)">&#128268; <span>MCP</span></button>
       <button class="nav-tab" onclick="switchPage('tools',this)">&#128295; <span>Tools</span></button>
       <button class="nav-tab" onclick="switchPage('cron',this)">&#9200; <span>CRON</span></button>
+      <button class="nav-tab" onclick="switchPage('agents',this)">&#129302; <span>Agents</span></button>
       <button class="nav-tab" onclick="switchPage('dashboard',this)">&#128202; <span>Dashboard</span></button>
     </div>
     <div class="sidebar-ftr">
@@ -1038,6 +1039,34 @@ input:checked+.slider:before{transform:translateX(20px)}
       </div>
     </div>
 
+    <!-- Agents Page -->
+    <!-- Agents Page -->
+    <!-- Agents Page -->
+    <div id="agents" class="page">
+      <div class="settings-scroll modern-page cron-page">
+        <div class="settings-section cron-create-card">
+          <h3>&#129302; New Sub-Agent</h3>
+          <div class="cron-grid">
+            <div class="cron-field"><label>Name</label><input type="text" id="agentName" placeholder="e.g. Disk Analyst"></div>
+            <div class="cron-field"><label>Model (optional)</label><input type="text" id="agentModel" placeholder="empty = caller model"></div>
+            <div class="cron-field cron-field-full"><label>Description</label><input type="text" id="agentDesc" placeholder="e.g. Analyzes disk usage and health"></div>
+            <div class="cron-field cron-field-full"><label>System Prompt</label><textarea id="agentPrompt" rows="5" placeholder="Persona / expertise / constraints"></textarea></div>
+            <div class="cron-field cron-field-full">
+              <div class="cron-add-row">
+                <button class="btn cron-btn-add" onclick="saveAgent()">+ Create / Update Agent</button>
+                <button class="cron-act cron-edit-cancel hidden" id="agentCancelEdit" onclick="cancelAgentEdit()">Cancel Edit</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="settings-section cron-list-card">
+          <h3>&#129302; Defined Agents</h3>
+          <p style="font-size:12px;color:#94a3b8;margin:-8px 0 14px 0">Reusable agents run in their own clean session &amp; working directory. Type <code>/agent</code> in chat to launch one.</p>
+          <div id="agentList" class="cron-list">Loading...</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Dashboard Page -->
     <div id="dashboard" class="page">
       <div class="dash-container">
@@ -1224,7 +1253,7 @@ let intentionalDisconnect=false,reconnectTimer=null,reconnectAttempts=0;
 let managedMode=false; // Managed (long-task) mode state
 function asstPrefix(){
   const cls=managedMode?' expert':'';
-  return '<div class="msg-avatar'+cls+'">&#129302;</div><div class="msg-body"><div class="msg-role'+cls+'">'+(managedMode?'Expert':'Agent')+'</div>';
+  return '<div class="msg-avatar'+cls+'">&#128049;</div><div class="msg-body"><div class="msg-role'+cls+'">'+(managedMode?'Expert':'Agent')+'</div>';
 }
 const MAX_RECONNECT_DELAY=30000;
 const MAX_RECONNECT_ATTEMPTS=5;
@@ -1263,6 +1292,7 @@ function switchPage(name,btn){
   if(name==='skills')loadSkills();
   if(name==='mcp')loadMcp();
   if(name==='cron')loadCron();
+  if(name==='agents')loadAgents();
   if(name==='settings'){loadProviders();loadConfigFiles();initHumanInterventionToggle();}
   if(name==='tools')loadTools();
   if(name==='dashboard')loadDashboard();
@@ -1837,10 +1867,46 @@ document.addEventListener('DOMContentLoaded',function(){
     if(handled)e.preventDefault();
   });
 });
+function parseAgentCommand(txt){
+  // Parse "/agent @Name <task>" (or "/agent Name <task>"). Resolves the name
+  // against the enabled predefined agents (longest match) so names containing
+  // spaces work. Returns {name,task} or null.
+  if(!slashAgents||!slashAgents.length)return null;
+  var rest=txt.replace(/^\/agent\s+/i,'').trim();
+  if(rest.charAt(0)==='@')rest=rest.slice(1).trim();
+  if(!rest)return null;
+  var sorted=slashAgents.slice().sort(function(a,b){return (b.name||'').length-(a.name||'').length;});
+  for(var i=0;i<sorted.length;i++){
+    var n=(sorted[i].name||'').trim();
+    if(!n)continue;
+    if(rest.toLowerCase().indexOf(n.toLowerCase())===0){
+      return {name:n, task:rest.slice(n.length).replace(/^\s+/,'')};
+    }
+  }
+  return null;
+}
+
 function sendMsg(){
   const inp=document.getElementById('msgInput');const txt=inp.value.trim();
   // 文档附件追加为消息标记（图片走 images 字段）
   let sendTxt=txt;
+  // /agent @Name <task> → dispatch a ONE-TIME background sub-agent job.
+  // This bypasses the main LLM loop and does NOT block the main session; a
+  // completion notification arrives when the job finishes.
+  if(/^\/agent\b/i.test(txt)){
+    if(!connected)return;
+    var pa=parseAgentCommand(txt);
+    if(!pa){addLog('Could not resolve sub-agent: '+txt,'error');return;}
+    if(!pa.task){addLog('Please provide a task for /agent '+pa.name,'error');return;}
+    showUserMsg(txt,[]);inp.value='';inp.style.height='auto';
+    msgHist.push({role:'user',text:txt,time:nowTimeStr()});saveHist();
+    pendingImages=[];pendingFiles=[];renderImagePreviews();renderFilePreviews();updateAttachDot();
+    ws.send(JSON.stringify({type:'agent_job',agent:pa.name,task:pa.task,session:SESSION_ID}));
+    addLog('Sub-agent "'+pa.name+'" dispatched in the background','info');
+    return;
+  }
+
+
   if(pendingFiles.length){
     const names=pendingFiles.map(f=>f.name).join(', ');
     sendTxt=(txt?txt+'\n\n':'')+'[附件: '+names+']';
@@ -2258,6 +2324,70 @@ async function deleteSkill(name){
   if(!confirm('Delete skill "'+name+'"?'))return;
   try{await fetch('/api/skills/'+encodeURIComponent(name),{method:'DELETE'});loadSkills();loadSlashSkills()}catch(e){alert('Failed')}
 }
+// ── Sub-Agent CRUD ──
+let editingAgentId=null;
+async function loadAgents(){
+  try{const r=await fetch('/api/agents');const d=await r.json();
+    const el=document.getElementById('agentList');
+    const list=d.agents||[];
+    if(list.length){
+      el.innerHTML=list.map(a=>{
+        return '<div class="cron-item'+(a.enabled?' on':'')+'">'+
+          '<div class="cron-item-main">'+
+            '<div class="cron-item-head">'+
+              '<span class="cron-item-name">@'+esc(a.name)+'</span>'+
+              (a.model?'<span class="cron-badge">'+esc(a.model)+'</span>':'')+
+              '<span class="cron-status '+(a.enabled?'on':'off')+'">'+(a.enabled?'Enabled':'Disabled')+'</span>'+
+            '</div>'+
+            (a.description?'<div class="cron-item-msg">'+esc(a.description)+'</div>':'')+
+            '<div class="cron-meta">'+
+              (a.workdir?'<span>Workdir: '+esc(a.workdir)+'</span>':'')+
+            '</div>'+
+          '</div>'+
+          '<div class="cron-actions">'+
+            '<button class="cron-act '+(a.enabled?'off':'on')+'" onclick="toggleAgent(\''+esc(a.id)+'\')">'+(a.enabled?'Disable':'Enable')+'</button>'+
+            '<button class="cron-act edit" onclick="editAgent(\''+esc(a.id)+'\')">Edit</button>'+
+            '<button class="cron-act danger" onclick="deleteAgent(\''+esc(a.id)+'\')">Delete</button>'+
+          '</div>'+
+        '</div>';
+      }).join('');
+    } else el.innerHTML='<div class="cron-empty">No sub-agents yet. Create one above.</div>';
+  }catch(e){document.getElementById('agentList').innerHTML='<div class="cron-empty">Failed to load</div>'}
+  loadSlashAgents();
+}
+
+function editAgent(id){
+  fetch('/api/agents').then(r=>r.json()).then(d=>{
+    const a=(d.agents||[]).find(x=>x.id===id);
+    if(!a){alert('Agent not found');return;}
+    editingAgentId=id;
+    document.getElementById('agentName').value=a.name;
+    document.getElementById('agentDesc').value=a.description||'';
+    document.getElementById('agentModel').value=a.model||'';
+    document.getElementById('agentPrompt').value=a.system_prompt||'';
+    document.getElementById('agentCancelEdit').classList.remove('hidden');
+  });
+}
+function cancelAgentEdit(){
+  editingAgentId=null;
+  ['agentName','agentDesc','agentModel','agentPrompt'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('agentCancelEdit').classList.add('hidden');
+}
+async function saveAgent(){
+  const body={name:document.getElementById('agentName').value.trim(),description:document.getElementById('agentDesc').value.trim(),system_prompt:document.getElementById('agentPrompt').value.trim(),model:document.getElementById('agentModel').value.trim()};
+  if(!body.name){alert('Name is required');return;}
+  try{
+    if(editingAgentId){
+      await fetch('/api/agents/'+encodeURIComponent(editingAgentId),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    }else{
+      await fetch('/api/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    }
+    cancelAgentEdit();loadAgents();
+  }catch(e){alert('Failed to save agent');}
+}
+async function toggleAgent(id){try{await fetch('/api/agents/'+encodeURIComponent(id)+'/toggle',{method:'POST'});loadAgents();}catch(e){alert('Failed')}}
+async function deleteAgent(id){if(!confirm('Delete sub-agent?'))return;try{await fetch('/api/agents/'+encodeURIComponent(id),{method:'DELETE'});loadAgents();}catch(e){alert('Failed')}}
+
 async function loadMcp(){
   try{const r=await fetch('/api/mcp');const d=await r.json();
     const el=document.getElementById('mcpList');const servers=d.servers||[];
@@ -3376,33 +3506,62 @@ function fmtNum(n){
   return String(n);
 }
 
-// ── Slash Command (/) Skill Popup ──
-let slashSkills=[], slashIdx=-1, slashOpen=false;
+// ── Slash Command (/skill, /agent, /new) Popup ──
+let slashSkills=[], slashAgents=[], slashIdx=-1, slashOpen=false, slashMode='skills';
 
 async function loadSlashSkills(){
   try{const r=await fetch('/api/skills');const d=await r.json();
     slashSkills=(d.skills||[]).filter(s=>s.enabled);
   }catch(e){slashSkills=[];}
 }
-// Pre-load skills on page load
+async function loadSlashAgents(){
+  try{const r=await fetch('/api/agents');const d=await r.json();
+    slashAgents=(d.agents||[]).filter(a=>a.enabled!==false);
+  }catch(e){slashAgents=[];}
+}
+// Pre-load slash caches on page load
 loadSlashSkills();
+loadSlashAgents();
 
-function showSlashPopup(filter){
+function showSlashList(list, filter, mode, emptyMsg){
   const popup=document.getElementById('slashPopup');
-  const f=filter.toLowerCase();
-  const filtered=f?slashSkills.filter(s=>s.name.toLowerCase().includes(f)||(s.description||'').toLowerCase().includes(f)):slashSkills;
-  if(!filtered.length){popup.innerHTML='<div class="slash-popup-empty">No matching skills</div>';popup.classList.add('show');slashOpen=true;slashIdx=-1;return;}
+  let f=filter.toLowerCase(); if(mode==='agents'&&f.charAt(0)==='@')f=f.slice(1);
+  const filtered=f?list.filter(s=>((s.name||'').toLowerCase().includes(f)||(s.description||'').toLowerCase().includes(f))):list;
+  slashMode=mode;
+  if(!filtered.length){popup.innerHTML='<div class="slash-popup-empty">'+emptyMsg+'</div>';popup.classList.add('show');slashOpen=true;slashIdx=-1;return;}
   popup.innerHTML=filtered.map((s,i)=>{
     const desc=s.description||'';
     const brief=desc.length>80?desc.slice(0,80)+'...':desc;
-    return '<div class="slash-popup-item'+(i===slashIdx?' active':'')+'" data-idx="'+i+'" data-name="'+esc(s.name)+'" onmousedown="selectSlashItem(\''+esc(s.name)+'\')">' +
-      '<span class="slash-popup-name">/'+esc(s.name)+'</span>' +
+    const cmd=mode==='agents'?'/agent @':'/skill ';
+    return '<div class="slash-popup-item'+(i===slashIdx?' active':'')+'" data-idx="'+i+'" data-name="'+esc(s.name)+'" onmousedown="selectSlashItem(\''+esc(s.name)+'\',\''+mode+'\')">' +
+      '<span class="slash-popup-name">'+cmd+esc(s.name)+'</span>' +
       (brief?'<span class="slash-popup-desc">'+esc(brief)+'</span>':'') +
     '</div>';
   }).join('');
   popup.classList.add('show');slashOpen=true;
-  // Store filtered list for keyboard nav
   popup._filtered=filtered;
+}
+function showSkillsPopup(filter){showSlashList(slashSkills, filter, 'skills', 'No matching skills');}
+function showAgentsPopup(filter){showSlashList(slashAgents, filter, 'agents', 'No matching agents');}
+
+// Top-level slash command menu: /skill, /agent, /new
+function showCmdMenu(rest){
+  const popup=document.getElementById('slashPopup');
+  const r=(rest||'').toLowerCase();
+  const menu=[];
+  if('skill'.startsWith(r))menu.push({name:'/skill',desc:'Run a skill' ,mode:'skills'});
+  if('agent'.startsWith(r))menu.push({name:'/agent',desc:'Run a sub-agent',mode:'agents'});
+  if('new'.startsWith(r))menu.push({name:'/new',desc:'Reset to a new session',mode:'new'});
+  slashMode='commands';
+  if(!menu.length){popup.innerHTML='<div class="slash-popup-empty">No such command</div>';popup.classList.add('show');slashOpen=true;slashIdx=-1;return;}
+  popup.innerHTML=menu.map((c,i)=>{
+    return '<div class="slash-popup-item'+(i===slashIdx?' active':'')+'" data-idx="'+i+'" data-name="'+c.name+'" onmousedown="selectSlashItem(\''+c.name+'\',\'commands\')">' +
+      '<span class=\'slash-popup-name\'>'+c.name+'</span>' +
+      (c.desc?'<span class=\'slash-popup-desc\'>'+c.desc+'</span>':'') +
+    '</div>';
+  }).join('');
+  popup.classList.add('show');slashOpen=true;
+  popup._filtered=menu;
 }
 
 function hideSlashPopup(){
@@ -3411,9 +3570,15 @@ function hideSlashPopup(){
   slashOpen=false;slashIdx=-1;
 }
 
-function selectSlashItem(name){
+function selectSlashItem(name, mode){
   const inp=document.getElementById('msgInput');
-  inp.value='/'+name+' ';
+  if(mode==='commands'){
+    inp.value= name==='/new' ? '/new' : name+' ';
+  } else if(mode==='agents'){
+    inp.value='/agent @'+name+' ';
+  } else {
+    inp.value='/skill '+name+' ';
+  }
   hideSlashPopup();
   inp.focus();
 }
@@ -3428,20 +3593,31 @@ function highlightSlashItem(idx){
 
 function handleInput(e){
   const inp=e.target;
-  // Auto-resize textarea（单行 40px 起，多行增高至 200px 封顶）
   inp.style.height='auto';
   inp.style.height=Math.max(40,Math.min(inp.scrollHeight,200))+'px';
   updateSendState();
-  // Slash detection
   const val=inp.value;
-  if(val.startsWith('/')&&val.indexOf(' ')===-1){
-    // User is typing a slash command (no space yet = still typing the name)
-    const filter=val.slice(1);
-    showSlashPopup(filter);
-  } else {
+  const lower=val.toLowerCase();
+  if(lower.startsWith('/skill')){
+    if(keepNamePopup(val.slice(6))) showSkillsPopup(val.slice(6).trim());
+    else hideSlashPopup();
+  } else if(lower.startsWith('/agent')){
+    if(keepNamePopup(val.slice(6))) showAgentsPopup(val.slice(6).trim());
+    else hideSlashPopup();
+  } else if(lower.startsWith('/new')){
     hideSlashPopup();
+  } else {
+    showCmdMenu(val.slice(1));
   }
 }
+function keepNamePopup(after){
+  // Keep the name-selection popup only while the user is still completing the
+  // name. Once a space separates the name from a following instruction, close
+  // it so they can type freely and press Enter to send.
+  if(!after||after.trim()==='') return true;
+  return !/\S\s\S/.test(after);
+}
+
 
 function handleInputKeydown(e){
   if(slashOpen){
@@ -3462,7 +3638,7 @@ function handleInputKeydown(e){
     if(e.key==='Enter'||e.key==='Tab'){
       e.preventDefault();
       if(slashIdx>=0&&slashIdx<items.length){
-        selectSlashItem(items[slashIdx].name);
+        selectSlashItem(items[slashIdx].name, slashMode);
       }
       return;
     }
@@ -3475,6 +3651,8 @@ function handleInputKeydown(e){
   // Normal send behavior
   if(e.key==='Enter'&&!e.shiftKey){
     e.preventDefault();
+    const cmd=document.getElementById('msgInput').value.trim().toLowerCase();
+    if(cmd==='/new'){ const inp=document.getElementById('msgInput'); inp.value=''; clearChat(); return; }
     sendMsg();
   }
 }
