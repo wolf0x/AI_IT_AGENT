@@ -153,6 +153,7 @@ pub struct AppState {
     pub model_store_path: String,
     pub max_iterations: Arc<AtomicUsize>,
     pub rabbit_hole_threshold: Arc<AtomicUsize>,
+    pub trim_redundant_tool_calls: Arc<AtomicBool>,
     pub context_window_threshold: Arc<AtomicUsize>,
     pub tool_timeout_secs: Arc<AtomicUsize>,
     pub max_tool_retries: Arc<AtomicUsize>,
@@ -638,6 +639,7 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "context_window_threshold": state.context_window_threshold.load(Ordering::SeqCst),
         "max_iterations": state.max_iterations.load(Ordering::SeqCst),
         "rabbit_hole_threshold": state.rabbit_hole_threshold.load(Ordering::SeqCst),
+        "trim_redundant_tool_calls": state.trim_redundant_tool_calls.load(Ordering::SeqCst),
         "tool_timeout_secs": state.tool_timeout_secs.load(Ordering::SeqCst),
         "max_tool_retries": state.max_tool_retries.load(Ordering::SeqCst),
         "primary_model": state.primary_model.read().unwrap().clone(),
@@ -2269,6 +2271,9 @@ async fn agent_settings_save_handler(
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
         .unwrap_or(state.max_tool_retries.load(Ordering::SeqCst));
+    let trim_redundant_tool_calls = body.get("trim_redundant_tool_calls")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(state.trim_redundant_tool_calls.load(Ordering::SeqCst));
 
     // Save to config.toml
     let workspace_dir = &state.workspace_dir;
@@ -2279,6 +2284,7 @@ async fn agent_settings_save_handler(
         context_window_threshold,
         tool_timeout_secs,
         max_tool_retries,
+        trim_redundant_tool_calls,
     ) {
         Ok(()) => {
             // Hot-reload in-memory values so the next run picks them up immediately
@@ -2287,6 +2293,7 @@ async fn agent_settings_save_handler(
             state.context_window_threshold.store(context_window_threshold, Ordering::SeqCst);
             state.tool_timeout_secs.store(tool_timeout_secs, Ordering::SeqCst);
             state.max_tool_retries.store(max_tool_retries, Ordering::SeqCst);
+            state.trim_redundant_tool_calls.store(trim_redundant_tool_calls, Ordering::SeqCst);
 
             info!("Agent settings saved and hot-reloaded: max_iterations={}, rabbit_hole={}, ctx_threshold={}, tool_timeout={}, max_retries={}",
                 max_iterations, rabbit_hole_threshold, context_window_threshold, tool_timeout_secs, max_tool_retries);
@@ -2297,6 +2304,7 @@ async fn agent_settings_save_handler(
                 "context_window_threshold": context_window_threshold,
                 "tool_timeout_secs": tool_timeout_secs,
                 "max_tool_retries": max_tool_retries,
+                "trim_redundant_tool_calls": trim_redundant_tool_calls,
             }))
         }
         Err(e) => {

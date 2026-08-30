@@ -470,13 +470,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to build agent: {}", e))?;
     let agent: Arc<dyn agent::Agent> = Arc::new(agent);
 
+    // Shared hot-reloadable switch: drop redundant trailing tool calls after a
+    // final text answer. Shared between the Runner and AppState so the Settings
+    // toggle takes effect at runtime without a restart.
+    let trim_redundant_tool_calls = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.trim_redundant_tool_calls));
+
     // Build runner using builder pattern (ADK-RUST style)
     let runner = Runner::builder()
         .agent(agent)
         .logger(logger.clone())
         .checkpointer(checkpointer)
         .app_name("RustAgent")
-        .trim_redundant_tool_calls(config.agent.trim_redundant_tool_calls)
+        .trim_redundant_tool_calls(trim_redundant_tool_calls.clone())
         .build()
         .map_err(|e| format!("Failed to build runner: {}", e))?;
     let runner = Arc::new(runner);
@@ -610,6 +615,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         context_window_threshold: Arc::new(AtomicUsize::new(config.agent.context_window_threshold)),
         tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.tool_timeout_secs)),
         max_tool_retries: Arc::new(AtomicUsize::new(config.agent.max_tool_retries)),
+        trim_redundant_tool_calls: trim_redundant_tool_calls.clone(),
         expert_max_iterations: Arc::new(AtomicUsize::new(config.agent.expert_max_iterations)),
         expert_tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.expert_tool_timeout_secs)),
         expert_max_tool_retries: Arc::new(AtomicUsize::new(config.agent.expert_max_tool_retries)),

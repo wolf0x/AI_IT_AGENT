@@ -424,6 +424,7 @@ timezone_offset = 8
         context_window_threshold: usize,
         tool_timeout_secs: usize,
         max_tool_retries: usize,
+        trim_redundant_tool_calls: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Load existing config (or create default if none exists)
         let mut config = Self::load(workspace_dir).unwrap_or_default();
@@ -434,6 +435,7 @@ timezone_offset = 8
         config.agent.context_window_threshold = context_window_threshold;
         config.agent.tool_timeout_secs = tool_timeout_secs;
         config.agent.max_tool_retries = max_tool_retries;
+        config.agent.trim_redundant_tool_calls = trim_redundant_tool_calls;
 
         // Save back to file
         config.save(workspace_dir)

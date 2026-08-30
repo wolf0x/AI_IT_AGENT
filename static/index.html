@@ -812,6 +812,16 @@ input:checked+.slider:before{transform:translateX(20px)}
             <input type="number" id="toolMaxRetriesInput" value="2" min="0" max="10" onchange="saveAgentSettings()">
             <small style="color:var(--t3)">Auto-retry count for transient tool failures (timeouts, network errors)</small>
           </div>
+          <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <label style="margin-bottom:0">Trim Redundant Tool Calls</label>
+              <small style="color:var(--t3)">Drop trailing duplicate tool calls after the model already gave a final text answer</small>
+            </div>
+            <label class="perm-toggle">
+              <input type="checkbox" id="trimRedundantInput" onchange="saveAgentSettings()">
+              <span class="slider"></span>
+            </label>
+          </div>
           <div class="form-group">
             <label>Timezone Offset (UTC)</label>
             <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1" onchange="saveExtendedSettings()">
@@ -2204,6 +2214,7 @@ async function loadModels(){
     if(d.max_iterations) document.getElementById('maxIterInput').value = d.max_iterations;
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
     if(d.tool_timeout_secs) document.getElementById('toolTimeoutInput').value = d.tool_timeout_secs;
+    if(typeof d.trim_redundant_tool_calls==='boolean') document.getElementById('trimRedundantInput').checked=d.trim_redundant_tool_calls;
     if(d.max_tool_retries !== undefined) document.getElementById('toolMaxRetriesInput').value = d.max_tool_retries;
     // Load timezone offset from config
     if(d.timezone_offset !== undefined) document.getElementById('tzOffsetInput').value = d.timezone_offset;
@@ -3079,12 +3090,14 @@ function saveAgentSettings(){
   const ctxThreshold=parseInt(document.getElementById('ctxWindowThreshold').value)||80;
   const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
   const toolMaxRetries=parseInt(document.getElementById('toolMaxRetriesInput').value)||2;
+  const trimRedundant=document.getElementById('trimRedundantInput').checked;
   fetch('/api/settings/agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     max_iterations:maxIter,
     rabbit_hole_threshold:rabbitHole,
     context_window_threshold:ctxThreshold,
     tool_timeout_secs:toolTimeout,
-    max_tool_retries:toolMaxRetries
+    max_tool_retries:toolMaxRetries,
+    trim_redundant_tool_calls:trimRedundant
   })})
     .then(r=>r.json())
     .then(d=>{if(d.success){addLog('Agent settings saved','info');}else{addLog('Settings save failed: '+(d.error||'unknown'),'error');}})

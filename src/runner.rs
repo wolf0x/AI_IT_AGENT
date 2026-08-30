@@ -3,6 +3,7 @@
 //! plugin hooks, and agent dispatch.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -32,7 +33,7 @@ pub struct Runner {
     logger: Arc<ConversationLogger>,
     app_name: String,
     checkpointer: Option<ATaskCheckpointer>,
-    trim_redundant_tool_calls: bool,
+    trim_redundant_tool_calls: Arc<AtomicBool>,
 }
 
 /// Builder for Runner (modeled after ADK-RUST's RunnerConfig builder).
@@ -42,7 +43,7 @@ pub struct RunnerBuilder {
     logger: Option<Arc<ConversationLogger>>,
     app_name: String,
     checkpointer: Option<ATaskCheckpointer>,
-    trim_redundant_tool_calls: bool,
+    trim_redundant_tool_calls: Arc<AtomicBool>,
 }
 
 impl RunnerBuilder {
@@ -53,7 +54,7 @@ impl RunnerBuilder {
             logger: None,
             app_name: "RustAgent".to_string(),
             checkpointer: None,
-            trim_redundant_tool_calls: true,
+            trim_redundant_tool_calls: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -82,7 +83,7 @@ impl RunnerBuilder {
         self
     }
 
-    pub fn trim_redundant_tool_calls(mut self, v: bool) -> Self {
+    pub fn trim_redundant_tool_calls(mut self, v: Arc<AtomicBool>) -> Self {
         self.trim_redundant_tool_calls = v;
         self
     }
@@ -153,7 +154,7 @@ impl Runner {
          .with_preauth_profile(preauth_profile)
          .with_fallback_model(fallback_model)
          .with_rabbit_hole_threshold(rabbit_hole_threshold)
-         .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls)
+         .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls.load(Ordering::SeqCst))
          .with_context_window(context_window)
          .with_context_window_threshold(context_window_threshold)
          .with_tool_timeout_secs(tool_timeout_secs)
@@ -215,7 +216,7 @@ impl Runner {
             .with_permissions(permissions)
             .with_permission_pending(permission_pending)
             .with_rabbit_hole_threshold(params.rabbit_hole_threshold)
-            .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls)
+            .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls.load(Ordering::SeqCst))
             .with_context_window(params.context_window)
             .with_context_window_threshold(params.context_window_threshold)
             .with_tool_timeout_secs(params.tool_timeout_secs)
