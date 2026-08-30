@@ -812,6 +812,11 @@ input:checked+.slider:before{transform:translateX(20px)}
             <input type="number" id="toolMaxRetriesInput" value="2" min="0" max="10" onchange="saveAgentSettings()">
             <small style="color:var(--t3)">Auto-retry count for transient tool failures (timeouts, network errors)</small>
           </div>
+          <div class="form-group">
+            <label>Timezone Offset (UTC)</label>
+            <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1" onchange="saveExtendedSettings()">
+            <small style="color:var(--t3)">Chat message timestamps will be displayed in this timezone (default: UTC+8)</small>
+          </div>
           <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
             <div>
               <label style="margin-bottom:0">Trim Redundant Tool Calls</label>
@@ -821,11 +826,6 @@ input:checked+.slider:before{transform:translateX(20px)}
               <input type="checkbox" id="trimRedundantInput" onchange="saveAgentSettings()">
               <span class="slider"></span>
             </label>
-          </div>
-          <div class="form-group">
-            <label>Timezone Offset (UTC)</label>
-            <input type="number" id="tzOffsetInput" value="8" min="-12" max="14" step="1" onchange="saveExtendedSettings()">
-            <small style="color:var(--t3)">Chat message timestamps will be displayed in this timezone (default: UTC+8)</small>
           </div>
           <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
             <div>
