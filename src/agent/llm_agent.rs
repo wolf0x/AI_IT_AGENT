@@ -342,37 +342,47 @@ impl LlmAgent {
         }
     }
 
+    /// Resolve the user's default reply language from USER.md (中文 -> Chinese, English -> English).
+    fn resolve_default_language(&self) -> String {
+        if !self.workspace_dir.is_empty() {
+            let user_md_path = std::path::Path::new(&self.workspace_dir).join("USER.md");
+            if let Ok(content) = std::fs::read_to_string(&user_md_path) {
+                if content.contains("中文") || content.contains("简体") { return "Chinese".to_string(); }
+                if content.contains("English") || content.contains("英文") { return "English".to_string(); }
+            }
+        }
+        "Chinese".to_string()
+    }
+
+    /// Resolve the reply language rule: explicit user request wins, else the
+    /// USER.md default language. Applies to main, sub-agent, and CRON sessions.
+    fn resolve_language_rule(&self, user_message: &str) -> String {
+        let msg_lower = user_message.to_lowercase();
+        let explicit_cn = user_message.contains("中文");
+        let explicit_en = user_message.contains("英文")
+            || (msg_lower.contains("english")
+                && (msg_lower.contains("reply") || msg_lower.contains("respond") || msg_lower.contains("use")));
+        if explicit_cn {
+            "The user explicitly asked you to reply in Chinese. Write your ENTIRE reply in Chinese (headings, bullets, table cells, greetings and closings included). Do not switch to English or mix languages."
+                .to_string()
+        } else if explicit_en {
+            "The user explicitly asked you to reply in English. Write your ENTIRE reply in English (headings, bullets, table cells, greetings and closings included). Do not switch to Chinese or mix languages."
+                .to_string()
+        } else if self.resolve_default_language().eq_ignore_ascii_case("english") {
+            "Your user's default language is English (from USER.md). Unless the user explicitly asks for another language, write your ENTIRE reply in English (headings, bullets, table cells, greetings and closings included). Do not switch to Chinese or mix languages."
+                .to_string()
+        } else {
+            "Your user's default language is Chinese (from USER.md). Unless the user explicitly asks for another language, write your ENTIRE reply in Chinese (headings, bullets, table cells, greetings and closings included). Do not switch to English or mix languages."
+                .to_string()
+        }
+    }
     fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage]) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
         
         // Determine user's preferred name: USER.md explicit > detected given name > Master
         let user_name = self.resolve_user_name();
         
-        // Per-turn language detection. Policy:
-        //  1) Explicit request wins (e.g. "全中文回复" / "用中文" / "Reply in English").
-        //  2) Else follow the user's most recent message language (Chinese -> Chinese, English -> English).
-        //  3) Neutral messages (no clear language) fall back to the default language in USER.md.
-        let msg_lower = user_message.to_lowercase();
-        let explicit_cn = user_message.contains("中文");
-        let explicit_en = user_message.contains("英文")
-            || (msg_lower.contains("english")
-                && (msg_lower.contains("reply") || msg_lower.contains("respond") || msg_lower.contains("use")));
-        let lang_rule: String = if explicit_cn {
-            "The user explicitly asked you to reply in Chinese. Write your ENTIRE reply in Chinese (headings, bullets, table cells, greetings and closings included). Do not switch to English or mix languages."
-                .to_string()
-        } else if explicit_en {
-            "The user explicitly asked you to reply in English. Write your ENTIRE reply in English (headings, bullets, table cells, greetings and closings included). Do not switch to Chinese or mix languages."
-                .to_string()
-        } else if user_message.chars().any(|ch| ('\u{4E00}'..='\u{9FFF}').contains(&ch) || ('\u{3400}'..='\u{4DBF}').contains(&ch)) {
-            "Your user's most recent message is in Chinese, so write your ENTIRE reply in Chinese (headings, bullets, table cells, greetings and closings included). Do not switch to English or mix languages."
-                .to_string()
-        } else if user_message.chars().any(|ch| ch.is_ascii_alphabetic()) {
-            "Your user's most recent message is in English, so write your ENTIRE reply in English (headings, bullets, table cells, greetings and closings included). Do not switch to Chinese or mix languages."
-                .to_string()
-        } else {
-            "Your user's most recent message has no clear language. Reply in the DEFAULT language defined in your user profile (USER.md) and do not mix languages."
-                .to_string()
-        };
+        let lang_rule = self.resolve_language_rule(user_message);
         let mut prompt = format!(
             "You are RustAgent, a powerful local AI assistant running on the user's Windows machine. \
 You have FULL ACCESS to the user's system via built-in tools.\n\
@@ -738,7 +748,10 @@ impl Agent for LlmAgent {
 
         // Build system prompt and history in the spawned task
         let system_prompt = match &ctx.system_prompt_override {
-            Some(p) if !p.trim().is_empty() => p.clone(),
+            Some(p) if !p.trim().is_empty() => {
+                let lang_rule = self.resolve_language_rule(user_message);
+                format!("{}\n\n## LANGUAGE RULE (STRICT)\n{}", p, lang_rule)
+            }
             _ => self.build_system_prompt(user_message, &ctx.conversation_history),
         };
         // Tool selectivity: core tools are always sent in full; peripheral tools
