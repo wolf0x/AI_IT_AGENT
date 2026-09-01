@@ -376,6 +376,28 @@ impl LlmAgent {
                 .to_string()
         }
     }
+    /// Build a lightweight norms section (AGENTS.md / SOUL.md / USER.md) injected
+    /// into sub-agent sessions so they inherit the same red-lines, boundaries, and
+    /// user identity/language as the main session, WITHOUT leaking MEMORY.md.
+    fn sub_agent_norms_section(&self) -> String {
+        const MAX_NORMS_CHARS: usize = 8000;
+        let workspace = &self.workspace_dir;
+        if workspace.is_empty() { return String::new(); }
+        let files = [
+            ("AGENTS.md", "Behavior & Rules"),
+            ("SOUL.md", "Personality, Tone & Boundaries"),
+            ("USER.md", "User Communication Preferences"),
+        ];
+        let mut out = String::from("\n## Sub-Agent Norms (workspace)\n");
+        for (filename, desc) in files {
+            if let Some((content, _)) = Self::read_workspace_file(workspace, filename, MAX_NORMS_CHARS) {
+                out.push_str(&format!("\n## {} ({})\n{}", desc, filename, content));
+                out.push('\n');
+            }
+        }
+        out
+    }
+
     fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage]) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
         
@@ -750,7 +772,8 @@ impl Agent for LlmAgent {
         let system_prompt = match &ctx.system_prompt_override {
             Some(p) if !p.trim().is_empty() => {
                 let lang_rule = self.resolve_language_rule(user_message);
-                format!("{}\n\n## LANGUAGE RULE (STRICT)\n{}", p, lang_rule)
+                let norms = self.sub_agent_norms_section();
+                format!("{}\n\n## LANGUAGE RULE (STRICT)\n{}\n{}", p, lang_rule, norms)
             }
             _ => self.build_system_prompt(user_message, &ctx.conversation_history),
         };
