@@ -154,6 +154,8 @@ pub struct AppState {
     pub max_iterations: Arc<AtomicUsize>,
     pub rabbit_hole_threshold: Arc<AtomicUsize>,
     pub trim_redundant_tool_calls: Arc<AtomicBool>,
+    pub enable_context_scaling: Arc<AtomicBool>,
+    pub max_inline_chars: Arc<AtomicUsize>,
     pub context_window_threshold: Arc<AtomicUsize>,
     pub tool_timeout_secs: Arc<AtomicUsize>,
     pub max_tool_retries: Arc<AtomicUsize>,
@@ -640,6 +642,8 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "max_iterations": state.max_iterations.load(Ordering::SeqCst),
         "rabbit_hole_threshold": state.rabbit_hole_threshold.load(Ordering::SeqCst),
         "trim_redundant_tool_calls": state.trim_redundant_tool_calls.load(Ordering::SeqCst),
+        "enable_context_scaling": state.enable_context_scaling.load(Ordering::SeqCst),
+        "max_inline_chars": state.max_inline_chars.load(Ordering::SeqCst),
         "tool_timeout_secs": state.tool_timeout_secs.load(Ordering::SeqCst),
         "max_tool_retries": state.max_tool_retries.load(Ordering::SeqCst),
         "primary_model": state.primary_model.read().unwrap().clone(),
@@ -2274,6 +2278,13 @@ async fn agent_settings_save_handler(
     let trim_redundant_tool_calls = body.get("trim_redundant_tool_calls")
         .and_then(|v| v.as_bool())
         .unwrap_or(state.trim_redundant_tool_calls.load(Ordering::SeqCst));
+    let enable_context_scaling = body.get("enable_context_scaling")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(state.enable_context_scaling.load(Ordering::SeqCst));
+    let max_inline_chars = body.get("max_inline_chars")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(state.max_inline_chars.load(Ordering::SeqCst));
 
     // Save to config.toml
     let workspace_dir = &state.workspace_dir;
@@ -2285,6 +2296,8 @@ async fn agent_settings_save_handler(
         tool_timeout_secs,
         max_tool_retries,
         trim_redundant_tool_calls,
+        enable_context_scaling,
+        max_inline_chars,
     ) {
         Ok(()) => {
             // Hot-reload in-memory values so the next run picks them up immediately
@@ -2294,6 +2307,8 @@ async fn agent_settings_save_handler(
             state.tool_timeout_secs.store(tool_timeout_secs, Ordering::SeqCst);
             state.max_tool_retries.store(max_tool_retries, Ordering::SeqCst);
             state.trim_redundant_tool_calls.store(trim_redundant_tool_calls, Ordering::SeqCst);
+            state.enable_context_scaling.store(enable_context_scaling, Ordering::SeqCst);
+            state.max_inline_chars.store(max_inline_chars, Ordering::SeqCst);
 
             info!("Agent settings saved and hot-reloaded: max_iterations={}, rabbit_hole={}, ctx_threshold={}, tool_timeout={}, max_retries={}",
                 max_iterations, rabbit_hole_threshold, context_window_threshold, tool_timeout_secs, max_tool_retries);
@@ -2305,6 +2320,8 @@ async fn agent_settings_save_handler(
                 "tool_timeout_secs": tool_timeout_secs,
                 "max_tool_retries": max_tool_retries,
                 "trim_redundant_tool_calls": trim_redundant_tool_calls,
+                "enable_context_scaling": enable_context_scaling,
+                "max_inline_chars": max_inline_chars,
             }))
         }
         Err(e) => {

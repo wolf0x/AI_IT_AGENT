@@ -487,6 +487,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // toggle takes effect at runtime without a restart.
     let trim_redundant_tool_calls = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.trim_redundant_tool_calls));
 
+    // Shared hot-reloadable settings for context-scaled inline result caps. Mirrored
+    // into the RunnerBuilder and AppState so Settings changes apply at runtime.
+    let enable_context_scaling = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.enable_context_scaling));
+    let max_inline_chars = Arc::new(std::sync::atomic::AtomicUsize::new(config.agent.max_inline_chars));
+
     // Build runner using builder pattern (ADK-RUST style)
     let runner = Runner::builder()
         .agent(agent)
@@ -494,6 +499,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .checkpointer(checkpointer)
         .app_name("RustAgent")
         .trim_redundant_tool_calls(trim_redundant_tool_calls.clone())
+        .enable_context_scaling(enable_context_scaling.clone())
+        .max_inline_chars(max_inline_chars.clone())
         .build()
         .map_err(|e| format!("Failed to build runner: {}", e))?;
     let runner = Arc::new(runner);
@@ -628,6 +635,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.tool_timeout_secs)),
         max_tool_retries: Arc::new(AtomicUsize::new(config.agent.max_tool_retries)),
         trim_redundant_tool_calls: trim_redundant_tool_calls.clone(),
+        enable_context_scaling: enable_context_scaling.clone(),
+        max_inline_chars: max_inline_chars.clone(),
         expert_max_iterations: Arc::new(AtomicUsize::new(config.agent.expert_max_iterations)),
         expert_tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.expert_tool_timeout_secs)),
         expert_max_tool_retries: Arc::new(AtomicUsize::new(config.agent.expert_max_tool_retries)),

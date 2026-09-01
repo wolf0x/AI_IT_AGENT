@@ -30,7 +30,7 @@ use crate::context::ToolContext;
 use crate::error::AgentResult;
 
 /// Maximum text length returned to the LLM (to avoid flooding context).
-const MAX_TEXT_LEN: usize = 5000;
+
 
 /// Inner state holding the browser connection.
 struct BrowserInner {
@@ -282,7 +282,8 @@ impl Tool for BrowserCdpTool {
         // Execute with auto-recovery: if the action fails due to a dead browser,
         // clear state and recover with a freshly launched browser.
         let output_dir = ctx.output_dir();
-        let result = self.execute_action(action, &args, &output_dir).await;
+        let max_text_len = ctx.inline_limit(5_000);
+        let result = self.execute_action(action, &args, &output_dir, max_text_len).await;
 
         match result {
             Err(ref e) if Self::is_connection_lost(&e.to_string()) => {
@@ -291,7 +292,7 @@ impl Tool for BrowserCdpTool {
                 // Only 'navigate' is meaningful to retry — other actions operate on page
                 // state that is lost when the browser restarts (fresh page = about:blank).
                 if action == "navigate" {
-                    self.execute_action(action, &args, &output_dir).await
+                    self.execute_action(action, &args, &output_dir, max_text_len).await
                 } else {
                     Err(format!(
                         "Browser session was lost and has been restarted with a blank page. \
@@ -317,7 +318,7 @@ impl BrowserCdpTool {
     }
 
     /// Execute a single browser action (called by execute, may be retried).
-    async fn execute_action(&self, action: &str, args: &Value, output_dir: &str) -> AgentResult<Value> {
+    async fn execute_action(&self, action: &str, args: &Value, output_dir: &str, max_text_len: usize) -> AgentResult<Value> {
         // All actions need the browser initialized
         let page = self.session.get_or_init().await
             .map_err(|e| -> crate::error::AgentError { e.into() })?;
@@ -370,8 +371,8 @@ impl BrowserCdpTool {
                     result.value().and_then(|v| v.as_str().map(String::from))
                         .unwrap_or_default()
                 };
-                let truncated = text.len() > MAX_TEXT_LEN;
-                let brief = if truncated { &text[..MAX_TEXT_LEN] } else { &text };
+                let truncated = text.len() > max_text_len;
+                let brief = if truncated { &text[..max_text_len] } else { &text };
                 Ok(json!({
                     "success": true,
                     "action": "get_text",
@@ -474,8 +475,8 @@ impl BrowserCdpTool {
                     page.content().await
                         .map_err(|e| format!("Get content failed: {}", e))?
                 };
-                let truncated = html.len() > MAX_TEXT_LEN;
-                let brief = if truncated { &html[..MAX_TEXT_LEN] } else { &html };
+                let truncated = html.len() > max_text_len;
+                let brief = if truncated { &html[..max_text_len] } else { &html };
                 Ok(json!({
                     "success": true,
                     "action": "get_html",

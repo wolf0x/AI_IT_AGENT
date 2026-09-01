@@ -50,7 +50,7 @@ impl Tool for WebFetchTool {
                 },
                 "max_length": {
                     "type": "integer",
-                    "description": "Maximum response body length in characters (default: 50000)"
+                    "description": "Maximum response body length in characters (default: context-scaled inline cap)"
                 },
                 "allow_private": {
                     "type": "boolean",
@@ -101,7 +101,11 @@ impl Tool for WebFetchTool {
         }
 
         let method = args["method"].as_str().unwrap_or("GET");
-        let max_length = args["max_length"].as_u64().unwrap_or(50000) as usize;
+        // Context-scaled inline cap (raised with the model's context window when
+        // scaling is enabled; bounded by the absolute max_inline_chars cap).
+        let inline_limit = ctx.inline_limit(12_000);
+        let preview_chars = ctx.inline_limit(8_000);
+        let max_length = args["max_length"].as_u64().map(|v| v as usize).unwrap_or(inline_limit);
 
         // Build client with timeout
         let client = reqwest::Client::builder()
@@ -160,10 +164,8 @@ impl Tool for WebFetchTool {
         // ── Large-response auto-save (prevents context-window truncation) ──
         // Responses above INLINE_LIMIT chars are written to workspace/output/fetch/
         // and the LLM gets a preview + saved_path instead of a truncated inline body.
-        const INLINE_LIMIT: usize = 12_000;
-        const PREVIEW_CHARS: usize = 8_000;
         let body_chars = body_text.chars().count();
-        if body_chars > INLINE_LIMIT {
+        if body_chars > inline_limit {
             let name = format!(
                 "fetch_{}_{}.json",
                 ctx.base.base.session_id.get(..8).unwrap_or("sess"),
@@ -174,7 +176,7 @@ impl Tool for WebFetchTool {
             let path = dir.join(&name);
             match std::fs::write(&path, &body_text) {
                 Ok(_) => {
-                    let preview: String = body_text.chars().take(PREVIEW_CHARS).collect();
+                    let preview: String = body_text.chars().take(preview_chars).collect();
                     return Ok(json!({
                         "status": status,
                         "content_type": content_type,

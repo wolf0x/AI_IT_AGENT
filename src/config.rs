@@ -36,6 +36,16 @@ pub struct AgentConfig {
     /// Context window usage threshold percentage (default: 80 = trim at 80% of model context)
     #[serde(default = "default_context_window_threshold")]
     pub context_window_threshold: usize,
+    /// When true, per-tool inline result caps scale up with the model's context
+    /// window (bounded by max_inline_chars). When false, legacy conservative
+    /// limits are used regardless of context size.
+    #[serde(default = "default_enable_context_scaling")]
+    pub enable_context_scaling: bool,
+    /// Absolute protection cap (chars) for how much of a single tool result or
+    /// inline web body is injected into the model context. Guards against one
+    /// huge result blowing the whole window even with scaling enabled.
+    #[serde(default = "default_max_inline_chars")]
+    pub max_inline_chars: usize,
     /// Maximum seconds allowed for a single tool execution (default: 300)
     #[serde(default = "default_tool_timeout_secs")]
     pub tool_timeout_secs: usize,
@@ -180,6 +190,8 @@ impl Default for Config {
                 rabbit_hole_threshold: default_rabbit_hole_threshold(),
                 trim_redundant_tool_calls: default_trim_redundant_tool_calls(),
                 context_window_threshold: default_context_window_threshold(),
+                enable_context_scaling: default_enable_context_scaling(),
+                max_inline_chars: default_max_inline_chars(),
                 tool_timeout_secs: default_tool_timeout_secs(),
                 max_tool_retries: default_max_tool_retries(),
                 parallel_ir_tools: default_parallel_ir_tools(),
@@ -213,6 +225,8 @@ fn default_rabbit_hole_threshold() -> usize { 5 }
 fn default_trim_redundant_tool_calls() -> bool { true }
 fn default_context_window() -> usize { 128000 }
 fn default_context_window_threshold() -> usize { 80 }
+fn default_enable_context_scaling() -> bool { true }
+fn default_max_inline_chars() -> usize { 120_000 }
 fn default_tool_timeout_secs() -> usize { 300 }
 fn default_max_tool_retries() -> usize { 2 }
 fn default_parallel_ir_tools() -> bool { true }
@@ -379,6 +393,11 @@ max_iterations = 100
 rabbit_hole_threshold = 5
 trim_redundant_tool_calls = true
 context_window_threshold = 80
+# Raise per-tool inline caps with the model's context window (default: true)
+enable_context_scaling = true
+# Absolute cap (chars) on how much of one tool result / web body is injected
+# into context, even when scaling is on (default: 120000)
+max_inline_chars = 120000
 tool_timeout_secs = 300
 max_tool_retries = 2
 # Enable parallel execution for IR collection tools (ir_scan, ir_process, etc.)
@@ -425,6 +444,8 @@ timezone_offset = 8
         tool_timeout_secs: usize,
         max_tool_retries: usize,
         trim_redundant_tool_calls: bool,
+        enable_context_scaling: bool,
+        max_inline_chars: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Load existing config (or create default if none exists)
         let mut config = Self::load(workspace_dir).unwrap_or_default();
@@ -436,6 +457,8 @@ timezone_offset = 8
         config.agent.tool_timeout_secs = tool_timeout_secs;
         config.agent.max_tool_retries = max_tool_retries;
         config.agent.trim_redundant_tool_calls = trim_redundant_tool_calls;
+        config.agent.enable_context_scaling = enable_context_scaling;
+        config.agent.max_inline_chars = max_inline_chars;
 
         // Save back to file
         config.save(workspace_dir)

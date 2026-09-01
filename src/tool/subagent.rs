@@ -327,6 +327,7 @@ impl Tool for WaitAgentsTool {
 
         let mut results = Vec::new();
         let mut all_complete = true;
+        let report_cap = ctx.inline_limit(6_000);
         {
             let j = self.jobs.0.lock().await;
             for id in &job_ids {
@@ -334,10 +335,10 @@ impl Tool for WaitAgentsTool {
                     Some(st) => {
                         if st.status != "done" && st.status != "error" { all_complete = false; }
                         let report = st.report.clone();
-                        let report = if report.chars().count() > 6000 {
-                            let head: String = report.chars().take(6000).collect();
+                        let report = if report.chars().count() > report_cap {
+                            let head: String = report.chars().take(report_cap).collect();
                             format!("{}
-...[report truncated to 6000 chars, job_id={}]", head, id)
+...[report truncated to {} chars, job_id={}]", head, report_cap, id)
                         } else { report };
                         results.push(json!({
                             "job_id": id, "agent": st.agent, "status": st.status,

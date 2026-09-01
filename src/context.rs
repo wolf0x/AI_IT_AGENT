@@ -77,6 +77,13 @@ pub struct ToolContext {
     /// Optional progress channel for long-running tools to report status.
     /// Messages sent here are forwarded to the frontend as `progress` events.
     progress_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    /// Model context window in tokens (used for context-scaled inline limits).
+    pub context_window: usize,
+    /// Whether per-tool inline result caps scale with the model's context window.
+    pub enable_context_scaling: bool,
+    /// Absolute protection cap (chars) for how much of a single tool result or
+    /// inline body is injected into the model context.
+    pub max_inline_chars: usize,
 }
 
 impl ToolContext {
@@ -88,6 +95,9 @@ impl ToolContext {
             workspace_dir,
             output_dir: String::new(),
             progress_tx: None,
+            context_window: 128000,
+            enable_context_scaling: true,
+            max_inline_chars: 120_000,
         }
     }
 
@@ -106,7 +116,18 @@ impl ToolContext {
             workspace_dir,
             output_dir: String::new(),
             progress_tx: None,
+            context_window: 128000,
+            enable_context_scaling: true,
+            max_inline_chars: 120_000,
         }
+    }
+
+    /// Set context-scaled inline-limit parameters for this tool invocation.
+    pub fn with_inline_limits(mut self, context_window: usize, enabled: bool, max_inline_chars: usize) -> Self {
+        self.context_window = context_window;
+        self.enable_context_scaling = enabled;
+        self.max_inline_chars = max_inline_chars;
+        self
     }
 
     /// Override the artifact/output directory for this tool invocation.
@@ -144,6 +165,37 @@ impl ToolContext {
             let _ = tx.try_send(message.to_string());
         }
     }
+
+    /// Compute an effective inline-content cap for a tool with a legacy
+    /// conservative default. When context scaling is enabled, the legacy limit
+    /// is raised proportionally to the model's context window (relative to a
+    /// 128k token baseline) and bounded by `max_inline_chars`. When disabled,
+    /// the legacy default is used unchanged.
+    pub fn inline_limit(&self, legacy_default: usize) -> usize {
+        effective_inline_limit(legacy_default, self.context_window, self.enable_context_scaling, self.max_inline_chars)
+    }
+}
+
+/// Effective inline-content cap for a tool with a `legacy_default` conservative
+/// limit. When context scaling is enabled, the limit is raised proportionally to
+/// the model's `context_window` (relative to a 128k baseline) and bounded by the
+/// absolute `max_inline_chars` protection cap; otherwise the legacy default is
+/// used unchanged. Shared by ToolContext and the agent's per-result history cap
+/// so all inline limits scale consistently.
+pub fn effective_inline_limit(
+    legacy_default: usize,
+    context_window: usize,
+    enabled: bool,
+    max_inline_chars: usize,
+) -> usize {
+    if !enabled {
+        return legacy_default;
+    }
+    let factor = (context_window as f64 / 128_000.0).max(1.0);
+    let scaled = (legacy_default as f64 * factor).ceil() as usize;
+    scaled
+        .min(max_inline_chars.max(legacy_default))
+        .max(legacy_default)
 }
 
 /// Context for an entire agent invocation.
@@ -164,6 +216,11 @@ pub struct InvocationContext {
     pub context_window: usize,
     /// Context usage threshold percentage (e.g. 80 = trim at 80%)
     pub context_window_threshold: usize,
+    /// When true, per-tool inline result caps scale with the model's context window.
+    pub enable_context_scaling: bool,
+    /// Absolute protection cap (chars) for how much of a single tool result or
+    /// inline body is injected into the model context.
+    pub max_inline_chars: usize,
     /// Tool execution timeout in seconds
     pub tool_timeout_secs: u64,
     /// Maximum automatic retries for retryable tool failures
@@ -214,6 +271,8 @@ impl InvocationContext {
             trim_redundant_tool_calls: true,
             context_window: 128000,
             context_window_threshold: 80,
+            enable_context_scaling: true,
+            max_inline_chars: 120_000,
             tool_timeout_secs: 300,
             max_tool_retries: 2,
             system_prompt_override: None,
@@ -278,6 +337,16 @@ impl InvocationContext {
     /// Set context window usage threshold percentage.
     pub fn with_context_window_threshold(mut self, percent: usize) -> Self {
         self.context_window_threshold = percent;
+        self
+    }
+    /// Enable/disable context-window-scaled inline result caps.
+    pub fn with_enable_context_scaling(mut self, v: bool) -> Self {
+        self.enable_context_scaling = v;
+        self
+    }
+    /// Set the absolute protection cap (chars) for single-result inline content.
+    pub fn with_max_inline_chars(mut self, chars: usize) -> Self {
+        self.max_inline_chars = chars;
         self
     }
 

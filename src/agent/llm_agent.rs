@@ -844,6 +844,8 @@ impl Agent for LlmAgent {
         let max_tool_retries = ctx.max_tool_retries;
         let context_window = ctx.context_window;
         let context_window_threshold = ctx.context_window_threshold;
+        let inline_scaling_enabled = ctx.enable_context_scaling;
+        let max_inline_chars = ctx.max_inline_chars;
         // Calculate max history tokens: context_window * threshold%
         let max_history_tokens: usize = context_window * context_window_threshold / 100;
         let checkpointer = ctx.checkpointer.clone();
@@ -1362,14 +1364,14 @@ impl Agent for LlmAgent {
                                         &invocation_id, &author
                                     ))).await;
                                     let msgs = execute_tools_concurrent(
-                                        &tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                        &tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     // Standard sequential execution
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
+                                            &tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1392,13 +1394,13 @@ impl Agent for LlmAgent {
                                 if all_read_only && tool_calls.len() > 1 {
                                     info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
                                     let msgs = execute_tools_concurrent(
-                                        &*tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries,
+                                        &*tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &*tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, event_log.as_mut(),
+                                            &*tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1852,10 +1854,20 @@ async fn execute_tool_call(
     permission: &PermissionChecker,
     tool_timeout_secs: u64,
     max_retries: usize,
+    context_window: usize,
+    inline_scaling_enabled: bool,
+    max_inline_chars: usize,
     mut event_log: Option<&mut EventLog>,
 ) -> ChatMessage {
     let tool_name = tc.function.name.as_deref().unwrap_or("unknown");
     let args_str = tc.function.arguments.as_deref().unwrap_or("{}");
+
+    // Per-result protection cap: how much of one tool result is injected into
+    // history/context. Scaled consistently with per-tool inline limits and
+    // bounded by the absolute max_inline_chars protection cap, so a single or
+    // concurrent batch of results cannot overflow the context window.
+    let per_result_cap =
+        crate::context::effective_inline_limit(30_000, context_window, inline_scaling_enabled, max_inline_chars);
 
     // On-demand peripheral tool schema resolution (keeps per-request payload small).
     if tool_name == "load_tool_schema" {
@@ -1948,7 +1960,8 @@ async fn execute_tool_call(
                     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<String>(32);
                     let ctx = ToolContext::simple(working_dir.to_string(), workspace_dir.to_string())
                         .with_output_dir(output_dir.to_string())
-                        .with_progress(progress_tx);
+                        .with_progress(progress_tx)
+                        .with_inline_limits(context_window, inline_scaling_enabled, max_inline_chars);
                     let args_clone = args.clone();
 
                     // Spawn the actual tool execution as a separate task
@@ -2138,8 +2151,8 @@ async fn execute_tool_call(
 
     // Build the history entry with size cap (max ~30000 chars per result to prevent context overflow)
     let result_str = serde_json::to_string(&result).unwrap_or_default();
-    let history_str = if result_str.len() > 30_000 {
-        let preview: String = result_str.chars().take(30_000).collect();
+    let history_str = if result_str.len() > per_result_cap {
+        let preview: String = result_str.chars().take(per_result_cap).collect();
         format!("{}\n\n... [truncated, original size: {} chars]", preview, result_str.len())
     } else {
         result_str
@@ -2163,10 +2176,13 @@ async fn execute_tools_concurrent<'a>(
     permission: &'a PermissionChecker,
     tool_timeout_secs: u64,
     max_retries: usize,
+    context_window: usize,
+    inline_scaling_enabled: bool,
+    max_inline_chars: usize,
 ) -> Vec<ChatMessage> {
     use futures::future::join_all;
     let futs = tool_calls.iter().map(|tc| {
-        execute_tool_call(tools, tc, working_dir, workspace_dir, output_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries, None)
+        execute_tool_call(tools, tc, working_dir, workspace_dir, output_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries, context_window, inline_scaling_enabled, max_inline_chars, None)
     });
     join_all(futs).await
 }

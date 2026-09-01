@@ -789,18 +789,35 @@ input:checked+.slider:before{transform:translateX(20px)}
         </div>
         <div class="settings-section gs-agent">
           <h3>&#9881; Agent</h3>
-          <div class="form-group">
-            <label>Max Iterations</label>
-            <input type="number" id="maxIterInput" value="100" min="1" max="1000" onchange="saveAgentSettings()">
-          </div>
-          <div class="form-group">
-            <label>Rabbit Hole Threshold</label>
-            <input type="number" id="rabbitHoleInput" value="5" min="1" max="50" onchange="saveAgentSettings()">
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1">
+              <label>Max Iterations</label>
+              <input type="number" id="maxIterInput" value="100" min="1" max="1000" onchange="saveAgentSettings()">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label>Rabbit Hole Threshold</label>
+              <input type="number" id="rabbitHoleInput" value="5" min="1" max="50" onchange="saveAgentSettings()">
+            </div>
           </div>
           <div class="form-group">
             <label>Context Window Threshold (%)</label>
             <input type="number" id="ctxWindowThreshold" value="80" min="10" max="99" onchange="saveAgentSettings()">
             <small style="color:var(--t3)">Trim history when usage reaches this % of model's context window</small>
+          </div>
+          <div class="form-group">
+            <label>Max Inline Chars (Absolute Cap)</label>
+            <input type="number" id="maxInlineCharsInput" value="120000" min="30000" max="400000" step="5000" onchange="saveAgentSettings()">
+            <small style="color:var(--t3)">Absolute cap on how much of one tool result / web body is injected into context, even when scaling is on</small>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <label style="margin-bottom:0">Context-Scaled Inline Limits</label>
+              <small style="color:var(--t3)">Raise per-tool inline caps with the model's context window (bounded by the absolute cap above)</small>
+            </div>
+            <label class="perm-toggle">
+              <input type="checkbox" id="inlineScalingInput" onchange="saveAgentSettings()">
+              <span class="slider"></span>
+            </label>
           </div>
           <div class="form-group">
             <label>Tool Timeout (seconds)</label>
@@ -2215,6 +2232,8 @@ async function loadModels(){
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
     if(d.tool_timeout_secs) document.getElementById('toolTimeoutInput').value = d.tool_timeout_secs;
     if(typeof d.trim_redundant_tool_calls==='boolean') document.getElementById('trimRedundantInput').checked=d.trim_redundant_tool_calls;
+    if(typeof d.enable_context_scaling==='boolean') document.getElementById('inlineScalingInput').checked=d.enable_context_scaling;
+    if(d.max_inline_chars !== undefined) document.getElementById('maxInlineCharsInput').value = d.max_inline_chars;
     if(d.max_tool_retries !== undefined) document.getElementById('toolMaxRetriesInput').value = d.max_tool_retries;
     // Load timezone offset from config
     if(d.timezone_offset !== undefined) document.getElementById('tzOffsetInput').value = d.timezone_offset;
@@ -3091,13 +3110,17 @@ function saveAgentSettings(){
   const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
   const toolMaxRetries=parseInt(document.getElementById('toolMaxRetriesInput').value)||2;
   const trimRedundant=document.getElementById('trimRedundantInput').checked;
+  const enableContextScaling=document.getElementById('inlineScalingInput').checked;
+  const maxInlineChars=parseInt(document.getElementById('maxInlineCharsInput').value)||120000;
   fetch('/api/settings/agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
     max_iterations:maxIter,
     rabbit_hole_threshold:rabbitHole,
     context_window_threshold:ctxThreshold,
     tool_timeout_secs:toolTimeout,
     max_tool_retries:toolMaxRetries,
-    trim_redundant_tool_calls:trimRedundant
+    trim_redundant_tool_calls:trimRedundant,
+    enable_context_scaling:enableContextScaling,
+    max_inline_chars:maxInlineChars
   })})
     .then(r=>r.json())
     .then(d=>{if(d.success){addLog('Agent settings saved','info');}else{addLog('Settings save failed: '+(d.error||'unknown'),'error');}})

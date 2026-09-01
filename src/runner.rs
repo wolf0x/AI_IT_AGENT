@@ -3,7 +3,7 @@
 //! plugin hooks, and agent dispatch.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -34,6 +34,8 @@ pub struct Runner {
     app_name: String,
     checkpointer: Option<ATaskCheckpointer>,
     trim_redundant_tool_calls: Arc<AtomicBool>,
+    enable_context_scaling: Arc<AtomicBool>,
+    max_inline_chars: Arc<AtomicUsize>,
 }
 
 /// Builder for Runner (modeled after ADK-RUST's RunnerConfig builder).
@@ -44,6 +46,8 @@ pub struct RunnerBuilder {
     app_name: String,
     checkpointer: Option<ATaskCheckpointer>,
     trim_redundant_tool_calls: Arc<AtomicBool>,
+    enable_context_scaling: Arc<AtomicBool>,
+    max_inline_chars: Arc<AtomicUsize>,
 }
 
 impl RunnerBuilder {
@@ -55,6 +59,8 @@ impl RunnerBuilder {
             app_name: "RustAgent".to_string(),
             checkpointer: None,
             trim_redundant_tool_calls: Arc::new(AtomicBool::new(true)),
+            enable_context_scaling: Arc::new(AtomicBool::new(true)),
+            max_inline_chars: Arc::new(AtomicUsize::new(120_000)),
         }
     }
 
@@ -88,6 +94,16 @@ impl RunnerBuilder {
         self
     }
 
+    pub fn enable_context_scaling(mut self, v: Arc<AtomicBool>) -> Self {
+        self.enable_context_scaling = v;
+        self
+    }
+
+    pub fn max_inline_chars(mut self, v: Arc<AtomicUsize>) -> Self {
+        self.max_inline_chars = v;
+        self
+    }
+
     pub fn build(self) -> AgentResult<Runner> {
         let agent = self.agent.ok_or_else(|| AgentError::config("Runner requires an agent"))?;
         let session_service = self.session_service
@@ -102,6 +118,8 @@ impl RunnerBuilder {
             app_name: self.app_name,
             checkpointer: self.checkpointer,
             trim_redundant_tool_calls: self.trim_redundant_tool_calls,
+            enable_context_scaling: self.enable_context_scaling,
+            max_inline_chars: self.max_inline_chars,
         })
     }
 }
@@ -157,6 +175,8 @@ impl Runner {
          .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls.load(Ordering::SeqCst))
          .with_context_window(context_window)
          .with_context_window_threshold(context_window_threshold)
+         .with_enable_context_scaling(self.enable_context_scaling.load(Ordering::SeqCst))
+         .with_max_inline_chars(self.max_inline_chars.load(Ordering::SeqCst))
          .with_tool_timeout_secs(tool_timeout_secs)
          .with_max_tool_retries(max_tool_retries)
          .with_tool_output_dir(output_dir);
@@ -219,6 +239,8 @@ impl Runner {
             .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls.load(Ordering::SeqCst))
             .with_context_window(params.context_window)
             .with_context_window_threshold(params.context_window_threshold)
+            .with_enable_context_scaling(self.enable_context_scaling.load(Ordering::SeqCst))
+            .with_max_inline_chars(self.max_inline_chars.load(Ordering::SeqCst))
             .with_tool_timeout_secs(params.tool_timeout_secs)
             .with_max_tool_retries(params.max_tool_retries)
             .with_system_prompt_override(Some(params.system_prompt))

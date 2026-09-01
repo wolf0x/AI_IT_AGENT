@@ -127,9 +127,9 @@ impl Tool for ExternalToolExecutor {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let exit_code = output.status.code().unwrap_or(-1);
 
-                // Truncate large outputs to avoid flooding the LLM context
-                let stdout_trunc = truncate_output(&stdout, 30000);
-                let stderr_trunc = truncate_output(&stderr, 5000);
+                // Truncate large outputs — cap scales with model context when enabled.
+                let stdout_trunc = truncate_output(&stdout, ctx.inline_limit(30_000));
+                let stderr_trunc = truncate_output(&stderr, ctx.inline_limit(5_000));
 
                 Ok(json!({
                     "exit_code": exit_code,
