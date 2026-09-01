@@ -196,6 +196,17 @@ impl std::io::Write for TeeLogSink {
         Ok(())
     }
 }
+/// Formats terminal/tracing timestamps using the machine's local timezone
+/// (follows the OS clock/setting, e.g. UTC+8 for CST Asia/Shanghai) instead of UTC.
+#[derive(Clone, Default)]
+struct LocalTimeFmt;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimeFmt {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        w.write_str(&chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- Resolve exe + workspace dir first so logging can target workspace/logs/ ----
@@ -222,6 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,chromiumoxide::handler=error")),
         )
         .with_writer(TeeLogWriter { shared: log_shared.clone() })
+        .with_timer(LocalTimeFmt)
         .with_ansi(false)
         .init();
 
