@@ -395,6 +395,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         skills_dir.to_str().unwrap_or("skills"),
         Some(notify_tx.clone()),
     ));
+    skill_manager.set_skill_self_improve(config.agent.skill_self_improve);
     let skills = skill_manager.list();
     info!("Loaded {} skills", skills.len());
 

@@ -20,6 +20,14 @@ pub struct SkillMetadata {
     /// Surfaced in the cold catalog so the model knows when to load it.
     #[serde(default)]
     pub when_to_use: String,
+    /// Optional version string (e.g. "1.0.0"). Bumped by the self-improvement
+    /// loop when it patches a skill.
+    #[serde(default)]
+    pub version: String,
+    /// True for human-curated / read-only skills: the self-improvement loop
+    /// must never patch these.
+    #[serde(default)]
+    pub curated: bool,
 
 }
 

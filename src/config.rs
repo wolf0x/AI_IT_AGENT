@@ -59,6 +59,10 @@ pub struct AgentConfig {
     /// Top-K fuzzy-matched skills inlined (hot) per turn.
     #[serde(default = "default_skill_hot_top_k")]
     pub skill_hot_top_k: usize,
+    /// Enable the skill self-improvement loop (default: false). When on, the
+    /// model may patch a skill via `improve_skill`, guarded by cooldown + audit.
+    #[serde(default = "default_skill_self_improve")]
+    pub skill_self_improve: bool,
     /// Maximum seconds allowed for a single tool execution (default: 300)
     #[serde(default = "default_tool_timeout_secs")]
     pub tool_timeout_secs: usize,
@@ -209,6 +213,7 @@ impl Default for Config {
                 skill_max_inline_chars: default_skill_max_inline_chars(),
                 skill_catalog_max: default_skill_catalog_max(),
                 skill_hot_top_k: default_skill_hot_top_k(),
+                skill_self_improve: default_skill_self_improve(),
                 tool_timeout_secs: default_tool_timeout_secs(),
                 max_tool_retries: default_max_tool_retries(),
                 parallel_ir_tools: default_parallel_ir_tools(),
@@ -248,6 +253,7 @@ fn default_skill_listing_strategy() -> String { "query".to_string() }
 fn default_skill_max_inline_chars() -> usize { 6000 }
 fn default_skill_catalog_max() -> usize { 40 }
 fn default_skill_hot_top_k() -> usize { 3 }
+fn default_skill_self_improve() -> bool { false }
 fn default_tool_timeout_secs() -> usize { 300 }
 fn default_max_tool_retries() -> usize { 2 }
 fn default_parallel_ir_tools() -> bool { true }
@@ -427,6 +433,8 @@ skill_max_inline_chars = 6000
 skill_catalog_max = 40
 # Top-K fuzzy-matched skills inlined (hot) per turn (default: 3)
 skill_hot_top_k = 3
+# Enable the skill self-improvement loop (default: false)
+skill_self_improve = false
 tool_timeout_secs = 300
 max_tool_retries = 2
 # Enable parallel execution for IR collection tools (ir_scan, ir_process, etc.)

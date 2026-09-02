@@ -1,9 +1,11 @@
 pub mod types;
+pub mod self_improve;
 pub use self::types::SkillListingStrategy;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{info, warn};
 
@@ -57,6 +59,7 @@ pub struct SkillManager {
     skills: Arc<RwLock<Vec<Skill>>>,
     skills_dir: PathBuf,
     state_path: PathBuf,
+    skill_self_improve: Arc<AtomicBool>,
     notify_tx: Option<NotifyTx>,
 }
 
@@ -72,10 +75,16 @@ impl SkillManager {
             skills: Arc::new(RwLock::new(Vec::new())),
             skills_dir: dir,
             state_path,
+            skill_self_improve: Arc::new(AtomicBool::new(false)),
             notify_tx,
         };
         mgr.reload();
         mgr
+    }
+
+    /// Enable/disable the skill self-improvement loop (default off).
+    pub fn set_skill_self_improve(&self, enabled: bool) {
+        self.skill_self_improve.store(enabled, Ordering::SeqCst);
     }
 
     pub fn reload(&self) {
@@ -451,6 +460,11 @@ impl SkillManager {
                 skills_dir: skills_dir.clone(),
                 skills: skills_ref.clone(),
             }) as Arc<dyn Tool>,
+            Arc::new(ImproveSkillTool {
+                skills_dir: skills_dir.clone(),
+                skills: skills_ref.clone(),
+                enabled: self.skill_self_improve.clone(),
+            }) as Arc<dyn Tool>,
             Arc::new(ListSkillsTool {
                 skills: skills_ref.clone(),
             }) as Arc<dyn Tool>,
@@ -812,6 +826,74 @@ list the files available in the skill directory."
         }
     }
 }
+struct ImproveSkillTool {
+    skills_dir: PathBuf,
+    skills: Arc<RwLock<Vec<Skill>>>,
+    enabled: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl Tool for ImproveSkillTool {
+    fn name(&self) -> &str { "improve_skill" }
+    fn description(&self) -> &str {
+        "Propose a self-improvement patch to an existing skill's instruction body. \
+         Bumps the skill's version, backs up the previous SKILL.md to the _audit dir, \
+         and records the change (cooldown-gated). Refused for curated/human skills and \
+         when skill self-improvement is disabled (skill_self_improve). Returns the new \
+         version and the audit backup path for rollback."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Exact skill name to improve" },
+                "new_content": { "type": "string", "description": "New instruction body (markdown, WITHOUT frontmatter) for the SKILL.md" },
+                "reason": { "type": "string", "description": "Why this change improves the skill" }
+            },
+            "required": ["name", "new_content"]
+        })
+    }
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
+        use crate::skill::self_improve;
+        if !self.enabled.load(Ordering::SeqCst) {
+            return Err("Skill self-improvement is disabled (skill_self_improve=false).".into());
+        }
+        let name = args["name"].as_str().unwrap_or("");
+        let new_content = args["new_content"].as_str().unwrap_or("");
+        let reason = args["reason"].as_str().unwrap_or("");
+        if name.is_empty() || new_content.is_empty() {
+            return Err("Provide both 'name' and 'new_content'".into());
+        }
+        let mut skills = self.skills.write().unwrap();
+        let Some(idx) = skills.iter().position(|s| s.metadata.name == name) else {
+            return Err(format!("Skill '{}' not found.", name).into());
+        };
+        if skills[idx].metadata.curated {
+            return Err(format!("Skill '{}' is curated (human-managed) and read-only; cannot auto-improve.", name).into());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if !self_improve::should_improve(&self.skills_dir, &skills[idx].metadata, now) {
+            return Err(format!("Skill '{}' was recently improved; cooldown ({:?}s) not elapsed.", name, self_improve::IMPROVE_COOLDOWN_SECS).into());
+        }
+        let backup = self_improve::backup_skill(&self.skills_dir, &skills[idx])
+            .map_err(|e| format!("Backup failed: {}", e))?;
+        let new_version = self_improve::apply_patch(&self.skills_dir, &skills[idx], new_content)?;
+        let path = std::path::Path::new(&skills[idx].skill_dir).join("SKILL.md");
+        skills[idx].content = SkillContent::Lazy { path: path.clone(), cell: Arc::new(OnceLock::new()) };
+        skills[idx].metadata.version = new_version.clone();
+        Ok(json!({
+            "status": "ok",
+            "name": name,
+            "new_version": new_version,
+            "backup_path": backup.to_string_lossy().to_string(),
+            "reason": reason,
+        }))
+    }
+}
+
 struct ListSkillsTool {
     skills: Arc<RwLock<Vec<Skill>>>,
 }
@@ -964,7 +1046,7 @@ mod tests {
     #[test]
     fn eager_body_borrows_in_memory_content() {
         let sk = Skill {
-            metadata: SkillMetadata { name: "Eager".to_string(), description: "e".to_string(), triggers: vec![], enabled: true, always: false, when_to_use: String::new() },
+            metadata: SkillMetadata { name: "Eager".to_string(), description: "e".to_string(), triggers: vec![], enabled: true, always: false, when_to_use: String::new(), version: String::new(), curated: false },
             content: SkillContent::Eager("# Eager Body\n".to_string()),
             skill_dir: String::new(),
         };
