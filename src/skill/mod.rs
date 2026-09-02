@@ -88,8 +88,9 @@ impl SkillManager {
         // Load enabled state
         let state = self.load_state();
 
-        // Scan directory-based skills: skills/*/SKILL.md
-        let dir_pattern = format!("{}/*/SKILL.md", self.skills_dir.display());
+        // Scan directory-based skills recursively (skills/*/*/SKILL.md) so nested
+        // child skills are discovered and can be loaded via skill_read_file.
+        let dir_pattern = format!("{}/**/SKILL.md", self.skills_dir.display());
         for entry in glob::glob(&dir_pattern).ok().into_iter().flatten() {
             match entry {
                 Ok(path) => {
@@ -608,9 +609,11 @@ list the files available in the skill directory."
         if !target_canon.starts_with(&skill_canon) || !target_canon.is_file() {
             return Err(format!("Refusing to read outside the skill directory: {}", rel).into());
         }
+        let is_instruction = rel == "SKILL.md" || rel.eq_ignore_ascii_case("skill.md");
         match std::fs::read_to_string(&target_canon) {
-            Ok(content) => {
-                const CAP: usize = 60_000;
+            Ok(raw) => {
+                let content = if is_instruction { strip_frontmatter(&raw).to_string() } else { raw };
+                const CAP: usize = 120_000;
                 let preview = if content.len() > CAP {
                     let mut end = CAP;
                     while end > 0 && !content.is_char_boundary(end) { end -= 1; }
@@ -698,5 +701,53 @@ impl Tool for RemoveSkillTool {
             let available: Vec<&str> = skills.iter().map(|s| s.metadata.name.as_str()).collect();
             Err(format!("Skill '{}' not found. Available skills: {:?}", name, available).into())
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recursive_discovery_loads_nested_child_skills() {
+        let tmp = std::env::temp_dir().join(format!("rs_skill_discover_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("Parent/Child")).unwrap();
+        std::fs::write(tmp.join("Parent/SKILL.md"),
+            "---\nname: Parent\ndescription: parent skill\ntriggers: [parent]\n---\n# Parent\n").unwrap();
+        std::fs::write(tmp.join("Parent/Child/SKILL.md"),
+            "---\nname: Child\ndescription: child skill\ntriggers: [child]\n---\n# Child\n").unwrap();
+        std::fs::write(tmp.join("Parent/Child/reference.md"), "ref").unwrap();
+
+        let mgr = SkillManager::new(tmp.to_str().unwrap());
+        let loaded: Vec<String> = mgr.list().iter().map(|m| m.name.clone()).collect();
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(loaded.contains(&"Parent".to_string()), "parent not loaded: {:?}", loaded);
+        assert!(loaded.contains(&"Child".to_string()), "nested child not loaded: {:?}", loaded);
+        assert_eq!(loaded.len(), 2, "expected Parent+Child, got {:?}", loaded);
+    }
+
+    #[test]
+    fn flat_skills_still_discovered() {
+        let tmp = std::env::temp_dir().join(format!("rs_skill_flat_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("Alpha")).unwrap();
+        std::fs::write(tmp.join("Alpha/SKILL.md"),
+            "---\nname: Alpha\ndescription: alpha\ntriggers: [alpha]\n---\n# Alpha\n").unwrap();
+        let mgr = SkillManager::new(tmp.to_str().unwrap());
+        let names: Vec<String> = mgr.list().iter().map(|m| m.name.clone()).collect();
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(names.contains(&"Alpha".to_string()), "flat skill not loaded: {:?}", names);
+    }
+
+    #[test]
+    fn strip_frontmatter_removes_metadata_for_instruction_load() {
+        let md = "---\nname: Child\ndescription: child\ntriggers: [x]\n---\n\n# Child Body\nStep 1: do thing\n";
+        let body = strip_frontmatter(md);
+        let bl = body.to_lowercase();
+        assert!(bl.contains("# child body"), "body missing: {}", body);
+        assert!(!bl.contains("name:"), "frontmatter not stripped: {}", body);
+        // No frontmatter -> unchanged.
+        assert_eq!(strip_frontmatter("# Plain\n"), "# Plain\n");
     }
 }
