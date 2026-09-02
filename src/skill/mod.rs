@@ -2,10 +2,11 @@ pub mod types;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::borrow::Cow;
+use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{info, warn};
 
-use self::types::{SelectionPolicy, Skill, SkillMetadata};
+use self::types::{SelectionPolicy, Skill, SkillContent, SkillMetadata};
 use super::server::NotifyTx;
 use super::tool::Tool;
 use crate::context::ToolContext;
@@ -97,7 +98,7 @@ impl SkillManager {
                     let skill_dir = path.parent()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    match parse_skill_file(&path, skill_dir) {
+                    match parse_skill_frontmatter(&path, skill_dir) {
                         Ok(mut skill) => {
                             if let Some(enabled) = state.get(&skill.metadata.name) {
                                 skill.metadata.enabled = *enabled;
@@ -152,7 +153,7 @@ impl SkillManager {
             .filter_map(|s| {
                 let score = Self::score_skill(s, &query_tokens, user_message);
                 if score >= policy.min_score {
-                    Some((s.content.clone(), score))
+                    Some((s.body().into_owned(), score))
                 } else {
                     None
                 }
@@ -191,14 +192,10 @@ impl SkillManager {
             }
         }
 
-        // Body token overlap (weight: 1.0)
-        let body_tokens = Self::tokenize(&skill.content);
-        let body_hits = query_tokens.iter().filter(|t| body_tokens.contains(t)).count();
-        score += body_hits as f32 * 1.0;
+        // (Body-token overlap and length normalization removed on purpose:
+        // scoring is metadata-only so matching never forces a lazy body load.)
 
-        // Normalize: prevent large documents from dominating
-        let body_token_count = body_tokens.len().max(1);
-        score / (body_token_count as f32).sqrt()
+        score
     }
 
     /// Tokenize text into lowercase matchable units.
@@ -389,17 +386,24 @@ impl SkillManager {
     }
 }
 
-fn parse_skill_file(path: &Path, skill_dir: String) -> Result<Skill, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-    let (frontmatter, body) = split_frontmatter(&content)
+/// Parse only the frontmatter of a [`Skill`] whose instruction body is
+/// `Lazy` - the body is not read from disk or tokenized at startup, keeping
+/// boot cheap even with many (or very large) skills. It is loaded on first
+/// use via [`Skill::body`].
+fn parse_skill_frontmatter(path: &Path, skill_dir: String) -> Result<Skill, String> {
+    let content = read_until_frontmatter_end(path)
+        .ok_or_else(|| format!("Failed to read frontmatter of {}: no closing '---' fence", path.display()))?;
+    let (frontmatter, _body) = split_frontmatter(&content)
         .ok_or_else(|| format!("No valid frontmatter (--- delimiters) in {}", path.display()))?;
     let metadata: SkillMetadata = serde_yaml::from_str(&frontmatter)
         .map_err(|e| format!("YAML parse error in {}: {} | frontmatter: {}", path.display(), e, frontmatter.chars().take(200).collect::<String>()))?;
 
     Ok(Skill {
         metadata,
-        content: body.trim().to_string(),
+        content: SkillContent::Lazy {
+            path: path.to_path_buf(),
+            cell: Arc::new(OnceLock::new()),
+        },
         skill_dir,
     })
 }
@@ -416,6 +420,65 @@ fn split_frontmatter(content: &str) -> Option<(String, String)> {
         Some((frontmatter, body))
     } else {
         None
+    }
+}
+
+/// Maximum bytes of frontmatter scanned before giving up (16 KiB).
+const MAX_FRONTMATTER_BYTES: usize = 16 * 1024;
+
+/// True when `s` contains a closing `---` YAML fence.
+fn has_closing_fence(s: &str) -> bool {
+    s.contains("\n---") || s.contains("\r\n---")
+}
+
+/// Read only up to the closing frontmatter fence so startup never loads a
+/// large skill body purely to parse its metadata.
+fn read_until_frontmatter_end(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 4096];
+    let mut acc = Vec::new();
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            return None;
+        }
+        acc.extend_from_slice(&buf[..n]);
+        if acc.len() > MAX_FRONTMATTER_BYTES * 2 {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&acc);
+        if has_closing_fence(&s) {
+            return Some(s.into_owned());
+        }
+    }
+}
+
+/// Read the instruction body of a SKILL.md lazily (skip frontmatter).
+fn read_skill_body(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    split_frontmatter(&content).map(|(_fm, body)| body)
+}
+
+impl Skill {
+    /// Return the instruction body of the skill.
+    ///
+    /// `Eager` bodies (in-memory built skills) are borrowed directly. `Lazy`
+    /// bodies read + strip frontmatter from disk on first access, then cache
+    /// the result in an internal `OnceLock` so repeats don't re-read disk.
+    pub fn body(&self) -> Cow<'_, str> {
+        match &self.content {
+            SkillContent::Eager(s) => Cow::Borrowed(s.as_str()),
+            SkillContent::Lazy { path, cell } => Cow::Owned(
+                cell.get_or_init(|| {
+                    read_skill_body(path).unwrap_or_else(|| {
+                        warn!("Failed to lazy-load skill body from {}", path.display());
+                        String::new()
+                    })
+                })
+                .clone(),
+            ),
+        }
     }
 }
 
@@ -533,7 +596,7 @@ impl Tool for InstallSkillTool {
         // Reload skills
         let mut skills = self.skills.write().unwrap();
         let dir_str = skill_dir.to_string_lossy().to_string();
-        if let Ok(skill) = parse_skill_file(&skill_md, dir_str) {
+        if let Ok(skill) = parse_skill_frontmatter(&skill_md, dir_str) {
             skills.push(skill);
         }
 
@@ -750,4 +813,39 @@ mod tests {
         // No frontmatter -> unchanged.
         assert_eq!(strip_frontmatter("# Plain\n"), "# Plain\n");
     }
+    #[test]
+    fn lazy_body_loads_instruction_and_is_cached() {
+        let tmp = std::env::temp_dir().join(format!("rs_skill_lazy_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("LazySkill")).unwrap();
+        let md = "---\nname: LazySkill\ndescription: lazy\ntriggers: [lazy]\n---\n\n# Lazy Body\nStep 1: do it\n";
+        std::fs::write(tmp.join("LazySkill/SKILL.md"), md).unwrap();
+
+        let mgr = SkillManager::new(tmp.to_str().unwrap());
+        let skills = mgr.skills.read().unwrap();
+        let sk = skills.iter().find(|s| s.metadata.name == "LazySkill").expect("lazy skill loaded");
+        assert!(sk.content.is_lazy(), "disk-loaded skill should be lazy");
+
+        let body = sk.body();
+        let bl = body.to_lowercase();
+        assert!(bl.contains("# lazy body"), "body missing: {}", body);
+        assert!(!bl.contains("name:"), "frontmatter leaked: {}", body);
+
+        let body2 = sk.body();
+        assert_eq!(body.as_ref(), body2.as_ref(), "lazy body should be cached");
+        drop(skills);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn eager_body_borrows_in_memory_content() {
+        let sk = Skill {
+            metadata: SkillMetadata { name: "Eager".to_string(), description: "e".to_string(), triggers: vec![], enabled: true },
+            content: SkillContent::Eager("# Eager Body\n".to_string()),
+            skill_dir: String::new(),
+        };
+        assert!(!sk.content.is_lazy(), "eager skill should not be lazy");
+        assert!(sk.body().contains("# Eager Body"));
+    }
+
 }
