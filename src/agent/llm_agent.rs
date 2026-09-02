@@ -756,7 +756,31 @@ impl Agent for LlmAgent {
         let invocation_id = &ctx.base.invocation_id;
         let author = &ctx.agent_name;
         let max_iter = ctx.max_iterations;
-        let skill_strategy = ctx.skill_listing_strategy;
+        // P1 guard: NamesOnly / DiscoverToolOnly strategies tell the model to load
+        // skill bodies via `skill_read_file`. If that tool is NOT in the current
+        // tool set (e.g. filtered/unregistered), fall back to Query so bodies are
+        // inlined directly instead of pointing the model at a dead tool.
+        let skill_strategy = {
+            if matches!(
+                ctx.skill_listing_strategy,
+                crate::skill::SkillListingStrategy::NamesOnly
+                    | crate::skill::SkillListingStrategy::DiscoverToolOnly
+            ) {
+                let reg = self.tools.read().await;
+                let has_srf = reg.tool_names().iter().any(|n| n == "skill_read_file");
+                if !has_srf {
+                    tracing::warn!(
+                        "skill_read_file not in tool set; forcing SkillListingStrategy::Query fallback"
+                    );
+                    crate::skill::SkillListingStrategy::Query
+                } else {
+                    ctx.skill_listing_strategy
+                }
+            } else {
+                ctx.skill_listing_strategy
+            }
+        };
+
         let skill_max_inline_chars = ctx.skill_max_inline_chars;
         let skill_catalog_max = ctx.skill_catalog_max;
         let skill_hot_top_k = ctx.skill_hot_top_k;

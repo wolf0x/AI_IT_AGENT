@@ -34,6 +34,7 @@ mod server;
 #[allow(dead_code)]
 mod session;
 mod skill;
+mod security;
 #[allow(dead_code)]
 mod tool;
 mod web;

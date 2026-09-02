@@ -161,6 +161,12 @@ impl Tool for WebFetchTool {
 
         let body_text = String::from_utf8_lossy(body_slice).to_string();
 
+        // #2/#3 passive annotation: risk-grade the target URL and scan the body for
+        // prompt-injection signals. These are annotations for the model/user to weigh;
+        // they never block retrieval (investigation may legitimately visit hostile sites).
+        let url_risk = crate::security::url_guard::assess_url(url);
+        let injection_findings = crate::security::injection::scan_for_injection(&body_text);
+
         // ── Large-response auto-save (prevents context-window truncation) ──
         // Responses above INLINE_LIMIT chars are written to workspace/output/fetch/
         // and the LLM gets a preview + saved_path instead of a truncated inline body.
@@ -184,6 +190,9 @@ impl Tool for WebFetchTool {
                         "body_length": body_chars,
                         "preview": preview,
                         "saved_path": path.to_string_lossy(),
+                        "url_risk": serde_json::to_value(&url_risk).unwrap_or_default(),
+                        "injection_detected": !injection_findings.is_empty(),
+                        "injection_findings": serde_json::to_value(&injection_findings).unwrap_or_default(),
                         "note": "Response exceeded the inline limit; full content saved to saved_path. Use file_read to read it (in chunks if needed) instead of relying on the preview."
                     }));
                 }
@@ -206,7 +215,10 @@ impl Tool for WebFetchTool {
             "content_type": content_type,
             "body": body,
             "truncated": truncated || truncated_bytes,
-            "body_length": body.len()
+            "body_length": body.len(),
+            "url_risk": serde_json::to_value(&url_risk).unwrap_or_default(),
+            "injection_detected": !injection_findings.is_empty(),
+            "injection_findings": serde_json::to_value(&injection_findings).unwrap_or_default()
         }))
     }
 }

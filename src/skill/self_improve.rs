@@ -20,8 +20,8 @@ pub const IMPROVE_COOLDOWN_SECS: u64 = 24 * 3600;
 ///
 /// A run is considered successful only if it produced a non-empty final answer,
 /// did not exceed a high tool-error ratio, and shows no strong apology/failure
-#[allow(dead_code)]
 /// markers. Used to decide whether a self-improvement pass is warranted.
+#[allow(dead_code)]
 pub fn assess_success(last_text: &str, tool_error_count: usize, tool_total: usize) -> bool {
     let text = last_text.trim();
     if text.is_empty() {
@@ -106,14 +106,36 @@ pub fn last_improved_at(skills_dir: &Path, name: &str) -> Option<u64> {
 /// Should we allow improving this skill right now?
 /// - never for curated (human) skills,
 /// - not again within [`IMPROVE_COOLDOWN_SECS`].
-pub fn should_improve(skills_dir: &Path, metadata: &SkillMetadata, now: u64) -> bool {
-    if metadata.curated {
+/// Cooldown is checked twice for persistence: the _audit manifest (authoritative)
+/// and, as a fallback when the manifest entry is missing, the `updated_at` field
+/// written into the skill's own frontmatter on the last improvement.
+pub fn should_improve(skills_dir: &Path, skill: &Skill, now: u64) -> bool {
+    if skill.metadata.curated {
         return false;
     }
-    match last_improved_at(skills_dir, &metadata.name) {
+    match last_improved_at(skills_dir, &skill.metadata.name) {
         Some(last) => now.saturating_sub(last) >= IMPROVE_COOLDOWN_SECS,
-        None => true,
+        None => {
+            // Fallback double-check: use the frontmatter `updated_at` timestamp.
+            let path = Path::new(&skill.skill_dir).join("SKILL.md");
+            match frontmatter_updated_at_unix(&path) {
+                Some(last) => now.saturating_sub(last) >= IMPROVE_COOLDOWN_SECS,
+                None => true,
+            }
+        }
     }
+}
+
+/// Parse a unix-seconds `updated_at:` value from a skill's frontmatter (best effort).
+pub fn frontmatter_updated_at_unix(path: &Path) -> Option<u64> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("updated_at:") {
+            return rest.trim().parse::<u64>().ok();
+        }
+    }
+    None
 }
 
 /// Bump a semantic version string ("1.2.3" -> "1.2.4"). Falls back to
@@ -160,19 +182,27 @@ pub fn apply_patch(skills_dir: &Path, skill: &Skill, new_body: &str) -> Result<S
         .ok_or_else(|| format!("Invalid frontmatter in {}", path.display()))?;
 
     let new_version = bump_version(&skill.metadata.version);
+    let updated_at = now_unix();
 
     let mut fm_lines: Vec<String> = Vec::new();
     let mut inserted = false;
+    let mut updated = false;
     for l in frontmatter.lines() {
         if l.trim_start().starts_with("version:") {
             fm_lines.push(format!("version: {}", new_version));
             inserted = true;
+        } else if l.trim_start().starts_with("updated_at:") {
+            fm_lines.push(format!("updated_at: {}", updated_at));
+            updated = true;
         } else {
             fm_lines.push(l.to_string());
         }
     }
     if !inserted {
         fm_lines.push(format!("version: {}", new_version));
+    }
+    if !updated {
+        fm_lines.push(format!("updated_at: {}", updated_at));
     }
     let new_fm = fm_lines.join("\n");
     let out = format!("---\n{}\n---\n\n{}\n", new_fm, new_body.trim());
@@ -182,6 +212,74 @@ pub fn apply_patch(skills_dir: &Path, skill: &Skill, new_body: &str) -> Result<S
     Ok(new_version)
 }
 
+
+// ============================================================================
+// Objective validation: record per-version run outcomes and suggest a rollback
+// when recent outcomes regress. This is the "objective verification" half of
+// the loop - an improvement is only trusted once outcomes show it did not raise
+// failures.
+// ============================================================================
+
+fn outcomes_path(skills_dir: &Path) -> PathBuf {
+    audit_dir(skills_dir).join("outcomes.jsonl")
+}
+
+/// Record the outcome of one run that engaged a skill (version-specific).
+/// `success` should come from an objective signal (e.g. [`assess_success`] or a
+/// tool-error / completion check), not the model's self-report.
+#[allow(dead_code)] // public validation API; production run-hook lands separately
+pub fn record_outcome(skills_dir: &Path, name: &str, version: &str, success: bool) {
+    use std::io::Write;
+    let dir = audit_dir(skills_dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let name_json = serde_json::to_string(name).unwrap_or_else(|_| "\"?\"".to_string());
+    let version_json = serde_json::to_string(version).unwrap_or_else(|_| "\"?\"".to_string());
+    let line = format!(
+        "{{\"name\":{},\"version\":{},\"success\":{},\"at\":{}}}\n",
+        name_json, version_json, if success { "true" } else { "false" }, now_unix()
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(outcomes_path(skills_dir)) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// Aggregate recent outcomes for a skill: (attempts, failures) across the last
+/// `window` records for that skill name.
+pub fn outcome_stats(skills_dir: &Path, name: &str, window: usize) -> (usize, usize) {
+    let data = match std::fs::read_to_string(outcomes_path(skills_dir)) {
+        Ok(d) => d,
+        Err(_) => return (0, 0),
+    };
+    let mut attempts = 0usize;
+    let mut failures = 0usize;
+    for line in data.lines().rev() {
+        if attempts >= window {
+            break;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if v.get("name").and_then(|n| n.as_str()) == Some(name) {
+                attempts += 1;
+                if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+                    failures += 1;
+                }
+            }
+        }
+    }
+    (attempts, failures)
+}
+
+/// Suggest rollback when a skill has enough recent outcomes and at least half of
+/// them are failures (objective regression signal). Caller surfaces a rollback
+/// hint to the user rather than silently reverting.
+pub fn should_suggest_rollback(skills_dir: &Path, name: &str, window: usize, failure_ratio: f64) -> bool {
+    let (attempts, failures) = outcome_stats(skills_dir, name, window);
+    if attempts < 3 {
+        return false;
+    }
+    (failures as f64 / attempts as f64) >= failure_ratio
+}
 
 #[cfg(test)]
 mod tests {
@@ -232,12 +330,24 @@ mod tests {
     fn curated_refused_and_cooldown() {
         let d = tmp("cooldown");
         let curated = skill("B", "1.0.0", true);
-        assert!(!should_improve(&d, &curated.metadata, 1000), "curated must be read-only");
+        assert!(!should_improve(&d, &curated, 1000), "curated must be read-only");
         let fresh = skill("C", "1.0.0", false);
-        assert!(should_improve(&d, &fresh.metadata, 1000), "fresh skill should be improvable");
+        assert!(should_improve(&d, &fresh, 1000), "fresh skill should be improvable");
         record_improved(&d, "C", 1000);
-        assert!(!should_improve(&d, &fresh.metadata, 1000 + IMPROVE_COOLDOWN_SECS - 1));
-        assert!(should_improve(&d, &fresh.metadata, 1000 + IMPROVE_COOLDOWN_SECS));
+        assert!(!should_improve(&d, &fresh, 1000 + IMPROVE_COOLDOWN_SECS - 1));
+        assert!(should_improve(&d, &fresh, 1000 + IMPROVE_COOLDOWN_SECS));
+
+        // Persistent double-check: when the manifest entry is missing but the
+        // skill's own frontmatter carries a recent `updated_at`, cooldown holds.
+        let skdir = d.join("CFront");
+        std::fs::create_dir_all(&skdir).unwrap();
+        let recent: u64 = 5;
+        std::fs::write(skdir.join("SKILL.md"),
+            format!("---\nname: CFront\nversion: 1.0.0\nupdated_at: {}\n---\n\n# B\n", recent)).unwrap();
+        let mut cfront = skill("CFront", "1.0.0", false);
+        cfront.skill_dir = skdir.to_string_lossy().to_string();
+        assert!(!should_improve(&d, &cfront, recent), "frontmatter updated_at should gate");
+        assert!(should_improve(&d, &cfront, recent + IMPROVE_COOLDOWN_SECS));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -271,6 +381,24 @@ mod tests {
         let b = backup_skill(&d, &sk).unwrap();
         assert!(b.exists());
         assert!(b.to_string_lossy().contains("_audit"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn outcome_recording_and_rollback_suggestion() {
+        let d = tmp("outcome");
+        // Below the threshold: too few attempts -> no rollback.
+        assert!(!should_suggest_rollback(&d, "S", 10, 0.5));
+        // 2/3 failures -> rollback suggested.
+        record_outcome(&d, "S", "1.0.0", false);
+        record_outcome(&d, "S", "1.0.0", true);
+        record_outcome(&d, "S", "1.0.1", false);
+        assert!(should_suggest_rollback(&d, "S", 10, 0.5));
+        // Stats window respected.
+        assert_eq!(outcome_stats(&d, "S", 2), (2, 1));
+        assert_eq!(outcome_stats(&d, "S", 10), (3, 2));
+        // A different skill name never triggers.
+        assert!(!should_suggest_rollback(&d, "Other", 10, 0.5));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

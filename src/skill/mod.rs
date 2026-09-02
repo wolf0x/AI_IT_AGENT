@@ -428,9 +428,22 @@ impl SkillManager {
         let skill_dir = skill.skill_dir.clone();
         drop(skills);
 
-        // Remove entire skill directory
-        std::fs::remove_dir_all(&skill_dir)
-            .map_err(|e| format!("Failed to remove skill directory: {}", e))?;
+        // Move the skill directory into the _deleted recycle bin so it can be
+        // restored, instead of permanently deleting it.
+        let dir_name = Path::new(&skill_dir)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| sanitize_dir_name(name));
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let trash_dir = self.skills_dir.join("_deleted");
+        std::fs::create_dir_all(&trash_dir)
+            .map_err(|e| format!("Failed to create _deleted dir: {}", e))?;
+        let dest = trash_dir.join(format!("{}-{}", dir_name, ts));
+        if std::fs::rename(&skill_dir, &dest).is_err() {
+            // Fallback: permanent delete only if rename fails (e.g. cross-device).
+            std::fs::remove_dir_all(&skill_dir)
+                .map_err(|e| format!("Failed to remove skill directory: {}", e))?;
+        }
         // Remove from state
         self.remove_from_state(name);
         self.reload();
@@ -875,11 +888,14 @@ impl Tool for ImproveSkillTool {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        if !self_improve::should_improve(&self.skills_dir, &skills[idx].metadata, now) {
+        if !self_improve::should_improve(&self.skills_dir, &skills[idx], now) {
             return Err(format!("Skill '{}' was recently improved; cooldown ({:?}s) not elapsed.", name, self_improve::IMPROVE_COOLDOWN_SECS).into());
         }
         let backup = self_improve::backup_skill(&self.skills_dir, &skills[idx])
             .map_err(|e| format!("Backup failed: {}", e))?;
+        // Objective validation: if recent outcomes have regressed, surface a
+        // rollback hint to the user rather than silently reverting (human gate).
+        let regressed = self_improve::should_suggest_rollback(&self.skills_dir, name, 10, 0.5);
         let new_version = self_improve::apply_patch(&self.skills_dir, &skills[idx], new_content)?;
         let path = std::path::Path::new(&skills[idx].skill_dir).join("SKILL.md");
         skills[idx].content = SkillContent::Lazy { path: path.clone(), cell: Arc::new(OnceLock::new()) };
@@ -890,6 +906,7 @@ impl Tool for ImproveSkillTool {
             "new_version": new_version,
             "backup_path": backup.to_string_lossy().to_string(),
             "reason": reason,
+            "rollback_hint": regressed,
         }))
     }
 }
@@ -962,10 +979,26 @@ impl Tool for RemoveSkillTool {
         if let Some(pos) = pos {
             let skill_dir = skills[pos].skill_dir.clone();
 
-            // Remove entire skill directory
-            let _ = std::fs::remove_dir_all(&skill_dir);
+            // Move the skill directory into the _deleted recycle bin instead of
+            // permanently deleting it, so it can be restored if removed by mistake.
+            let dir_name = Path::new(&skill_dir)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| sanitize_dir_name(name));
+            let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            let trash_dir = self.skills_dir.join("_deleted");
+            let _ = std::fs::create_dir_all(&trash_dir);
+            let dest = trash_dir.join(format!("{}-{}", dir_name, ts));
+            let moved = match std::fs::rename(&skill_dir, &dest) {
+                Ok(()) => dest,
+                Err(_) => {
+                    // Fallback: permanent delete only if rename fails (e.g. cross-device).
+                    let _ = std::fs::remove_dir_all(&skill_dir);
+                    std::path::PathBuf::from(skill_dir)
+                }
+            };
             skills.remove(pos);
-            Ok(json!({ "status": "removed", "name": name, "dir": skill_dir }))
+            Ok(json!({ "status": "removed", "name": name, "dir": moved }))
         } else {
             let available: Vec<&str> = skills.iter().map(|s| s.metadata.name.as_str()).collect();
             Err(format!("Skill '{}' not found. Available skills: {:?}", name, available).into())
