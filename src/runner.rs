@@ -36,6 +36,10 @@ pub struct Runner {
     trim_redundant_tool_calls: Arc<AtomicBool>,
     enable_context_scaling: Arc<AtomicBool>,
     max_inline_chars: Arc<AtomicUsize>,
+    skill_listing_strategy: Arc<AtomicUsize>,
+    skill_max_inline_chars: Arc<AtomicUsize>,
+    skill_catalog_max: Arc<AtomicUsize>,
+    skill_hot_top_k: Arc<AtomicUsize>,
 }
 
 /// Builder for Runner (modeled after ADK-RUST's RunnerConfig builder).
@@ -48,6 +52,10 @@ pub struct RunnerBuilder {
     trim_redundant_tool_calls: Arc<AtomicBool>,
     enable_context_scaling: Arc<AtomicBool>,
     max_inline_chars: Arc<AtomicUsize>,
+    skill_listing_strategy: Arc<AtomicUsize>,
+    skill_max_inline_chars: Arc<AtomicUsize>,
+    skill_catalog_max: Arc<AtomicUsize>,
+    skill_hot_top_k: Arc<AtomicUsize>,
 }
 
 impl RunnerBuilder {
@@ -61,6 +69,10 @@ impl RunnerBuilder {
             trim_redundant_tool_calls: Arc::new(AtomicBool::new(true)),
             enable_context_scaling: Arc::new(AtomicBool::new(true)),
             max_inline_chars: Arc::new(AtomicUsize::new(120_000)),
+            skill_listing_strategy: Arc::new(AtomicUsize::new(0)),
+            skill_max_inline_chars: Arc::new(AtomicUsize::new(6000)),
+            skill_catalog_max: Arc::new(AtomicUsize::new(40)),
+            skill_hot_top_k: Arc::new(AtomicUsize::new(3)),
         }
     }
 
@@ -104,6 +116,26 @@ impl RunnerBuilder {
         self
     }
 
+    pub fn skill_listing_strategy(mut self, v: Arc<AtomicUsize>) -> Self {
+        self.skill_listing_strategy = v;
+        self
+    }
+
+    pub fn skill_max_inline_chars(mut self, v: Arc<AtomicUsize>) -> Self {
+        self.skill_max_inline_chars = v;
+        self
+    }
+
+    pub fn skill_catalog_max(mut self, v: Arc<AtomicUsize>) -> Self {
+        self.skill_catalog_max = v;
+        self
+    }
+
+    pub fn skill_hot_top_k(mut self, v: Arc<AtomicUsize>) -> Self {
+        self.skill_hot_top_k = v;
+        self
+    }
+
     pub fn build(self) -> AgentResult<Runner> {
         let agent = self.agent.ok_or_else(|| AgentError::config("Runner requires an agent"))?;
         let session_service = self.session_service
@@ -120,6 +152,10 @@ impl RunnerBuilder {
             trim_redundant_tool_calls: self.trim_redundant_tool_calls,
             enable_context_scaling: self.enable_context_scaling,
             max_inline_chars: self.max_inline_chars,
+            skill_listing_strategy: self.skill_listing_strategy,
+            skill_max_inline_chars: self.skill_max_inline_chars,
+            skill_catalog_max: self.skill_catalog_max,
+            skill_hot_top_k: self.skill_hot_top_k,
         })
     }
 }
@@ -177,6 +213,10 @@ impl Runner {
          .with_context_window_threshold(context_window_threshold)
          .with_enable_context_scaling(self.enable_context_scaling.load(Ordering::SeqCst))
          .with_max_inline_chars(self.max_inline_chars.load(Ordering::SeqCst))
+         .with_skill_listing_strategy(crate::skill::SkillListingStrategy::from_index(self.skill_listing_strategy.load(Ordering::SeqCst)))
+         .with_skill_max_inline_chars(self.skill_max_inline_chars.load(Ordering::SeqCst))
+         .with_skill_catalog_max(self.skill_catalog_max.load(Ordering::SeqCst))
+         .with_skill_hot_top_k(self.skill_hot_top_k.load(Ordering::SeqCst))
          .with_tool_timeout_secs(tool_timeout_secs)
          .with_max_tool_retries(max_tool_retries)
          .with_tool_output_dir(output_dir);

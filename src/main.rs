@@ -492,6 +492,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let enable_context_scaling = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.enable_context_scaling));
     let max_inline_chars = Arc::new(std::sync::atomic::AtomicUsize::new(config.agent.max_inline_chars));
 
+    // Skill catalog hot/cold listing settings (mirrored into Runner + AppState).
+    let skill_listing_strategy = Arc::new(std::sync::atomic::AtomicUsize::new(
+        crate::skill::SkillListingStrategy::from_str(&config.agent.skill_listing_strategy).index(),
+    ));
+    let skill_max_inline_chars = Arc::new(std::sync::atomic::AtomicUsize::new(config.agent.skill_max_inline_chars));
+    let skill_catalog_max = Arc::new(std::sync::atomic::AtomicUsize::new(config.agent.skill_catalog_max));
+    let skill_hot_top_k = Arc::new(std::sync::atomic::AtomicUsize::new(config.agent.skill_hot_top_k));
+
     // Build runner using builder pattern (ADK-RUST style)
     let runner = Runner::builder()
         .agent(agent)
@@ -501,6 +509,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .trim_redundant_tool_calls(trim_redundant_tool_calls.clone())
         .enable_context_scaling(enable_context_scaling.clone())
         .max_inline_chars(max_inline_chars.clone())
+        .skill_listing_strategy(skill_listing_strategy.clone())
+        .skill_max_inline_chars(skill_max_inline_chars.clone())
+        .skill_catalog_max(skill_catalog_max.clone())
+        .skill_hot_top_k(skill_hot_top_k.clone())
         .build()
         .map_err(|e| format!("Failed to build runner: {}", e))?;
     let runner = Arc::new(runner);
@@ -637,6 +649,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trim_redundant_tool_calls: trim_redundant_tool_calls.clone(),
         enable_context_scaling: enable_context_scaling.clone(),
         max_inline_chars: max_inline_chars.clone(),
+        skill_listing_strategy: skill_listing_strategy.clone(),
+        skill_max_inline_chars: skill_max_inline_chars.clone(),
+        skill_catalog_max: skill_catalog_max.clone(),
+        skill_hot_top_k: skill_hot_top_k.clone(),
         expert_max_iterations: Arc::new(AtomicUsize::new(config.agent.expert_max_iterations)),
         expert_tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.expert_tool_timeout_secs)),
         expert_max_tool_retries: Arc::new(AtomicUsize::new(config.agent.expert_max_tool_retries)),

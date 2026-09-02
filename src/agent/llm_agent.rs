@@ -398,7 +398,7 @@ impl LlmAgent {
         out
     }
 
-    fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage]) -> String {
+    fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage], skill_strategy: crate::skill::SkillListingStrategy, skill_max_inline_chars: usize, skill_catalog_max: usize, skill_hot_top_k: usize) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
         
         // Determine user's preferred name: USER.md explicit > detected given name > Master
@@ -665,28 +665,20 @@ You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI t
             );
         }
 
-        // ── Active Skills (weighted scoring, top-K) ──
-        // Match against a bounded window of recent conversation + the current
-        // message so a skill activated by an earlier turn stays "sticky" across
-        // follow-up turns, even when the user no longer repeats the trigger keyword.
+        // ── Active Skills (hot/cold, lazy bodies) ──
+        // Hot skills (always:true + top-K fuzzy matches) get their instructions
+        // inlined; cold skills are listed name:desc for on-demand load via
+        // skill_read_file. Matching uses a bounded window so an earlier-turn
+        // activation stays "sticky" across follow-up turns.
         let matching_context = Self::build_skill_matching_context(history, user_message);
-        let matching_skills = self.skill_manager.find_matching(&matching_context);
-        if !matching_skills.is_empty() {
-            prompt.push_str("\n## Active Skills Context\n");
-            prompt.push_str(
-                                "The following skill(s) are active - their SKILL.md instructions are injected \
-into your context; follow their workflows directly. \
-Skills load PROGRESSIVELY: large supporting/reference files (e.g. a skill's \
-'reference.md' HTML template) are NOT auto-injected. To read one, use \
-`skill_read_file` with skill=\"<name>\" and the relative path (e.g. \
-path=\"reference.md\"). Call it with an empty path to list the files a \
-skill has. Do NOT use generic `file_read`/`shell` to locate skill files.\n"
-            );
-            for (skill_content, score) in &matching_skills {
-                tracing::debug!("Skill matched with score {:.3}", score);
-                prompt.push_str(&format!("\n{}\n", skill_content));
-            }
-            prompt.push('\n');
+        if let Some(skills_section) = self.skill_manager.build_skills_prompt(
+            &matching_context,
+            skill_strategy,
+            skill_max_inline_chars,
+            skill_catalog_max,
+            skill_hot_top_k,
+        ) {
+            prompt.push_str(&skills_section);
         }
 
         prompt
@@ -764,6 +756,10 @@ impl Agent for LlmAgent {
         let invocation_id = &ctx.base.invocation_id;
         let author = &ctx.agent_name;
         let max_iter = ctx.max_iterations;
+        let skill_strategy = ctx.skill_listing_strategy;
+        let skill_max_inline_chars = ctx.skill_max_inline_chars;
+        let skill_catalog_max = ctx.skill_catalog_max;
+        let skill_hot_top_k = ctx.skill_hot_top_k;
 
         // Use an mpsc channel to produce events, then convert to a Stream
         let (tx, rx) = tokio::sync::mpsc::channel::<AgentResult<AgentEvent>>(200);
@@ -775,7 +771,7 @@ impl Agent for LlmAgent {
                 let norms = self.sub_agent_norms_section();
                 format!("{}\n\n## LANGUAGE RULE (STRICT)\n{}\n{}", p, lang_rule, norms)
             }
-            _ => self.build_system_prompt(user_message, &ctx.conversation_history),
+            _ => self.build_system_prompt(user_message, &ctx.conversation_history, skill_strategy, skill_max_inline_chars, skill_catalog_max, skill_hot_top_k),
         };
         // Tool selectivity: core tools are always sent in full; peripheral tools
         // (MCP / external) are exposed on demand via `load_tool_schema`, and a

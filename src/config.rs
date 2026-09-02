@@ -46,6 +46,19 @@ pub struct AgentConfig {
     /// huge result blowing the whole window even with scaling enabled.
     #[serde(default = "default_max_inline_chars")]
     pub max_inline_chars: usize,
+    /// Skill catalog listing strategy for the system prompt
+    /// (query | names-only | discover-tool-only).
+    #[serde(default = "default_skill_listing_strategy")]
+    pub skill_listing_strategy: String,
+    /// Max chars of a single hot skill body inlined into the prompt.
+    #[serde(default = "default_skill_max_inline_chars")]
+    pub skill_max_inline_chars: usize,
+    /// Max number of cold skills listed (name:desc) in the catalog.
+    #[serde(default = "default_skill_catalog_max")]
+    pub skill_catalog_max: usize,
+    /// Top-K fuzzy-matched skills inlined (hot) per turn.
+    #[serde(default = "default_skill_hot_top_k")]
+    pub skill_hot_top_k: usize,
     /// Maximum seconds allowed for a single tool execution (default: 300)
     #[serde(default = "default_tool_timeout_secs")]
     pub tool_timeout_secs: usize,
@@ -192,6 +205,10 @@ impl Default for Config {
                 context_window_threshold: default_context_window_threshold(),
                 enable_context_scaling: default_enable_context_scaling(),
                 max_inline_chars: default_max_inline_chars(),
+                skill_listing_strategy: default_skill_listing_strategy(),
+                skill_max_inline_chars: default_skill_max_inline_chars(),
+                skill_catalog_max: default_skill_catalog_max(),
+                skill_hot_top_k: default_skill_hot_top_k(),
                 tool_timeout_secs: default_tool_timeout_secs(),
                 max_tool_retries: default_max_tool_retries(),
                 parallel_ir_tools: default_parallel_ir_tools(),
@@ -227,6 +244,10 @@ fn default_context_window() -> usize { 128000 }
 fn default_context_window_threshold() -> usize { 80 }
 fn default_enable_context_scaling() -> bool { true }
 fn default_max_inline_chars() -> usize { 120_000 }
+fn default_skill_listing_strategy() -> String { "query".to_string() }
+fn default_skill_max_inline_chars() -> usize { 6000 }
+fn default_skill_catalog_max() -> usize { 40 }
+fn default_skill_hot_top_k() -> usize { 3 }
 fn default_tool_timeout_secs() -> usize { 300 }
 fn default_max_tool_retries() -> usize { 2 }
 fn default_parallel_ir_tools() -> bool { true }
@@ -398,6 +419,14 @@ enable_context_scaling = true
 # Absolute cap (chars) on how much of one tool result / web body is injected
 # into context, even when scaling is on (default: 120000)
 max_inline_chars = 120000
+# Skill catalog listing strategy for the system prompt (query | names-only | discover-tool-only)
+skill_listing_strategy = "query"
+# Max chars of a single hot skill body inlined into the prompt (default: 6000)
+skill_max_inline_chars = 6000
+# Max number of cold skills listed (name:desc) in the catalog (default: 40)
+skill_catalog_max = 40
+# Top-K fuzzy-matched skills inlined (hot) per turn (default: 3)
+skill_hot_top_k = 3
 tool_timeout_secs = 300
 max_tool_retries = 2
 # Enable parallel execution for IR collection tools (ir_scan, ir_process, etc.)
@@ -446,6 +475,10 @@ timezone_offset = 8
         trim_redundant_tool_calls: bool,
         enable_context_scaling: bool,
         max_inline_chars: usize,
+        skill_listing_strategy: String,
+        skill_max_inline_chars: usize,
+        skill_catalog_max: usize,
+        skill_hot_top_k: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Load existing config (or create default if none exists)
         let mut config = Self::load(workspace_dir).unwrap_or_default();
@@ -459,6 +492,10 @@ timezone_offset = 8
         config.agent.trim_redundant_tool_calls = trim_redundant_tool_calls;
         config.agent.enable_context_scaling = enable_context_scaling;
         config.agent.max_inline_chars = max_inline_chars;
+        config.agent.skill_listing_strategy = skill_listing_strategy;
+        config.agent.skill_max_inline_chars = skill_max_inline_chars;
+        config.agent.skill_catalog_max = skill_catalog_max;
+        config.agent.skill_hot_top_k = skill_hot_top_k;
 
         // Save back to file
         config.save(workspace_dir)

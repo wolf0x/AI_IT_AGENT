@@ -1,4 +1,5 @@
 pub mod types;
+pub use self::types::SkillListingStrategy;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -203,6 +204,129 @@ impl SkillManager {
     /// ASCII words (≥3 chars) are extracted as whole tokens.
     /// CJK characters are emitted individually so that unsegmented
     /// Chinese/Japanese/Korean text still produces meaningful overlap.
+    /// Build the "Active Skills Context" section of the system prompt.
+    ///
+    /// Hot skills - those marked `always: true` plus the top-K fuzzy matches
+    /// for the current `matching_context` - get their full instruction body
+    /// inlined (bounded by `max_inline_chars`). Cold skills are listed as a
+    /// compact `name: description` catalog (`catalog_max` entries) with a note
+    /// about loading them on demand via `skill_read_file`. `NamesOnly` only
+    /// emits a name list; `DiscoverToolOnly` emits nothing (rely on discover).
+    pub fn build_skills_prompt(
+        &self,
+        matching_context: &str,
+        strategy: SkillListingStrategy,
+        max_inline_chars: usize,
+        catalog_max: usize,
+        hot_top_k: usize,
+    ) -> Option<String> {
+        if matches!(strategy, SkillListingStrategy::DiscoverToolOnly) {
+            return None;
+        }
+
+        let skills = self.skills.read().unwrap();
+        let enabled: Vec<&Skill> = skills.iter().filter(|s| s.metadata.enabled).collect();
+        if enabled.is_empty() {
+            return None;
+        }
+
+        let mut out = String::new();
+        out.push_str("## Active Skills Context\n");
+        out.push_str(
+            "The following skill(s) are available. Hot skills have their instructions \
+             injected below - follow them directly. Cold skills are listed by \
+             name:description - to use one, load it with `skill_read_file` \
+             (skill=\"<name>\", empty path lists its files) so its instructions are \
+             injected. Large supporting/reference files (e.g. 'reference.md') are \
+             never auto-injected; read them with `skill_read_file`. Do NOT use \
+             generic `file_read`/`shell` to locate skill files.\n\n",
+        );
+
+        match strategy {
+            SkillListingStrategy::NamesOnly | SkillListingStrategy::DiscoverToolOnly => {
+                let names: Vec<&str> = enabled.iter().map(|s| s.metadata.name.as_str()).collect();
+                out.push_str(&format!("Available skills: {}\n", names.join(", ")));
+            }
+            SkillListingStrategy::Query => {
+                let query_tokens = Self::tokenize(matching_context);
+
+                let mut hot: Vec<&Skill> = enabled.iter().filter(|s| s.metadata.always).copied().collect();
+                let mut scored: Vec<(&Skill, f32)> = enabled
+                    .iter()
+                    .filter(|s| !s.metadata.always)
+                    .copied()
+                    .filter_map(|s| {
+                        let score = Self::score_skill(s, &query_tokens, matching_context);
+                        if score >= 0.1 { Some((s, score)) } else { None }
+                    })
+                    .collect();
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                scored.truncate(hot_top_k);
+
+                let mut seen = std::collections::HashSet::new();
+                if !hot.is_empty() || !scored.is_empty() {
+                    out.push_str("### Hot Skills (instructions injected)\n");
+                    for s in hot.drain(..) {
+                        if seen.insert(s.metadata.name.clone()) {
+                            out.push_str(&format!("- **{}**: always loaded\n", s.metadata.name));
+                            out.push_str(&Self::inline_body(s, max_inline_chars));
+                        }
+                    }
+                    for (s, _score) in scored {
+                        if seen.insert(s.metadata.name.clone()) {
+                            out.push_str(&format!("- **{}**: matched current task\n", s.metadata.name));
+                            out.push_str(&Self::inline_body(s, max_inline_chars));
+                        }
+                    }
+                }
+
+                let cold: Vec<&Skill> = enabled
+                    .iter()
+                    .filter(|s| !seen.contains(&s.metadata.name))
+                    .copied()
+                    .collect();
+                if !cold.is_empty() {
+                    out.push_str("\n### Other Skills (load on demand)\n");
+                    let mut n = 0usize;
+                    let cold_total = cold.len();
+                    for s in &cold {
+                        if n >= catalog_max {
+                            let omitted = cold_total - n;
+                            out.push_str(&format!(
+                                "- ... and {} more (use `list_skills` to see them all)\n",
+                                omitted
+                            ));
+                            break;
+                        }
+                        let desc = if s.metadata.when_to_use.is_empty() {
+                            s.metadata.description.chars().take(120).collect::<String>()
+                        } else {
+                            s.metadata.when_to_use.chars().take(120).collect::<String>()
+                        };
+                        out.push_str(&format!("- **{}**: {}\n", s.metadata.name, desc));
+                        n += 1;
+                    }
+                }
+            }
+        }
+
+        Some(out)
+    }
+
+    /// Render a hot skill body for injection, truncating at a char boundary.
+    fn inline_body(s: &Skill, max_chars: usize) -> String {
+        let owned = s.body().into_owned();
+        if owned.chars().count() > max_chars {
+            let mut truncated: String = owned.chars().take(max_chars).collect();
+            truncated.push_str(
+                "\n\n[... skill body truncated for context budget; use `skill_read_file` \
+                 to read the full instructions ...]\n",
+            );
+            return format!("```markdown\n{}\n```\n", truncated);
+        }
+        format!("```markdown\n{}\n```\n", owned)
+    }
+
     fn tokenize(text: &str) -> Vec<String> {
         let mut tokens = Vec::new();
         let mut current = String::new();
@@ -840,12 +964,49 @@ mod tests {
     #[test]
     fn eager_body_borrows_in_memory_content() {
         let sk = Skill {
-            metadata: SkillMetadata { name: "Eager".to_string(), description: "e".to_string(), triggers: vec![], enabled: true },
+            metadata: SkillMetadata { name: "Eager".to_string(), description: "e".to_string(), triggers: vec![], enabled: true, always: false, when_to_use: String::new() },
             content: SkillContent::Eager("# Eager Body\n".to_string()),
             skill_dir: String::new(),
         };
         assert!(!sk.content.is_lazy(), "eager skill should not be lazy");
         assert!(sk.body().contains("# Eager Body"));
+    }
+
+    #[test]
+    fn build_skills_prompt_hot_cold_and_always() {
+        let tmp = std::env::temp_dir().join(format!("rs_skill_prompt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("AlwaysSkill")).unwrap();
+        std::fs::create_dir_all(tmp.join("ProcessSkill")).unwrap();
+        std::fs::create_dir_all(tmp.join("ColdSkill")).unwrap();
+        std::fs::write(tmp.join("AlwaysSkill/SKILL.md"),
+            "---\nname: AlwaysSkill\ndescription: always available\nalways: true\ntriggers: []\n---\n# Always Body\n").unwrap();
+        std::fs::write(tmp.join("ProcessSkill/SKILL.md"),
+            "---\nname: ProcessSkill\ndescription: process reporting and triage\ntriggers: [process]\n---\n# Process Body\nStep here\n").unwrap();
+        std::fs::write(tmp.join("ColdSkill/SKILL.md"),
+            "---\nname: ColdSkill\ndescription: unrelated cold skill\ntriggers: []\n---\n# Cold Body\n").unwrap();
+
+        let mgr = SkillManager::new(tmp.to_str().unwrap());
+
+        let q = mgr.build_skills_prompt("process report", SkillListingStrategy::Query, 20_000, 40, 3)
+            .expect("query section present");
+        let ql = q.to_lowercase();
+        assert!(ql.contains("# always body"), "always body should be inlined: {}", q);
+        assert!(ql.contains("# process body"), "matched body should be inlined: {}", q);
+        assert!(ql.contains("coldskill"), "cold skill should be listed by name: {}", q);
+
+        let n = mgr.build_skills_prompt("process", SkillListingStrategy::NamesOnly, 20_000, 40, 3)
+            .expect("names section present");
+        assert!(n.contains("AlwaysSkill"));
+        assert!(!n.contains("# always body"), "names-only must not inline bodies: {}", n);
+
+        assert!(mgr.build_skills_prompt("x", SkillListingStrategy::DiscoverToolOnly, 0, 0, 0).is_none());
+
+        let t = mgr.build_skills_prompt("process report", SkillListingStrategy::Query, 5, 40, 3)
+            .expect("truncated section present");
+        assert!(t.contains("truncated for context budget"), "expected truncation note: {}", t);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
 }

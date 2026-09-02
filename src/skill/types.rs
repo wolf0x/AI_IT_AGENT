@@ -11,6 +11,16 @@ pub struct SkillMetadata {
     pub triggers: Vec<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// When true, this skill is ALWAYS injected (hot) into the prompt on every
+    /// turn regardless of message matching. Use for curated skills the agent
+    /// should never forget (e.g. always-relevant IR playbooks).
+    #[serde(default)]
+    pub always: bool,
+    /// Optional natural-language guidance describing WHEN to use this skill.
+    /// Surfaced in the cold catalog so the model knows when to load it.
+    #[serde(default)]
+    pub when_to_use: String,
+
 }
 
 fn default_enabled() -> bool { true }
@@ -66,4 +76,56 @@ pub struct Skill {
     /// Directory path of the skill (e.g., skills/VulnerabilityPrioritization).
     /// Every skill is a directory containing SKILL.md and optional supporting files.
     pub skill_dir: String,
+}
+
+/// How the skill catalog is surfaced to the model on each turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SkillListingStrategy {
+    /// Inline hot skills (always:true + top-K matches) with full body; list
+    /// the remaining cold skills as name:description so the model can load
+    /// them on demand via `skill_read_file`.
+    #[default]
+    Query,
+    /// Only a compact list of skill names (no descriptions, no bodies).
+    NamesOnly,
+    /// Inject no skill listing at all; rely solely on the discover tool.
+    DiscoverToolOnly,
+}
+
+impl SkillListingStrategy {
+    /// Parse from a lowercase config string (unknown -> Query).
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "names-only" => Self::NamesOnly,
+            "discover-tool-only" => Self::DiscoverToolOnly,
+            _ => Self::Query,
+        }
+    }
+
+    /// Canonical lowercase string for config/settings serialization.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Query => "query",
+            Self::NamesOnly => "names-only",
+            Self::DiscoverToolOnly => "discover-tool-only",
+        }
+    }
+
+    /// Numeric index for storing in an atomic config (0=Query,1=NamesOnly,2=DiscoverOnly).
+    pub fn index(&self) -> usize {
+        match self {
+            Self::Query => 0,
+            Self::NamesOnly => 1,
+            Self::DiscoverToolOnly => 2,
+        }
+    }
+
+    /// Rebuild from a numeric index (unknown -> Query).
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            1 => Self::NamesOnly,
+            2 => Self::DiscoverToolOnly,
+            _ => Self::Query,
+        }
+    }
 }
