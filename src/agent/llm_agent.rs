@@ -1867,7 +1867,7 @@ async fn execute_tool_call(
     // bounded by the absolute max_inline_chars protection cap, so a single or
     // concurrent batch of results cannot overflow the context window.
     let per_result_cap =
-        crate::context::effective_inline_limit(30_000, context_window, inline_scaling_enabled, max_inline_chars);
+        crate::context::effective_inline_limit(40_000, context_window, inline_scaling_enabled, max_inline_chars);
 
     // On-demand peripheral tool schema resolution (keeps per-request payload small).
     if tool_name == "load_tool_schema" {

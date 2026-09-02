@@ -327,7 +327,7 @@ impl Tool for WaitAgentsTool {
 
         let mut results = Vec::new();
         let mut all_complete = true;
-        let report_cap = ctx.inline_limit(6_000);
+        let report_cap = ctx.inline_limit(15_000);
         {
             let j = self.jobs.0.lock().await;
             for id in &job_ids {

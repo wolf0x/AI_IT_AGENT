@@ -128,7 +128,7 @@ impl Tool for ExternalToolExecutor {
                 let exit_code = output.status.code().unwrap_or(-1);
 
                 // Truncate large outputs — cap scales with model context when enabled.
-                let stdout_trunc = truncate_output(&stdout, ctx.inline_limit(30_000));
+                let stdout_trunc = truncate_output(&stdout, ctx.inline_limit(40_000));
                 let stderr_trunc = truncate_output(&stderr, ctx.inline_limit(5_000));
 
                 Ok(json!({

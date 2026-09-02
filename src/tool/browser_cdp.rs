@@ -282,7 +282,7 @@ impl Tool for BrowserCdpTool {
         // Execute with auto-recovery: if the action fails due to a dead browser,
         // clear state and recover with a freshly launched browser.
         let output_dir = ctx.output_dir();
-        let max_text_len = ctx.inline_limit(5_000);
+        let max_text_len = ctx.inline_limit(15_000);
         let result = self.execute_action(action, &args, &output_dir, max_text_len).await;
 
         match result {

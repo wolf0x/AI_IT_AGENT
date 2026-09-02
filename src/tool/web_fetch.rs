@@ -103,8 +103,8 @@ impl Tool for WebFetchTool {
         let method = args["method"].as_str().unwrap_or("GET");
         // Context-scaled inline cap (raised with the model's context window when
         // scaling is enabled; bounded by the absolute max_inline_chars cap).
-        let inline_limit = ctx.inline_limit(12_000);
-        let preview_chars = ctx.inline_limit(8_000);
+        let inline_limit = ctx.inline_limit(30_000);
+        let preview_chars = ctx.inline_limit(15_000);
         let max_length = args["max_length"].as_u64().map(|v| v as usize).unwrap_or(inline_limit);
 
         // Build client with timeout
