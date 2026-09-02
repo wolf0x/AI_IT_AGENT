@@ -371,8 +371,12 @@ impl BrowserCdpTool {
                     result.value().and_then(|v| v.as_str().map(String::from))
                         .unwrap_or_default()
                 };
-                let truncated = text.len() > max_text_len;
-                let brief = if truncated { &text[..max_text_len] } else { &text };
+                let truncated = text.chars().count() > max_text_len;
+                let brief: String = if truncated {
+                    text.chars().take(max_text_len).collect::<String>()
+                } else {
+                    text
+                };
                 Ok(json!({
                     "success": true,
                     "action": "get_text",
@@ -475,8 +479,12 @@ impl BrowserCdpTool {
                     page.content().await
                         .map_err(|e| format!("Get content failed: {}", e))?
                 };
-                let truncated = html.len() > max_text_len;
-                let brief = if truncated { &html[..max_text_len] } else { &html };
+                let truncated = html.chars().count() > max_text_len;
+                let brief: String = if truncated {
+                    html.chars().take(max_text_len).collect::<String>()
+                } else {
+                    html
+                };
                 Ok(json!({
                     "success": true,
                     "action": "get_html",
