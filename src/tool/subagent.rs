@@ -124,61 +124,53 @@ async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
 /// Shared by the `run_agent` tool and the `/agent` WS command path.
 /// Returns the job_id. The main session is not blocked; a completion
 /// notification is broadcast when the sub-agent finishes.
-pub async fn launch_sub_agent_job(
-    store: &Arc<Mutex<AgentStore>>,
+/// Internal core: spawn a sub-agent job that is already fully resolved
+/// (system prompt, workdir, model, preauth). Shared by `run_agent` (predefined
+/// agent), `run_skill` (isolated skill), and the `/agent` WS path. The main
+/// session is never blocked; a completion notification is broadcast and the
+/// outcome is writable to the main session history when `main_session` is set.
+struct FinishGuard(Option<Box<dyn Fn() + Send + Sync>>);
+impl Drop for FinishGuard {
+    fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn launch_job(
     runner: &Arc<Runner>,
     jobs: &SharedJobs,
     notify: &NotifyTx,
     permissions: &Arc<Mutex<HashMap<String, bool>>>,
     pending: &PendingMap,
     max_iter: usize, rh: usize, ctxwin: usize, ctxthr: usize, to: usize, retr: usize,
-    default_model: &str,
-    agent_name: &str,
-    task: &str,
-    // Optional main-session id + sessions store: inject the sub-agent's
-    // outcome into the main session history so the main LLM sees it as
-    // context on subsequent turns.
+    job_id: String,
+    agent_display: String,
+    task: String,
+    system_prompt: String,
+    workdir: String,
+    model: String,
+    preauth: Option<std::sync::Arc<crate::managed::permission_profile::PermissionProfile>>,
+    // Optional main-session id + sessions store: inject the sub-agent's outcome
+    // into the main session history so the main LLM sees it on subsequent turns.
     main_session: Option<String>,
     sessions: Option<Arc<Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>>>,
-) -> Result<String, String> {
-    let agent_name = agent_name.trim().trim_start_matches('@').to_string();
-    let task = task.trim().to_string();
-    if agent_name.is_empty() { return Err("agent is required".to_string()); }
-    if task.is_empty() { return Err("task is required".to_string()); }
-
-    let def = { let s = store.lock().await; s.find(&agent_name).cloned() }
-        .ok_or_else(|| format!("No enabled agent named '{}'", agent_name))?;
-
-    let model = if def.model.trim().is_empty() { default_model.to_string() } else { def.model.clone() };
-    let job_id = format!("sub-{}", uuid::Uuid::new_v4());
-    let agent_display = def.name.clone();
-    let language_rule = subagent_language_rule(&task);
-    let system_prompt = format!("{}\n\n## LANGUAGE RULE (STRICT)\n{}", def.system_prompt, language_rule);
-    // Per-agent Auto-Approve: when enabled, this sub-agent may run ANY tool
-    // (incl. shell_exec) without asking — mirrors the CRON auto-approve toggle.
-    let preauth = if def.auto_approve {
-        let mut profile = crate::managed::permission_profile::PermissionProfile::new(job_id.clone());
-        profile.allow_all = true;
-        Some(std::sync::Arc::new(profile))
-    } else {
-        None
-    };
-    let workdir = def.workdir.clone();
+    // Optional callback run when the job finishes (e.g. release a concurrency
+    // slot). Runs on drop regardless of success/failure.
+    on_finish: Option<Box<dyn Fn() + Send + Sync>>,
+) {
     {
         let mut j = jobs.0.lock().await;
         j.insert(job_id.clone(), SubJobState { job_id: job_id.clone(), agent: agent_display.clone(), status: "running".into(), report: String::new(), error: String::new() });
     }
-
     let runner = runner.clone();
     let perms = permissions.clone();
     let pend = pending.clone();
     let jobs2 = jobs.clone();
     let ntf = notify.clone();
-    let c_job_id = job_id.clone();
-    let c_agent = agent_display.clone();
-    let c_workdir = workdir.clone();
-
+    let c_job_id = job_id;
+    let c_agent = agent_display;
+    let c_workdir = workdir;
     tokio::spawn(async move {
+        let _guard = FinishGuard(on_finish);
         let start = std::time::Instant::now();
         let params = SubAgentRunParams {
             message: task, session_id: c_job_id.clone(), model,
@@ -232,11 +224,196 @@ pub async fn launch_sub_agent_job(
         let msg = serde_json::json!({ "type": "notification", "message": summary, "timestamp": chrono::Utc::now().to_rfc3339() }).to_string();
         let _ = ntf.send(msg);
     });
+}
 
+/// Launch a predefined sub-agent as an isolated background job. Resolves the
+/// agent definition (system prompt / workdir / model / auto-approve), then
+/// delegates to [`launch_job`]. Returns the job_id; the main session is not
+/// blocked. Shared by the `run_agent` tool and the `/agent` WS command path.
+pub async fn launch_sub_agent_job(
+    store: &Arc<Mutex<AgentStore>>,
+    runner: &Arc<Runner>,
+    jobs: &SharedJobs,
+    notify: &NotifyTx,
+    permissions: &Arc<Mutex<HashMap<String, bool>>>,
+    pending: &PendingMap,
+    max_iter: usize, rh: usize, ctxwin: usize, ctxthr: usize, to: usize, retr: usize,
+    default_model: &str,
+    agent_name: &str,
+    task: &str,
+    main_session: Option<String>,
+    sessions: Option<Arc<Mutex<std::collections::HashMap<String, Vec<ChatMessage>>>>>,
+) -> Result<String, String> {
+    let agent_name = agent_name.trim().trim_start_matches('@').to_string();
+    let task = task.trim().to_string();
+    if agent_name.is_empty() { return Err("agent is required".to_string()); }
+    if task.is_empty() { return Err("task is required".to_string()); }
+
+    let def = { let s = store.lock().await; s.find(&agent_name).cloned() }
+        .ok_or_else(|| format!("No enabled agent named '{}'", agent_name))?;
+
+    let model = if def.model.trim().is_empty() { default_model.to_string() } else { def.model.clone() };
+    let job_id = format!("sub-{}", uuid::Uuid::new_v4());
+    let agent_display = def.name.clone();
+    let language_rule = subagent_language_rule(&task);
+    let system_prompt = format!("{}\n\n## LANGUAGE RULE (STRICT)\n{}", def.system_prompt, language_rule);
+    // Per-agent Auto-Approve: when enabled, this sub-agent may run ANY tool
+    // (incl. shell_exec) without asking -- mirrors the CRON auto-approve toggle.
+    let preauth = if def.auto_approve {
+        let mut profile = crate::managed::permission_profile::PermissionProfile::new(job_id.clone());
+        profile.allow_all = true;
+        Some(std::sync::Arc::new(profile))
+    } else {
+        None
+    };
+    let workdir = def.workdir.clone();
+    launch_job(runner, jobs, notify, permissions, pending,
+        max_iter, rh, ctxwin, ctxthr, to, retr,
+        job_id.clone(), agent_display, task, system_prompt, workdir, model,
+        preauth, main_session, sessions, None).await;
     Ok(job_id)
 }
+
+/// Launch an isolated skill as a sub-agent job: the skill's SKILL.md body
+/// becomes the sub-agent's instructions plus a compact return contract, and
+/// the sub-agent runs in its own clean session with a dedicated working
+/// directory. This is the `isolated` job-skill pattern (thClaws blueprint) --
+/// nested skills run to completion in their own context and only return a
+/// compact result. Unlike `run_agent`, skill sub-agents are **not**
+/// auto-approved: they inherit the main session's permission posture.
+/// Concurrency is gated (and thereby recursion depth is bounded) by
+/// `max_concurrent`.
+pub async fn launch_skill_job(
+    runner: &Arc<Runner>,
+    jobs: &SharedJobs,
+    notify: &NotifyTx,
+    permissions: &Arc<Mutex<HashMap<String, bool>>>,
+    pending: &PendingMap,
+    max_iter: usize, rh: usize, ctxwin: usize, ctxthr: usize, to: usize, retr: usize,
+    default_model: &str,
+    skill: crate::skill::types::Skill,
+    task: &str,
+    workdir_root: &std::path::Path,
+    active_jobs: &Arc<AtomicUsize>,
+    max_concurrent: usize,
+) -> Result<String, String> {
+    let task = task.trim().to_string();
+    if task.is_empty() { return Err("task is required".to_string()); }
+    let name = skill.metadata.name.clone();
+
+    // Concurrency gate (also bounds nested recursion depth). Atomic CAS so
+    // concurrent callers cannot overshoot the cap.
+    loop {
+        let cur = active_jobs.load(Ordering::SeqCst);
+        if cur >= max_concurrent {
+            return Err(format!("run_skill concurrency limit ({}) reached; wait for a running skill job and retry.", max_concurrent));
+        }
+        if active_jobs.compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            break;
+        }
+    }
+
+    let job_id = format!("sub-{}", uuid::Uuid::new_v4());
+    let language_rule = subagent_language_rule(&task);
+    let body = skill.body().into_owned();
+    let system_prompt = format!("{}{}\n\n## LANGUAGE RULE (STRICT)\n{}", body, ISOLATED_SKILL_RETURN_CONTRACT, language_rule);
+    let workdir = workdir_root.join(sanitize_workdir(&name)).to_string_lossy().to_string();
+
+    // Release the concurrency slot when the job finishes (ran on drop).
+    let release = active_jobs.clone();
+    let on_finish: Box<dyn Fn() + Send + Sync> = Box::new(move || { release.fetch_sub(1, Ordering::SeqCst); });
+    launch_job(runner, jobs, notify, permissions, pending,
+        max_iter, rh, ctxwin, ctxthr, to, retr,
+        job_id.clone(), format!("skill:{}", name), task, system_prompt, workdir,
+        default_model.to_string(), None, None, None, Some(on_finish)).await;
+    Ok(job_id)
+}
+
+/// Compact-return contract appended to an isolated skill sub-agent so its
+/// result stays small in the caller's context -- the whole point of running
+/// isolated is that the main conversation gets the result, not every step.
+const ISOLATED_SKILL_RETURN_CONTRACT: &str = "\n\n---\n# Isolated skill run -- return contract\nYou are running this skill as an isolated job in your own context; the caller sees ONLY your final message, not your intermediate steps. When done, reply with a COMPACT result: the path(s) of any files you produced, a one-line status, and any fields you could not fill. Do NOT echo file contents or paste large outputs -- keep the result small.";
+
+/// Sanitize a skill name into a safe single-segment working-directory name.
+fn sanitize_workdir(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect()
+}
+
 use std::time::{Duration, Instant};
 /// Tool: fetch_agent_result — read a launched sub-agent's report.
+/// Tool: run_skill — launch an isolated skill as a background sub-agent job.
+/// Mirrors the thClaws `isolated` job-skill pattern: the skill's SKILL.md body
+/// becomes the sub-agent's instructions plus a compact return contract; the sub-
+/// agent runs in its own clean session + dedicated working directory, and only
+/// the compact final result returns to the caller (via `fetch_agent_result` /
+/// `wait_agents`). Skill sub-agents are NOT auto-approved (inherit main posture).
+pub struct RunSkillTool {
+    pub skill_manager: Arc<crate::skill::SkillManager>,
+    pub runner: Arc<Runner>,
+    pub notify_tx: NotifyTx,
+    pub permissions: Arc<Mutex<HashMap<String, bool>>>,
+    pub permission_pending: PendingMap,
+    pub jobs: SharedJobs,
+    pub max_iterations: Arc<AtomicUsize>,
+    pub rabbit_hole_threshold: Arc<AtomicUsize>,
+    pub context_window: usize,
+    pub context_window_threshold: Arc<AtomicUsize>,
+    pub tool_timeout_secs: Arc<AtomicUsize>,
+    pub max_tool_retries: Arc<AtomicUsize>,
+    pub default_model: String,
+    pub workdir_root: std::path::PathBuf,
+    pub max_concurrent_jobs: usize,
+    pub active_jobs: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for RunSkillTool {
+    fn name(&self) -> &str { "run_skill" }
+
+    fn description(&self) -> &str { "Launch an installed skill as an isolated sub-agent in the background. Provide 'skill' (name) and 'task' (what it should do / its inputs). The skill runs in its own clean session with a dedicated working directory; only a compact result returns. Use fetch_agent_result(job_id) or wait_agents() to read the finished result. Skill sub-agents inherit the main session's permission posture and are not auto-approved." }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill": { "type": "string", "description": "Name of the installed skill to run (e.g. 'ProcessAnalysis')" },
+                "task": { "type": "string", "description": "Task for the skill, including inputs and desired output" }
+            },
+            "required": ["skill", "task"]
+        })
+    }
+
+    fn is_builtin(&self) -> bool { true }
+
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> AgentResult<Value> {
+        let name = args["skill"].as_str().unwrap_or("").trim();
+        let task = args["task"].as_str().unwrap_or("").trim();
+        if name.is_empty() { return Err(AgentError::tool("run_skill", "skill is required")); }
+        if task.is_empty() { return Err(AgentError::tool("run_skill", "task is required")); }
+        let skill = self.skill_manager.find_skill(name)
+            .ok_or_else(|| AgentError::tool("run_skill", format!("Skill not found: {} (use list_skills to see available skills)", name)))?;
+        let job_id = launch_skill_job(
+            &self.runner, &self.jobs, &self.notify_tx,
+            &self.permissions, &self.permission_pending,
+            self.max_iterations.load(Ordering::SeqCst),
+            self.rabbit_hole_threshold.load(Ordering::SeqCst),
+            self.context_window,
+            self.context_window_threshold.load(Ordering::SeqCst),
+            self.tool_timeout_secs.load(Ordering::SeqCst),
+            self.max_tool_retries.load(Ordering::SeqCst),
+            &self.default_model,
+            skill, task, &self.workdir_root,
+            &self.active_jobs, self.max_concurrent_jobs,
+        ).await.map_err(|e| AgentError::tool("run_skill", e))?;
+        Ok(json!({
+            "job_id": job_id,
+            "status": "started",
+            "skill": name,
+            "note": "Skill runs as an isolated sub-agent in the background; use fetch_agent_result(job_id) or wait_agents() for the result."
+        }))
+    }
+}
+
 pub struct FetchAgentResultTool { pub jobs: SharedJobs }
 
 #[async_trait]

@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::types::{Skill, SkillMetadata};
+use super::types::Skill;
 
 /// Cooldown window during which a skill cannot be re-improved.
 pub const IMPROVE_COOLDOWN_SECS: u64 = 24 * 3600;
@@ -284,6 +284,7 @@ pub fn should_suggest_rollback(skills_dir: &Path, name: &str, window: usize, fai
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skill::types::SkillMetadata;
     use std::path::PathBuf;
 
     fn tmp(tag: &str) -> PathBuf {

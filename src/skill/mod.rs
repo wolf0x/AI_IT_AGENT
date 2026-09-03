@@ -106,7 +106,7 @@ impl SkillManager {
             match entry {
                 Ok(path) => {
                     let skill_dir = path.parent()
-                        .map(|p| p.to_string_lossy().to_string())
+                        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_string())
                         .unwrap_or_default();
                     match parse_skill_frontmatter(&path, skill_dir) {
                         Ok(mut skill) => {
@@ -135,6 +135,25 @@ impl SkillManager {
             .collect()
     }
 
+    /// Resolve a skill by name for runtime use (case-insensitive, then by
+    /// directory name). Returns a clone of the matched [`Skill`] or `None`.
+    /// Used by `run_skill` / sub-agent orchestration.
+    pub fn find_skill(&self, name: &str) -> Option<Skill> {
+        let name = name.trim().trim_start_matches('@');
+        if name.is_empty() {
+            return None;
+        }
+        let skills = self.skills.read().unwrap();
+        let name_lower = name.to_lowercase();
+        skills.iter().find(|s| s.metadata.name == name)
+            .or_else(|| skills.iter().find(|s| s.metadata.name.to_lowercase() == name_lower))
+            .or_else(|| {
+                let dir_name = sanitize_dir_name(name).to_lowercase();
+                skills.iter().find(|s| Path::new(&s.skill_dir).file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase() == dir_name).unwrap_or(false))
+            })
+            .cloned()
+    }
     pub fn find_matching(&self, user_message: &str) -> Vec<(String, f32)> {
         self.find_matching_with(user_message, &SelectionPolicy::default())
     }
@@ -605,10 +624,25 @@ fn read_until_frontmatter_end(path: &Path) -> Option<String> {
     }
 }
 
-/// Read the instruction body of a SKILL.md lazily (skip frontmatter).
-fn read_skill_body(path: &Path) -> Option<String> {
+/// Substitute `{skill_dir}` (native Windows path) and `{skill_dir_url}`
+/// (forward-slash form, safer inside strings/commands) with the skill's
+/// on-disk directory. Returns the body unchanged when no placeholder is used.
+fn substitute_skill_dir(body: &str, skill_dir: &str) -> String {
+    if !body.contains("{skill_dir") {
+        return body.to_string();
+    }
+    let url_form = skill_dir.replace('\\', "/");
+    body.replace("{skill_dir}", skill_dir)
+        .replace("{skill_dir_url}", &url_form)
+}
+
+/// Read the instruction body of a SKILL.md lazily (skip frontmatter) and
+/// resolve any `{skill_dir}` / `{skill_dir_url}` placeholders against the
+/// skill's canonical on-disk directory.
+fn read_skill_body(path: &Path, skill_dir: &str) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
-    split_frontmatter(&content).map(|(_fm, body)| body)
+    split_frontmatter(&content)
+        .map(|(_fm, body)| substitute_skill_dir(&body, skill_dir))
 }
 
 impl Skill {
@@ -622,7 +656,7 @@ impl Skill {
             SkillContent::Eager(s) => Cow::Borrowed(s.as_str()),
             SkillContent::Lazy { path, cell } => Cow::Owned(
                 cell.get_or_init(|| {
-                    read_skill_body(path).unwrap_or_else(|| {
+                    read_skill_body(path, &self.skill_dir).unwrap_or_else(|| {
                         warn!("Failed to lazy-load skill body from {}", path.display());
                         String::new()
                     })
@@ -1040,6 +1074,23 @@ mod tests {
         let names: Vec<String> = mgr.list().iter().map(|m| m.name.clone()).collect();
         let _ = std::fs::remove_dir_all(&tmp);
         assert!(names.contains(&"Alpha".to_string()), "flat skill not loaded: {:?}", names);
+    }
+
+    #[test]
+    fn skill_dir_placeholder_substitution_in_body() {
+        let tmp = std::env::temp_dir().join(format!("rs_skill_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("DirSkill")).unwrap();
+        std::fs::write(tmp.join("DirSkill/SKILL.md"),
+            "---\nname: DirSkill\ndescription: d\ntriggers: [d]\n---\n# DirSkill\nUse {skill_dir}/scripts/a.ps1 and {skill_dir_url}/refs.\n").unwrap();
+        let mgr = SkillManager::new(tmp.to_str().unwrap());
+        let sk = mgr.find_skill("DirSkill").expect("skill found");
+        let body = sk.body().into_owned();
+        let native = sk.skill_dir.replace('\\', "\\\\");
+        assert!(body.contains(&format!("Use {}/scripts/a.ps1", sk.skill_dir)), "native missing: {}", body);
+        let url = sk.skill_dir.replace('\\', "/");
+        assert!(body.contains(&format!("{}/refs", url)), "url form missing: {}", body);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

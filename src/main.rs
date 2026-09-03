@@ -610,6 +610,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             reg.register(Arc::new(crate::tool::subagent::FetchAgentResultTool { jobs: sub_jobs.clone() }));
             reg.register(Arc::new(crate::tool::subagent::WaitAgentsTool { jobs: sub_jobs.clone() }));
+            reg.register(Arc::new(crate::tool::subagent::RunSkillTool {
+                skill_manager: skill_manager.clone(),
+                runner: runner.clone(),
+                notify_tx: notify_tx.clone(),
+                permissions: permissions.clone(),
+                permission_pending: permission_pending.clone(),
+                jobs: sub_jobs.clone(),
+                max_iterations: Arc::new(AtomicUsize::new(config.agent.max_iterations)),
+                rabbit_hole_threshold: Arc::new(AtomicUsize::new(config.agent.rabbit_hole_threshold)),
+                context_window: 128000,
+                context_window_threshold: Arc::new(AtomicUsize::new(config.agent.context_window_threshold)),
+                tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.tool_timeout_secs)),
+                max_tool_retries: Arc::new(AtomicUsize::new(config.agent.max_tool_retries)),
+                default_model: default_model.clone(),
+                workdir_root: std::path::Path::new(&workspace_dir).join("agents"),
+                max_concurrent_jobs: 4,
+                active_jobs: Arc::new(AtomicUsize::new(0)),
+            }));
 
         }
 
