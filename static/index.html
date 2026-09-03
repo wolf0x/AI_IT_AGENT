@@ -1300,7 +1300,7 @@ const WS_URL_KEY='ra_ws_url';
 const WS_PWD_KEY='ra_ws_pwd';
 const TZ_OFFSET_KEY='ra_tz_offset';
 function getTzOffset(){const v=parseFloat(localStorage.getItem(TZ_OFFSET_KEY));return isNaN(v)?8:v}
-function fmtTime(d){const offset=getTzOffset();const utc=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds());const local=new Date(utc+offset*3600000);const h=String(local.getUTCHours()).padStart(2,'0');const m=String(local.getUTCMinutes()).padStart(2,'0');const s=String(local.getUTCSeconds()).padStart(2,'0');return h+':'+m+':'+s}
+function fmtTime(d){const offset=getTzOffset();const utc=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds());const local=new Date(utc+offset*3600000);const mo=String(local.getUTCMonth()+1).padStart(2,"0");const da=String(local.getUTCDate()).padStart(2,"0");const h=String(local.getUTCHours()).padStart(2,"0");const m=String(local.getUTCMinutes()).padStart(2,"0");const s=String(local.getUTCSeconds()).padStart(2,"0");return mo+"-"+da+" "+h+":"+m+":"+s}
 function nowTimeStr(){return fmtTime(new Date())}
 function fmtTimeFromRfc3339(ts){try{return fmtTime(new Date(ts))}catch(e){return ts||''}}
 function fmtDateTime(d){const offset=getTzOffset();const utc=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds());const local=new Date(utc+offset*3600000);const y=local.getUTCFullYear();const mo=String(local.getUTCMonth()+1).padStart(2,'0');const da=String(local.getUTCDate()).padStart(2,'0');const h=String(local.getUTCHours()).padStart(2,'0');const m=String(local.getUTCMinutes()).padStart(2,'0');const s=String(local.getUTCSeconds()).padStart(2,'0');return y+'-'+mo+'-'+da+' '+h+':'+m+':'+s}
@@ -3682,7 +3682,7 @@ function highlightSlashItem(idx){
 function handleInput(e){
   const inp=e.target;
   inp.style.height='auto';
-  inp.style.height=Math.max(40,Math.min(inp.scrollHeight,200))+'px';
+  inp.style.height=Math.max(44,Math.min(inp.scrollHeight,120))+'px';
   updateSendState();
   const val=inp.value;
   const lower=val.toLowerCase();
