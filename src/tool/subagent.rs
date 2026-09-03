@@ -283,6 +283,27 @@ pub async fn launch_sub_agent_job(
 /// auto-approved: they inherit the main session's permission posture.
 /// Concurrency is gated (and thereby recursion depth is bounded) by
 /// `max_concurrent`.
+/// Atomically acquire one concurrency slot for an isolated skill job.
+/// Returns Err when the `max` concurrent slots are all held. Extracted as a
+/// standalone function so the gate can be verified deterministically in tests.
+fn try_acquire_skill_slot(active: &std::sync::atomic::AtomicUsize, max: usize) -> Result<(), String> {
+    loop {
+        let cur = active.load(Ordering::SeqCst);
+        if cur >= max {
+            return Err(format!(
+                "run_skill concurrency limit ({}) reached; wait for a running skill job and retry.",
+                max
+            ));
+        }
+        if active
+            .compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+}
+
 pub async fn launch_skill_job(
     runner: &Arc<Runner>,
     jobs: &SharedJobs,
@@ -303,15 +324,7 @@ pub async fn launch_skill_job(
 
     // Concurrency gate (also bounds nested recursion depth). Atomic CAS so
     // concurrent callers cannot overshoot the cap.
-    loop {
-        let cur = active_jobs.load(Ordering::SeqCst);
-        if cur >= max_concurrent {
-            return Err(format!("run_skill concurrency limit ({}) reached; wait for a running skill job and retry.", max_concurrent));
-        }
-        if active_jobs.compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            break;
-        }
-    }
+    try_acquire_skill_slot(active_jobs, max_concurrent)?;
 
     let job_id = format!("sub-{}", uuid::Uuid::new_v4());
     let language_rule = subagent_language_rule(&task);
@@ -530,5 +543,59 @@ impl Tool for WaitAgentsTool {
             }
         }
         Ok(json!({ "job_ids": job_ids, "all_complete": all_complete, "results": results }))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Deterministic verification of the run_skill concurrency gate: no more
+    // than `max` slots are ever granted, and the 5th acquirer is rejected.
+    #[test]
+    fn skill_slot_acquire_respects_cap() {
+        let active = AtomicUsize::new(0);
+        for _ in 0..4 {
+            assert!(try_acquire_skill_slot(&active, 4).is_ok(), "first 4 slots must be granted");
+        }
+        assert_eq!(active.load(Ordering::SeqCst), 4);
+        let err = try_acquire_skill_slot(&active, 4).unwrap_err();
+        assert!(err.contains("concurrency limit"), "5th acquire must be rejected, got: {}", err);
+        assert_eq!(active.load(Ordering::SeqCst), 4, "rejected acquire must not bump the counter");
+    }
+
+    // Releasing one slot (what the FinishGuard drop does) makes a later
+    // acquire succeed again -- the gate is not permanently welded shut.
+    #[test]
+    fn skill_slot_release_allows_reacquire() {
+        let active = AtomicUsize::new(0);
+        for _ in 0..4 {
+            assert!(try_acquire_skill_slot(&active, 4).is_ok());
+        }
+        assert!(try_acquire_skill_slot(&active, 4).is_err());
+        active.fetch_sub(1, Ordering::SeqCst); // simulate FinishGuard drop
+        assert!(try_acquire_skill_slot(&active, 4).is_ok(), "slot released by job finish must be reusable");
+        assert_eq!(active.load(Ordering::SeqCst), 4);
+    }
+
+    // CAS must not overshoot under many racing acquirers: exactly `max`
+    // succeed and the rest fail, counter never exceeds `max`.
+    #[test]
+    fn skill_slot_race_never_overshoots() {
+        let active = std::sync::Arc::new(AtomicUsize::new(0));
+        let max = 4usize;
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let a = active.clone();
+            handles.push(std::thread::spawn(move || try_acquire_skill_slot(&a, max)));
+        }
+        let mut ok = 0usize;
+        for h in handles {
+            if h.join().unwrap().is_ok() { ok += 1; }
+        }
+        assert_eq!(ok, max, "exactly max=4 acquirers must win regardless of race order");
+        assert!(active.load(Ordering::SeqCst) <= max);
     }
 }
