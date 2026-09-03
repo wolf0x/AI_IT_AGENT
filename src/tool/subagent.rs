@@ -23,6 +23,11 @@ use crate::permission::PendingMap;
 use crate::runner::{Runner, SubAgentRunParams};
 use crate::server::NotifyTx;
 use crate::tool::{TimeoutStage, Tool, ToolContext};
+use tracing::info;
+
+/// Bounded number of automatic "fill missing steps" continuation passes a
+/// skill sub-agent may run after its first pass left contract steps uncovered.
+const SKILL_VERIFY_MAX_CONTINUE: usize = 1;
 
 /// In-memory registry of launched sub-agent jobs (job_id -> state).
 #[derive(Clone)]
@@ -156,6 +161,9 @@ async fn launch_job(
     // Optional callback run when the job finishes (e.g. release a concurrency
     // slot). Runs on drop regardless of success/failure.
     on_finish: Option<Box<dyn Fn() + Send + Sync>>,
+    // Optional step contract: when present, the job verifies completion against
+    // it and issues a bounded auto-continuation to fill any missing steps.
+    verify_steps: Option<Vec<crate::skill::types::StepItem>>,
 ) {
     {
         let mut j = jobs.0.lock().await;
@@ -172,26 +180,61 @@ async fn launch_job(
     tokio::spawn(async move {
         let _guard = FinishGuard(on_finish);
         let start = std::time::Instant::now();
-        let params = SubAgentRunParams {
-            message: task, session_id: c_job_id.clone(), model,
-            system_prompt, output_dir: c_workdir.clone(),
-            max_iterations: max_iter, rabbit_hole_threshold: rh,
-            context_window: ctxwin, context_window_threshold: ctxthr,
-            tool_timeout_secs: to as u64, max_tool_retries: retr,
-        };
-        let res = runner.run_sub_agent(params, perms, pend, preauth).await;
+        let mut cur_task = task;
         let mut report = String::new();
         let mut err = String::new();
-        match res {
-            Ok(mut stream) => {
-                use futures::StreamExt;
-                while let Some(r) = stream.next().await {
-                    if let Ok(e) = r {
-                        if let AgentEvent::TextDelta { content, .. } = &e { report.push_str(content); }
+        let mut evidence = String::new();
+        let mut passes = 0usize;
+        loop {
+            report.clear();
+            let params = SubAgentRunParams {
+                message: cur_task, session_id: c_job_id.clone(), model: model.clone(),
+                system_prompt: system_prompt.clone(), output_dir: c_workdir.clone(),
+                max_iterations: max_iter, rabbit_hole_threshold: rh,
+                context_window: ctxwin, context_window_threshold: ctxthr,
+                tool_timeout_secs: to as u64, max_tool_retries: retr,
+            };
+            let res = runner.run_sub_agent(params, perms.clone(), pend.clone(), preauth.clone()).await;
+            match res {
+                Ok(mut stream) => {
+                    use futures::StreamExt;
+                    while let Some(r) = stream.next().await {
+                        if let Ok(e) = r {
+                            match &e {
+                                AgentEvent::TextDelta { content, .. } => { report.push_str(content); evidence.push_str(content); }
+                                AgentEvent::ToolCall { name, .. } => { evidence.push_str(&format!("\n[tool] {}", name)); }
+                                _ => {}
+                            }
+                        }
                     }
                 }
+                Err(e) => { err = e.to_string(); break; }
             }
-            Err(e) => err = e.to_string(),
+            // Lightweight completion verification + bounded auto-continue: if a
+            // pass left contract steps uncovered, issue one focused continuation
+            // so missing steps get filled instead of silently dropping.
+            if let Some(contract) = &verify_steps {
+                let vr = crate::skill::verify::verify_completion(contract, &evidence);
+                if passes < SKILL_VERIFY_MAX_CONTINUE && !vr.is_complete() {
+                    info!("[skill-verify] '{}' pass {} adherence {:.0}% ({}/{}), missing {:?} -> continuing",
+                        c_agent, passes + 1, vr.ratio * 100.0, vr.completed.len(), vr.total, vr.missing);
+                    let missing_labels: Vec<String> = vr.missing.iter()
+                        .filter_map(|i| contract.get(i.saturating_sub(1)))
+                        .map(|s| s.label.clone())
+                        .collect();
+                    cur_task = crate::skill::verify::continuation_message(&report, &missing_labels);
+                    passes += 1;
+                    continue;
+                }
+                if vr.is_complete() {
+                    info!("[skill-verify] '{}' FULL completion {:.0}% ({}/{})",
+                        c_agent, vr.ratio * 100.0, vr.completed.len(), vr.total);
+                } else {
+                    info!("[skill-verify] '{}' FINAL adherence {:.0}% ({}/{}) still missing {:?}",
+                        c_agent, vr.ratio * 100.0, vr.completed.len(), vr.total, vr.missing);
+                }
+            }
+            break;
         }
         let status = if err.is_empty() { "done".to_string() } else { "error".to_string() };
         {
@@ -270,7 +313,7 @@ pub async fn launch_sub_agent_job(
     launch_job(runner, jobs, notify, permissions, pending,
         max_iter, rh, ctxwin, ctxthr, to, retr,
         job_id.clone(), agent_display, task, system_prompt, workdir, model,
-        preauth, main_session, sessions, None).await;
+        preauth, main_session, sessions, None, None).await;
     Ok(job_id)
 }
 
@@ -329,7 +372,21 @@ pub async fn launch_skill_job(
     let job_id = format!("sub-{}", uuid::Uuid::new_v4());
     let language_rule = subagent_language_rule(&task);
     let body = skill.body().into_owned();
-    let system_prompt = format!("{}{}\n\n## LANGUAGE RULE (STRICT)\n{}", body, ISOLATED_SKILL_RETURN_CONTRACT, language_rule);
+    let mut system_prompt = format!("{}{}\n\n## LANGUAGE RULE (STRICT)\n{}", body, ISOLATED_SKILL_RETURN_CONTRACT, language_rule);
+    // Inject the skill's linear step contract into the sub-agent's instructions
+    // so nested sub-skills (B/C/D) are contract-driven just like a hot-injected
+    // skill, instead of relying on the model to re-derive steps from the body.
+    let contract = skill.step_contract();
+    // Contract injection (>=2 reliable steps) AND verification both key off the
+    // same parsed contract; skills with no parseable structure are left
+    // contract-free (no injected block, no verify pass) exactly as before.
+    let verify = if contract.len() >= 2 { Some(contract.clone()) } else { None };
+    if let Some(block) = crate::skill::steps::contract_block(&contract) {
+        info!("[skills] Injected step contract for '{}' into run_skill sub-agent ({} steps): {}",
+            name, contract.len(),
+            contract.iter().enumerate().map(|(i, x)| format!("{}.{}", i + 1, x.label)).collect::<Vec<_>>().join(" | "));
+        system_prompt.push_str(&block);
+    }
     let workdir = workdir_root.join(sanitize_workdir(&name)).to_string_lossy().to_string();
 
     // Release the concurrency slot when the job finishes (ran on drop).
@@ -338,7 +395,7 @@ pub async fn launch_skill_job(
     launch_job(runner, jobs, notify, permissions, pending,
         max_iter, rh, ctxwin, ctxthr, to, retr,
         job_id.clone(), format!("skill:{}", name), task, system_prompt, workdir,
-        default_model.to_string(), None, None, None, Some(on_finish)).await;
+        default_model.to_string(), None, None, None, Some(on_finish), verify).await;
     Ok(job_id)
 }
 

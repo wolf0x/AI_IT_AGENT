@@ -1,7 +1,17 @@
 pub mod steps;
 pub mod types;
+pub mod verify;
 pub mod self_improve;
 pub use self::types::SkillListingStrategy;
+
+/// Minimum relevance score for a skill to be auto-injected (hot) on matching.
+/// Mirrors thClaws/microclaw's explicit-activation model: a skill's *own*
+/// declared triggers and strong metadata overlap raise its score past this
+/// bar; weak/incidental overlaps stay in the on-demand catalog instead of
+/// being force-injected (which used to pull in unrelated skills like
+/// browser-skill/PathProbe for a hunt task). A full trigger-phrase hit adds
+/// +10, a name hit +4, a description hit +2.5, a trigger-word hit +2.
+const HOT_MIN_SCORE: f32 = 8.0;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -287,7 +297,9 @@ impl SkillManager {
                     .copied()
                     .filter_map(|s| {
                         let score = Self::score_skill(s, &query_tokens, matching_context);
-                        if score >= 0.1 { Some((s, score)) } else { None }
+                        // Only strong/triggered overlaps reach HOT_MIN_SCORE; weak
+                        // incidental matches fall through to the on-demand catalog.
+                        if score >= HOT_MIN_SCORE { Some((s, score)) } else { None }
                     })
                     .collect();
                 scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1169,12 +1181,17 @@ mod tests {
         std::fs::create_dir_all(tmp.join("AlwaysSkill")).unwrap();
         std::fs::create_dir_all(tmp.join("ProcessSkill")).unwrap();
         std::fs::create_dir_all(tmp.join("ColdSkill")).unwrap();
+        std::fs::create_dir_all(tmp.join("NoisySkill")).unwrap();
         std::fs::write(tmp.join("AlwaysSkill/SKILL.md"),
             "---\nname: AlwaysSkill\ndescription: always available\nalways: true\ntriggers: []\n---\n# Always Body\n").unwrap();
         std::fs::write(tmp.join("ProcessSkill/SKILL.md"),
             "---\nname: ProcessSkill\ndescription: process reporting and triage\ntriggers: [process]\n---\n# Process Body\nStep here\n").unwrap();
         std::fs::write(tmp.join("ColdSkill/SKILL.md"),
             "---\nname: ColdSkill\ndescription: unrelated cold skill\ntriggers: []\n---\n# Cold Body\n").unwrap();
+        // Weak match: generic browser-ish description whose triggers never
+        // fire for the query -- must stay in the on-demand catalog, not inline.
+        std::fs::write(tmp.join("NoisySkill/SKILL.md"),
+            "---\nname: NoisySkill\ndescription: browser automation page rendering\ntriggers: [bsk]\n---\n# Noisy Body\n").unwrap();
 
         let mgr = SkillManager::new(tmp.to_str().unwrap());
 
@@ -1184,6 +1201,10 @@ mod tests {
         assert!(ql.contains("# always body"), "always body should be inlined: {}", q);
         assert!(ql.contains("# process body"), "matched body should be inlined: {}", q);
         assert!(ql.contains("coldskill"), "cold skill should be listed by name: {}", q);
+        // Weak/incidental overlap must NOT be hot-inlined (thClaws/microclaw
+        // explicit-activation model), but should remain listable on demand.
+        assert!(!ql.contains("# noisy body"), "weak skill body must not be auto-inlined: {}", q);
+        assert!(ql.contains("noisyskill"), "weak skill should still be catalogued: {}", q);
 
         let n = mgr.build_skills_prompt("process", SkillListingStrategy::NamesOnly, 20_000, 40, 3)
             .expect("names section present");

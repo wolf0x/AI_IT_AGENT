@@ -16,7 +16,7 @@ use crate::permission::PendingMap;
 use crate::runner::Runner;
 use crate::server::NotifyTx;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A scheduled task definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +103,9 @@ pub struct Scheduler {
     context_window_threshold: usize,
     tool_timeout_secs: u64,
     notify_tx: NotifyTx,
+    /// Task ids currently executing, so an overlapping trigger is skipped
+    /// (in-flight dedup) instead of spawning a concurrent duplicate run.
+    running: HashSet<String>,
 }
 
 impl Scheduler {
@@ -133,6 +136,7 @@ impl Scheduler {
             context_window_threshold,
             tool_timeout_secs,
             notify_tx,
+            running: HashSet::new(),
         };
         scheduler.load();
         scheduler.load_settings();
@@ -479,7 +483,7 @@ impl Scheduler {
     }
 
     /// Check for due tasks and execute them. Called every 30 seconds.
-    pub async fn tick(&mut self) {
+    pub async fn tick(&mut self, self_arc: &Arc<Mutex<Self>>) {
         let now = chrono::Utc::now();
         let mut due_indices = Vec::new();
 
@@ -502,6 +506,14 @@ impl Scheduler {
 
         let had_due = !due_indices.is_empty();
         for &i in &due_indices {
+            // In-flight dedup: skip a trigger for a task that is already
+            // running, so slow CRON jobs never overlap duplicate runs.
+            let task_id = self.tasks[i].id.clone();
+            if self.running.contains(&task_id) {
+                info!("CRON task '{}' already running; skipping overlapping trigger", self.tasks[i].name);
+                continue;
+            }
+            self.running.insert(task_id.clone());
             let task = &self.tasks[i];
             info!("CRON task '{}' triggered: {}", task.name, task.message);
 
@@ -532,6 +544,9 @@ impl Scheduler {
             let task_name = task.name.clone();
             let notify_tx = self.notify_tx.clone();
             let auto_approve = self.auto_approve;
+            // Scheduler handle + task id to clear the in-flight marker on exit.
+            let scheduler_arc = self_arc.clone();
+            let ctask_id = task_id.clone();
 
             // Execute the task as an independent sub-agent (own session, empty history)
             tokio::spawn(async move {
@@ -601,6 +616,9 @@ impl Scheduler {
                         let _ = notify_tx.send(ws_msg);
                     }
                 }
+                // Release the in-flight marker so the next scheduled trigger runs.
+                let mut scheduler = scheduler_arc.lock().await;
+                scheduler.running.remove(&ctask_id);
             });
         }
 
@@ -615,7 +633,7 @@ impl Scheduler {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             let mut scheduler = self_arc.lock().await;
-            scheduler.tick().await;
+            scheduler.tick(&self_arc).await;
         }
     }
 }
