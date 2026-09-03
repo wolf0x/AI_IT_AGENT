@@ -1948,11 +1948,13 @@ function sendMsg(){
   if(agentRunning&&txt&&pendingImages.length===0&&pendingFiles.length===0){
     interjectList.push(txt);
     renderInterjectBar();
+    // Queue as a follow-up on the server NOW so it auto-runs AFTER the current task
+    // completes (not injected into the running task, not dropped).
+    if(ws&&connected){ws.send(JSON.stringify({type:'interject',content:txt,session:SESSION_ID,insert:false}));}
     inp.value='';inp.style.height='auto';
     updateSendState();
     return;
   }
-
   if(pendingFiles.length){
     const names=pendingFiles.map(f=>f.name).join(', ');
     sendTxt=(txt?txt+'\n\n':'')+'[附件: '+names+']';
@@ -2123,7 +2125,7 @@ function injectInterject(i){
   if(i<0||i>=interjectList.length)return;
   const content=interjectList[i];
   interjectList.splice(i,1);
-  if(ws&&connected){ws.send(JSON.stringify({type:'interject',content:content,session:SESSION_ID}));}
+  if(ws&&connected){ws.send(JSON.stringify({type:'interject',content:content,session:SESSION_ID,insert:true}));}
   showUserMsg(content,[]);
   renderInterjectBar();updateSendState();
 }
