@@ -1,3 +1,4 @@
+pub mod steps;
 pub mod types;
 pub mod self_improve;
 pub use self::types::SkillListingStrategy;
@@ -9,7 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{info, warn};
 
-use self::types::{SelectionPolicy, Skill, SkillContent, SkillMetadata};
+use self::steps::extract_contract;
+use self::types::{SelectionPolicy, Skill, SkillContent, SkillMetadata, StepItem};
 use super::server::NotifyTx;
 use super::tool::Tool;
 use crate::context::ToolContext;
@@ -298,12 +300,18 @@ impl SkillManager {
                         if seen.insert(s.metadata.name.clone()) {
                             out.push_str(&format!("- **{}**: always loaded\n", s.metadata.name));
                             out.push_str(&Self::inline_body(s, max_inline_chars));
+                            if let Some(block) = steps::contract_block(&s.step_contract()) {
+                                out.push_str(&block);
+                            }
                         }
                     }
                     for (s, _score) in scored {
                         if seen.insert(s.metadata.name.clone()) {
                             out.push_str(&format!("- **{}**: matched current task\n", s.metadata.name));
                             out.push_str(&Self::inline_body(s, max_inline_chars));
+                            if let Some(block) = steps::contract_block(&s.step_contract()) {
+                                out.push_str(&block);
+                            }
                         }
                     }
                 }
@@ -575,6 +583,7 @@ fn parse_skill_frontmatter(path: &Path, skill_dir: String) -> Result<Skill, Stri
             cell: Arc::new(OnceLock::new()),
         },
         skill_dir,
+        contract: Arc::new(OnceLock::new()),
     })
 }
 
@@ -664,6 +673,12 @@ impl Skill {
                 .clone(),
             ),
         }
+    }
+
+    /// Lazily compiled linear step contract (empty when nothing parseable).
+    /// Non-destructive: derived from the body once and cached.
+    pub fn step_contract(&self) -> Vec<StepItem> {
+        self.contract.get_or_init(|| extract_contract(&self.body())).clone()
     }
 }
 
@@ -1133,6 +1148,7 @@ mod tests {
             metadata: SkillMetadata { name: "Eager".to_string(), description: "e".to_string(), triggers: vec![], enabled: true, always: false, when_to_use: String::new(), version: String::new(), curated: false },
             content: SkillContent::Eager("# Eager Body\n".to_string()),
             skill_dir: String::new(),
+            contract: Arc::new(OnceLock::new()),
         };
         assert!(!sk.content.is_lazy(), "eager skill should not be lazy");
         assert!(sk.body().contains("# Eager Body"));

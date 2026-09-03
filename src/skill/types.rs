@@ -76,6 +76,12 @@ impl SkillContent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepItem {
+    /// A short, human-readable description of one workflow step.
+    pub label: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub metadata: SkillMetadata,
@@ -84,6 +90,9 @@ pub struct Skill {
     /// Directory path of the skill (e.g., skills/VulnerabilityPrioritization).
     /// Every skill is a directory containing SKILL.md and optional supporting files.
     pub skill_dir: String,
+    /// Lazily compiled linear step contract (empty when none parseable).
+    /// Computed once from the body (which is itself cached) so install/load is cheap.
+    pub contract: Arc<OnceLock<Vec<StepItem>>>,
 }
 
 /// How the skill catalog is surfaced to the model on each turn.

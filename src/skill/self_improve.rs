@@ -307,6 +307,7 @@ mod tests {
                 curated,
             },
             content: crate::skill::SkillContent::Eager(format!("# {}\n", name)),
+            contract: std::sync::Arc::new(std::sync::OnceLock::new()),
             skill_dir: String::new(),
         }
     }
