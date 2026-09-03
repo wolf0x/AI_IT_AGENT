@@ -300,7 +300,9 @@ impl SkillManager {
                         if seen.insert(s.metadata.name.clone()) {
                             out.push_str(&format!("- **{}**: always loaded\n", s.metadata.name));
                             out.push_str(&Self::inline_body(s, max_inline_chars));
-                            if let Some(block) = steps::contract_block(&s.step_contract()) {
+                            let _contract = s.step_contract();
+                            if let Some(block) = steps::contract_block(&_contract) {
+                                info!("[skills] Injected step contract for '{}' ({} steps)", s.metadata.name, _contract.len());
                                 out.push_str(&block);
                             }
                         }
@@ -309,7 +311,9 @@ impl SkillManager {
                         if seen.insert(s.metadata.name.clone()) {
                             out.push_str(&format!("- **{}**: matched current task\n", s.metadata.name));
                             out.push_str(&Self::inline_body(s, max_inline_chars));
-                            if let Some(block) = steps::contract_block(&s.step_contract()) {
+                            let _contract = s.step_contract();
+                            if let Some(block) = steps::contract_block(&_contract) {
+                                info!("[skills] Injected step contract for '{}' ({} steps)", s.metadata.name, _contract.len());
                                 out.push_str(&block);
                             }
                         }
@@ -875,7 +879,11 @@ list the files available in the skill directory."
         let is_instruction = rel == "SKILL.md" || rel.eq_ignore_ascii_case("skill.md");
         match std::fs::read_to_string(&target_canon) {
             Ok(raw) => {
-                let content = if is_instruction { strip_frontmatter(&raw).to_string() } else { raw };
+                let content = if is_instruction {
+                    let mut b = strip_frontmatter(&raw).to_string();
+                    if let Some(block) = steps::contract_block(&skill.step_contract()) { b.push_str(&block); }
+                    b
+                } else { raw };
                 const CAP: usize = 120_000;
                 let preview = if content.len() > CAP {
                     let mut end = CAP;
