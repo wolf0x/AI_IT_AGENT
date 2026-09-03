@@ -302,7 +302,7 @@ impl SkillManager {
                             out.push_str(&Self::inline_body(s, max_inline_chars));
                             let _contract = s.step_contract();
                             if let Some(block) = steps::contract_block(&_contract) {
-                                info!("[skills] Injected step contract for '{}' ({} steps)", s.metadata.name, _contract.len());
+info!("[skills] Injected step contract for '{}' ({} steps): {}", s.metadata.name, _contract.len(), _contract.iter().enumerate().map(|(i,x)| format!("{}.{}", i+1, x.label)).collect::<Vec<_>>().join(" | "));
                                 out.push_str(&block);
                             }
                         }
@@ -313,7 +313,7 @@ impl SkillManager {
                             out.push_str(&Self::inline_body(s, max_inline_chars));
                             let _contract = s.step_contract();
                             if let Some(block) = steps::contract_block(&_contract) {
-                                info!("[skills] Injected step contract for '{}' ({} steps)", s.metadata.name, _contract.len());
+info!("[skills] Injected step contract for '{}' ({} steps): {}", s.metadata.name, _contract.len(), _contract.iter().enumerate().map(|(i,x)| format!("{}.{}", i+1, x.label)).collect::<Vec<_>>().join(" | "));
                                 out.push_str(&block);
                             }
                         }
