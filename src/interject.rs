@@ -71,3 +71,49 @@ pub fn drain_insert(session_id: &str) -> Vec<String> {
         .map(|q| q.into_iter().collect())
         .unwrap_or_default()
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Queued follow-ups pop in FIFO order and the queue empties.
+    #[test]
+    fn pending_queue_is_fifo_and_empties() {
+        let sid = "test-pending-1";
+        for m in ["task-a", "task-b", "task-c"] {
+            push_pending(sid, m.to_string());
+        }
+        assert_eq!(pop_pending(sid).as_deref(), Some("task-a"));
+        assert_eq!(pop_pending(sid).as_deref(), Some("task-b"));
+        assert_eq!(pop_pending(sid).as_deref(), Some("task-c"));
+        assert_eq!(pop_pending(sid), None);
+        assert_eq!(pop_pending(sid), None, "empty queue keeps returning None");
+    }
+
+    // Insert-now messages drain in FIFO order.
+    #[test]
+    fn insert_channel_drains_fifo() {
+        let sid = "test-insert-1";
+        push_insert(sid, "ctx-1".to_string());
+        push_insert(sid, "ctx-2".to_string());
+        let drained = drain_insert(sid);
+        assert_eq!(drained, vec!["ctx-1".to_string(), "ctx-2".to_string()]);
+        assert!(drain_insert(sid).is_empty(), "after drain the insert channel is empty");
+    }
+
+    // The two channels are isolated: a pending follow-up is NOT visible to the
+    // insert drain and vice versa (running loop must never see pending items).
+    #[test]
+    fn channels_are_isolated() {
+        let sid = "test-iso-1";
+        push_pending(sid, "follow-up".to_string());
+        push_insert(sid, "insert-now".to_string());
+        let drained = drain_insert(sid);
+        assert_eq!(drained, vec!["insert-now".to_string()]);
+        assert!(drain_insert(sid).is_empty());
+        // The pending follow-up is untouched by draining inserts.
+        assert_eq!(pop_pending(sid).as_deref(), Some("follow-up"));
+        assert_eq!(pop_pending(sid), None);
+    }
+}
