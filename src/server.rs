@@ -1201,8 +1201,18 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
     let cancelled = Arc::new(AtomicBool::new(false));
 
     loop {
-        // Wait for next user message
-        let user_msg = match ws_rx.recv().await {
+        // If a follow-up task is queued (sent while the previous task ran, no
+        // "insert" click), dispatch it as the next sequential task BEFORE
+        // waiting for new user input.
+        let user_msg = match crate::interject::pop_pending(&session_id) {
+            Some(next_content) => {
+                info!("[session:{}] Dispatching queued follow-up task", session_id);
+                let msg_json = json!({ "type": "chat", "content": next_content });
+                Some(Message::Text(msg_json.to_string().into()))
+            }
+            None => ws_rx.recv().await,
+        };
+        let user_msg = match user_msg {
             Some(msg) => msg,
             None => break,
         };
@@ -1683,13 +1693,33 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>) {
                                                                 }
                                                                 "interject" => {
                                                                     let content = p["content"].as_str().unwrap_or("").to_string();
-                                                                    if !content.is_empty() {
-                                                                        info!("[session:{}] Interjection queued for running session", session_id);
-                                                                        crate::interject::push(&session_id, content.clone());
+                                                                    let insert = p["insert"].as_bool().unwrap_or(false);
+                                                                    if !content.is_empty() && insert {
+                                                                        // Explicit "insert now": inject into the CURRENT running task as
+                                                                        // supplementary context. The agent loop picks it up via drain_insert
+                                                                        // and also append to session history so it is visible/consumed.
+                                                                        info!("[session:{}] Inserting interjection into running task", session_id);
+                                                                        crate::interject::push_insert(&session_id, content.clone());
                                                                         {
                                                                             let mut sessions = state.sessions.lock().await;
                                                                             sessions.entry(session_id.clone()).or_default().push(ChatMessage::user(&content));
                                                                         }
+                                                                    } else if !content.is_empty() {
+                                                                        // Default: hold as a follow-up task. It will be dispatched as the
+                                                                        // next sequential task after the current one completes. NOT merged
+                                                                        // into the running task's context or history yet.
+                                                                        info!("[session:{}] Queued follow-up task (will run after current task)", session_id);
+                                                                        crate::interject::push_pending(&session_id, content.clone());
+                                                                    }
+                                                                }
+                                                                "chat" => {
+                                                                    // A plain chat message arriving while a task is running is treated as
+                                                                    // a queued follow-up (executed after the current task), never silently
+                                                                    // dropped. This keeps the auto-drain robust even if the UI briefly
+                                                                    // believes the session is idle.
+                                                                    let c = p["content"].as_str().unwrap_or("").to_string();
+                                                                    if !c.is_empty() {
+                                                                        crate::interject::push_pending(&session_id, c);
                                                                     }
                                                                 }
                                                                 _ => {}

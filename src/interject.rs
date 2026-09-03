@@ -1,25 +1,34 @@
-//! Mid-run interjection queue.
+//! Mid-run interjection & follow-up queue.
 //!
-//! Lets the user inject a message into a *running* main-session turn without
-//! stopping it. Messages are keyed by session_id so the queue works
-//! independently per session. The server pushes user interjections here, and
-//! the agent loop drains them at the start of each iteration so the running
-//! LLM sees them as the next user turn (fed into history).
+//! Two independent per-session channels:
+//! - **pending follow-ups** (default): messages the user sends while a task is
+//!   running. They are NOT injected into the running task. They are held here
+//!   and dispatched by the server as the *next* task(s) after the current one
+//!   completes (FIFO). The running agent loop never drains this channel.
+//! - **insert-now** (explicit button): messages the user chose to inject into
+//!   the *current* running task as supplementary context. Only this channel is
+//!   drained by the agent loop, so the running LLM sees them as the next user
+//!   turns.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 type Queue = Arc<Mutex<HashMap<String, VecDeque<String>>>>;
 
-fn global() -> &'static Queue {
+fn pending() -> &'static Queue {
     static Q: OnceLock<Queue> = OnceLock::new();
     Q.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-/// Queue an interjection for a running session. Synchronous and non-blocking.
-/// The agent loop will pick it up on its next iteration.
-pub fn push(session_id: &str, content: String) {
-    global()
+fn insert_channel() -> &'static Queue {
+    static Q: OnceLock<Queue> = OnceLock::new();
+    Q.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+/// Queue a follow-up task to run after the current task finishes (default
+/// path when the user does not press "insert"). Synchronous and non-blocking.
+pub fn push_pending(session_id: &str, content: String) {
+    pending()
         .lock()
         .unwrap()
         .entry(session_id.to_string())
@@ -27,9 +36,35 @@ pub fn push(session_id: &str, content: String) {
         .push_back(content);
 }
 
-/// Drain all pending interjections for a session (FIFO).
-pub fn drain(session_id: &str) -> Vec<String> {
-    global()
+/// Pop the next queued follow-up for a session (FIFO). Returns `None` when the
+/// queue is empty. The server dispatches these as sequential tasks after the
+/// current run completes.
+pub fn pop_pending(session_id: &str) -> Option<String> {
+    let mut q = pending().lock().unwrap();
+    let entry = q.get_mut(session_id)?;
+    let item = entry.pop_front();
+    if entry.is_empty() {
+        q.remove(session_id);
+    }
+    item
+}
+
+/// Inject a message into the CURRENT running task (explicit "insert" button).
+/// Picked up by the agent loop on its next iteration.
+pub fn push_insert(session_id: &str, content: String) {
+    insert_channel()
+        .lock()
+        .unwrap()
+        .entry(session_id.to_string())
+        .or_default()
+        .push_back(content);
+}
+
+/// Drain all insert-now messages for a session (FIFO). Called by the agent
+/// loop at the start of each iteration so the running LLM sees them as the
+/// next user turns.
+pub fn drain_insert(session_id: &str) -> Vec<String> {
+    insert_channel()
         .lock()
         .unwrap()
         .remove(session_id)

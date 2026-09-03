@@ -1000,9 +1000,11 @@ impl Agent for LlmAgent {
                     return;
                 }
 
-                // Drain any mid-run user interjections and feed them into the
-                // running agent as the next user turn (no stop required).
-                let interjections = crate::interject::drain(&session_id);
+                // Drain only EXPLICIT "insert-now" messages and feed them into the
+                // running agent as the next user turn (no stop required). Ordinary
+                // follow-up messages stay in the pending queue and are dispatched by
+                // the server as separate tasks after this run completes.
+                let interjections = crate::interject::drain_insert(&session_id);
                 if !interjections.is_empty() {
                     info!("[session:{}] Injecting {} interjection(s) into running context", session_id, interjections.len());
                     for msg in interjections {
