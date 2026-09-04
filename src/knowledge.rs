@@ -112,6 +112,108 @@ pub fn is_preferred(workspace_dir: &str, rel: &str) -> bool {
     load_preferred(workspace_dir).iter().any(|p| p == rel)
 }
 
+/// Merge the legacy per-category knowledge files (facts/lessons/decisions/
+/// preferences/skill_hints) into a single experience.md. Each block's heading
+/// gets a "[category]" tag so semantics are preserved inside one file. The old
+/// files are renamed to <name>.md.bak (not deleted) for safety. Returns the
+/// number of entries merged.
+pub fn merge_legacy_into_experience(workspace_dir: &str) -> Result<usize, String> {
+    use std::io::Write;
+
+    let dir = knowledge_dir(workspace_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
+    const LEGACY: &[&str] = &["facts", "decisions", "lessons", "preferences", "skill_hints"];
+
+    let mut merged = 0usize;
+    let mut processed_any = false;
+
+    for cat in LEGACY {
+        let src = dir.join(format!("{}.md", cat));
+        if !src.is_file() {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&src)
+            .map_err(|e| format!("Failed to read {}: {}", src.display(), e))?;
+        if raw.trim().is_empty() {
+            continue;
+        }
+        processed_any = true;
+
+        // Split into blocks at each "## " heading; keep heading + body intact.
+        let mut blocks: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for line in raw.lines() {
+            if line.starts_with("## ") {
+                if !current.trim().is_empty() {
+                    blocks.push(current);
+                }
+                current = String::new();
+            }
+            current.push_str(line);
+            current.push('\n');
+        }
+        if !current.trim().is_empty() {
+            blocks.push(current);
+        }
+
+        let mut cat_blocks = Vec::new();
+        for blk in blocks {
+            // Tag the first "## " heading with [category].
+            let mut tagged = false;
+            let rewritten: String = blk
+                .lines()
+                .map(|l| {
+                    if !tagged && l.starts_with("## ") {
+                        tagged = true;
+                        let body = l[3..].trim();
+                        // "## 日期 — 标题" -> "## 日期 — [分类] 标题" (matches distill format).
+                        // Use match_indices so the byte cut lands on ASCII boundaries
+                        // (" — " = space + 3-byte em-dash + space), never mid-codepoint.
+                        if let Some((bstart, _)) = body.match_indices(" — ").next() {
+                            let bsep = bstart + " — ".len();
+                            format!("## {} — [{}] {}", &body[..bstart], cat, &body[bsep..])
+                        } else {
+                            format!("## [{}] {}", cat, body)
+                        }
+                    } else {
+                        l.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if tagged {
+                cat_blocks.push(rewritten);
+            }
+        }
+        merged += cat_blocks.len();
+
+        // Append tagged blocks to experience.md (create header if needed).
+        let exp_path = dir.join("experience.md");
+        if !exp_path.exists() {
+            let _ = std::fs::write(&exp_path, "# EXPERIENCE\n\nAuto-distilled knowledge entries.\n");
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&exp_path)
+            .map_err(|e| format!("Failed to open experience.md: {}", e))?;
+        for blk in &cat_blocks {
+            let _ = write!(f, "\n{}", blk.trim_end());
+        }
+        drop(f);
+
+        // Rename the legacy file to .bak (skip if already renamed).
+        let bak = dir.join(format!("{}.md.bak", cat));
+        let _ = std::fs::rename(&src, &bak);
+        // Also drop any stale .idx.md sidecar for the legacy file.
+        let _ = std::fs::remove_file(dir.join(format!("{}.idx.md", cat)));
+    }
+
+    if processed_any {
+        let _ = build_index(workspace_dir);
+    }
+    Ok(merged)
+}
+
 /// Create a new knowledge document inside workspace/knowledge/<rel>.md with a
 /// `## <title>` heading so it is indexed and searchable. Returns the created
 /// relative path or an error string. Path traversal is rejected.
@@ -155,6 +257,36 @@ pub fn create_file(workspace_dir: &str, rel: &str, title: &str, body: &str) -> R
     Ok(norm)
 }
 
+
+/// Upload a full Markdown document into workspace/knowledge/<rel>.md verbatim,
+/// then re-index it so it is immediately searchable. Path traversal is rejected.
+/// Returns the created relative path or an error string.
+pub fn upload_file(workspace_dir: &str, rel: &str, body: &str) -> Result<String, String> {
+    let norm = rel.trim().replace('\\', "/").trim_start_matches('/').to_string();
+    if !norm.to_lowercase().ends_with(".md") {
+        return Err("Knowledge file must end in .md".to_string());
+    }
+    let p = Path::new(&norm);
+    if p.components().any(|cc| matches!(cc, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+        return Err("Invalid knowledge path".to_string());
+    }
+    let dir = knowledge_dir(workspace_dir);
+    let full = dir.join(&norm);
+    if !full.starts_with(&dir) {
+        return Err("Invalid knowledge path".to_string());
+    }
+    let mut parent = full.parent().unwrap_or(&dir).to_path_buf();
+    if !parent.starts_with(&dir) {
+        parent = dir.clone();
+    }
+    std::fs::create_dir_all(&parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+    if body.chars().count() > MAX_INGEST_CHARS {
+        return Err(format!("Content too large: {} chars (limit {})", body.chars().count(), MAX_INGEST_CHARS));
+    }
+    std::fs::write(&full, body).map_err(|e| format!("Failed to write {}: {}", full.display(), e))?;
+    let _ = build_index(workspace_dir);
+    Ok(norm)
+}
 /// Delete a knowledge document by its relative path (e.g. "lessons.md" or
 /// "threat-intel/apt.md"). Path traversal is rejected.
 pub fn delete_file(workspace_dir: &str, rel: &str) -> Result<(), String> {
@@ -463,14 +595,84 @@ fn entry_full_tokens(e: &KnowledgeEntry) -> Vec<String> {
 /// Search the local knowledge corpus, returning top-K pointer entries ranked
 /// by lightweight BM25. Each hit carries `score` (BM25) plus `token_hits`
 /// (plain term-overlap count, a stable lexical floor for gating).
+/// Load the routing table — reverse-skill style: maps each targeted doc to a set
+/// of keyword regexes (must) and exclusions. Returns Ok(map) or an error string.
+pub fn load_routes(workspace_dir: &str) -> Result<Vec<(String, Vec<String>, Vec<String>)>, String> {
+    // (file, must_patterns, exclude_patterns)
+    let rf = knowledge_dir(workspace_dir).join("routing.json");
+    let Ok(raw) = std::fs::read_to_string(&rf) else {
+        return Ok(Vec::new());
+    };
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("Failed to parse routing.json: {}", e))?;
+    let routes = v["routes"].as_object().ok_or("routes must be an object")?;
+    let mut out = Vec::new();
+    for (file, spec) in routes {
+        let must: Vec<String> = spec["keywords"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|k| k.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let excl: Vec<String> = spec["exclude"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|k| k.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        out.push((file.clone(), must, excl));
+    }
+    Ok(out)
+}
+
+/// Pick the single best-target file for a query using the routing table, or None.
+/// A file wins if at least one "must" regex matches AND no "exclude" regex matches;
+/// among candidates, the one with the most matched must-patterns wins.
+fn route_target(workspace_dir: &str, query: &str) -> Option<String> {
+    let routes = load_routes(workspace_dir).ok()?;
+    if routes.is_empty() {
+        return None;
+    }
+    let lower = query.to_lowercase();
+    let mut best: Option<(String, usize)> = None;
+    for (file, must, excl) in routes {
+        let match_re = |patterns: &[String]| -> bool {
+            patterns.iter().any(|p| {
+                regex::Regex::new(p).map(|re| re.is_match(&lower)).unwrap_or(false)
+            })
+        };
+        let exc_hit = match_re(&excl);
+        if exc_hit {
+            continue;
+        }
+        let hits = must.iter().filter(|p| {
+            regex::Regex::new(p).map(|re| re.is_match(&lower)).unwrap_or(false)
+        }).count();
+        if hits > 0 && best.as_ref().map(|(_, h)| hits > *h).unwrap_or(true) {
+            best = Some((file.clone(), hits));
+        }
+    }
+    best.map(|(f, _)| f)
+}
+
 pub fn search(workspace_dir: &str, query: &str, limit: usize) -> Vec<KnowledgeEntry> {
     let all = collect_entries(&knowledge_dir(workspace_dir));
     if all.is_empty() {
         return Vec::new();
     }
     let tokens = query_tokens(query);
-    // When the user has pinned specific files for priority retrieval, restrict
-    // the corpus to those files so only the chosen knowledge is searched.
+
+    // 1) reverse-skill style routing: a targeted doc (methodology/playbook)
+    //    wins the request and is searched first; others are not flooded in.
+    if let Some(target) = route_target(workspace_dir, query) {
+        let tfile = format!("knowledge/{}", target.trim_start_matches('/'));
+        let routed: Vec<KnowledgeEntry> = all
+            .iter()
+            .filter(|e| e.file == tfile)
+            .cloned()
+            .collect();
+        if !routed.is_empty() {
+            return bm25_search(routed, &tokens, limit);
+        }
+    }
+
+    // 2) Otherwise respect user-pinned preferred files (or full corpus).
     let preferred = load_preferred(workspace_dir);
     if preferred.is_empty() {
         return bm25_search(all, &tokens, limit);
@@ -954,6 +1156,69 @@ mod tests {
         delete_file(ws.to_str().unwrap(), "ops/playbook.md").unwrap();
         assert!(!knowledge_dir(ws.to_str().unwrap()).join("ops/playbook.md").exists());
         assert!(load_preferred(ws.to_str().unwrap()).is_empty());
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn merge_legacy_into_single_experience() {
+        let ws = std::env::temp_dir().join(format!("rustagent_know_merge_{}", std::process::id()));
+        let kdir = knowledge_dir(ws.to_str().unwrap());
+        std::fs::create_dir_all(&kdir).unwrap();
+        // Simulate two legacy category files.
+        std::fs::write(kdir.join("facts.md"), "# FACTS
+
+## 2026-08-03 — some fact
+- **Content:** x
+").unwrap();
+        std::fs::write(kdir.join("lessons.md"), "# LESSONS
+
+## 2026-08-05 — some lesson
+- **Content:** y
+").unwrap();
+
+        let merged = merge_legacy_into_experience(ws.to_str().unwrap()).unwrap();
+        assert_eq!(merged, 2);
+
+        // Entries now live in experience.md, tagged with their category.
+        let exp = std::fs::read_to_string(kdir.join("experience.md")).unwrap();
+        assert!(exp.contains("[facts] some fact"));
+        assert!(exp.contains("[lessons] some lesson"));
+
+        // Legacy files renamed to .bak, experience.md is searchable.
+        assert!(kdir.join("facts.md.bak").exists());
+        assert!(kdir.join("lessons.md.bak").exists());
+        assert!(search(ws.to_str().unwrap(), "some lesson", 5).len() >= 1);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn routing_targets_methodology_file() {
+        let ws = std::env::temp_dir().join(format!("rustagent_know_route_{}", std::process::id()));
+        let kdir = knowledge_dir(ws.to_str().unwrap());
+        std::fs::create_dir_all(&kdir).unwrap();
+        // A methodology doc plus the shared experience store.
+        std::fs::write(kdir.join("experience.md"), "# EXPERIENCE
+
+## 2026-08-01 — generic tip
+- **Content:** remove item powershell
+").unwrap();
+        std::fs::write(kdir.join("cloud-doc.md"), "# CLOUD DOC
+
+## 云文档钓鱼分析方法
+- **Content:** tencent docs trust broker phishing
+").unwrap();
+        // routing.json routes "tencent/phishing/文档" to cloud-doc.md
+        std::fs::write(
+            kdir.join("routing.json"),
+            r#"{"routes":{"cloud-doc.md":{"keywords":["tencent|docs.qq.com|云文档|腾讯文档|phishing|钓鱼"]}}}"#,
+        ).unwrap();
+
+        // A query about the methodology routes to cloud-doc.md.
+        let hits = search(ws.to_str().unwrap(), "tencent docs phishing", 5);
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|h| h.file.contains("cloud-doc.md")));
 
         let _ = std::fs::remove_dir_all(&ws);
     }

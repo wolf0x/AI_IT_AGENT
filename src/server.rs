@@ -251,6 +251,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/knowledge", get(knowledge_list_handler))
         .route("/api/knowledge", post(knowledge_create_handler))
         .route("/api/knowledge/preferred", post(knowledge_preferred_handler))
+        .route("/api/knowledge/upload", post(knowledge_upload_handler))
         .route("/api/knowledge/{name}", delete(knowledge_delete_handler))
         .route("/api/memory/dates", get(memory_dates_handler))
         .route("/api/memory/summaries", get(memory_summaries_handler))
@@ -386,6 +387,24 @@ async fn knowledge_delete_handler(
     let ws = state.workspace_dir.clone();
     match crate::knowledge::delete_file(&ws, &name) {
         Ok(()) => Json(json!({ "success": true })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
+/// POST /api/knowledge/upload — write an uploaded Markdown document into the
+/// knowledge corpus (knowledge/<rel>.md) and re-index it for search.
+async fn knowledge_upload_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let ws = state.workspace_dir.clone();
+    let rel = body["rel"].as_str().unwrap_or("").to_string();
+    let content = body["content"].as_str().unwrap_or("").to_string();
+    if rel.is_empty() || content.is_empty() {
+        return Json(json!({ "success": false, "error": "rel and content are required" }));
+    }
+    match crate::knowledge::upload_file(&ws, &rel, &content) {
+        Ok(path) => Json(json!({ "success": true, "path": path })),
         Err(e) => Json(json!({ "success": false, "error": e })),
     }
 }

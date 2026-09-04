@@ -98,22 +98,21 @@ pub async fn distill_session(
             continue;
         }
 
-        let file_path = knowledge_dir.join(format!("{}.md", entry.category));
+        // All distilled knowledge flows into a single experience.md; category is
+        // preserved as a tag so the entry keeps its semantics within one file.
+        let file_path = knowledge_dir.join("experience.md");
         let block = format!(
-            "\n## {} — {}\n\
+            "\n## {} — [{}] {}\n\
              - **Content:** {}\n\
              - **Trigger:** {}\n\
              - **Context:** {}\n\
              - **Source:** {}\n\
              - **Confidence:** {}\n",
-            today, entry.title, entry.content, entry.trigger, entry.context, entry.source, entry.confidence
+            today, entry.category, entry.title, entry.content, entry.trigger, entry.context, entry.source, entry.confidence
         );
 
-        // Create file with header if it doesn't exist, then append
         if !file_path.exists() {
-            let header = format!("# {}\n\nAuto-distilled knowledge entries.\n",
-                entry.category.replace('_', " ").to_uppercase());
-            let _ = std::fs::write(&file_path, &header);
+            let _ = std::fs::write(&file_path, "# EXPERIENCE\n\nAuto-distilled knowledge entries.\n");
         }
 
         match std::fs::OpenOptions::new().append(true).open(&file_path) {
