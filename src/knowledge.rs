@@ -38,6 +38,151 @@ pub fn knowledge_dir(workspace_dir: &str) -> PathBuf {
     Path::new(workspace_dir).join("knowledge")
 }
 
+/// Path to the JSON file persisting the user's "preferred" (挂接) knowledge files.
+fn preferred_file(workspace_dir: &str) -> PathBuf {
+    knowledge_dir(workspace_dir).join(".preferred.json")
+}
+
+/// Load the set of knowledge files the user has pinned for priority retrieval.
+/// Returns an empty vec when unset or unreadable. Stored as relative paths
+/// (e.g. ["threat-intel/apt.md", "lessons.md"]).
+pub fn load_preferred(workspace_dir: &str) -> Vec<String> {
+    let pf = preferred_file(workspace_dir);
+    let Ok(raw) = std::fs::read_to_string(&pf) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+}
+
+/// Persist the preferred (挂接) knowledge file list. Returns an error message
+/// on failure so the UI can surface it.
+pub fn save_preferred(workspace_dir: &str, files: &[String]) -> Result<(), String> {
+    let dir = knowledge_dir(workspace_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create knowledge dir: {}", e))?;
+    let mut clean: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for f in files {
+        let n = f.trim().replace('\\', "/");
+        if n.is_empty() {
+            continue;
+        }
+        let norm = Path::new(&n);
+        if norm.components().any(|cc| matches!(cc, std::path::Component::ParentDir | std::path::Component::RootDir)) {
+            continue;
+        }
+        if seen.insert(n.clone()) {
+            clean.push(n);
+        }
+    }
+    std::fs::write(
+        preferred_file(workspace_dir),
+        serde_json::to_string_pretty(&clean).unwrap_or_else(|_| "[]".to_string()),
+    )
+    .map_err(|e| format!("Failed to save preferred files: {}", e))
+}
+
+/// List every indexed knowledge file (relative to the knowledge dir), skipping
+/// generated sidecars. Used by the UI to render enable/disable toggles.
+pub fn list_files(workspace_dir: &str) -> Vec<String> {
+    let dir = knowledge_dir(workspace_dir);
+    let mut out = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&d) else { continue };
+        for e in read.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().map(|x| x == "md").unwrap_or(false) {
+                let fname = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if fname == "knowledge-index.md" || fname.ends_with(".idx.md") {
+                    continue;
+                }
+                let rel = p.strip_prefix(&dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                out.push(rel);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Whether the given relative knowledge file is pinned for priority retrieval.
+pub fn is_preferred(workspace_dir: &str, rel: &str) -> bool {
+    load_preferred(workspace_dir).iter().any(|p| p == rel)
+}
+
+/// Create a new knowledge document inside workspace/knowledge/<rel>.md with a
+/// `## <title>` heading so it is indexed and searchable. Returns the created
+/// relative path or an error string. Path traversal is rejected.
+pub fn create_file(workspace_dir: &str, rel: &str, title: &str, body: &str) -> Result<String, String> {
+    let norm = rel.trim().replace('\\', "/").trim_start_matches('/').to_string();
+    let base = Path::new(&norm).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let title = if title.trim().is_empty() { base } else { title.trim().to_string() };
+    if title.is_empty() {
+        return Err("Title is required".to_string());
+    }
+    if !norm.to_lowercase().ends_with(".md") {
+        return Err("Knowledge file must end in .md".to_string());
+    }
+    let p = Path::new(&norm);
+    if p.components().any(|cc| matches!(cc, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+        return Err("Invalid knowledge path".to_string());
+    }
+    let dir = knowledge_dir(workspace_dir);
+    let full = dir.join(&norm);
+    if !full.starts_with(&dir) {
+        return Err("Invalid knowledge path".to_string());
+    }
+    let mut parent = full.parent().unwrap_or(&dir).to_path_buf();
+    if !parent.starts_with(&dir) {
+        parent = dir.clone();
+    }
+    std::fs::create_dir_all(&parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+    if body.chars().count() > MAX_INGEST_CHARS {
+        return Err(format!("Content too large: {} chars (limit {})", body.chars().count(), MAX_INGEST_CHARS));
+    }
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let frontmatter = format!(
+        "---\ntitle: {}\ncategory: knowledge\ntags: []\nsource: manual\ndate: {}\nconfidence: medium\n---\n\n",
+        title, today
+    );
+    let mut content = format!("{}## {}\n\n", frontmatter, title);
+    content.push_str(body.trim_end());
+    content.push('\n');
+    std::fs::write(&full, content).map_err(|e| format!("Failed to write {}: {}", full.display(), e))?;
+    let _ = build_index(workspace_dir);
+    Ok(norm)
+}
+
+/// Delete a knowledge document by its relative path (e.g. "lessons.md" or
+/// "threat-intel/apt.md"). Path traversal is rejected.
+pub fn delete_file(workspace_dir: &str, rel: &str) -> Result<(), String> {
+    let norm = rel.trim().replace('\\', "/").trim_start_matches('/').to_string();
+    let p = Path::new(&norm);
+    if p.components().any(|cc| matches!(cc, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+        return Err("Invalid knowledge path".to_string());
+    }
+    let dir = knowledge_dir(workspace_dir);
+    let full = dir.join(&norm);
+    if !full.starts_with(&dir) {
+        return Err("Invalid knowledge path".to_string());
+    }
+    if !full.is_file() {
+        return Err("Not a knowledge file".to_string());
+    }
+    let _ = std::fs::remove_file(&full);
+    let sidecar = full.with_extension("idx.md");
+    let _ = std::fs::remove_file(&sidecar);
+    let prefs: Vec<String> = load_preferred(workspace_dir)
+        .into_iter()
+        .filter(|x| x != &norm)
+        .collect();
+    let _ = save_preferred(workspace_dir, &prefs);
+    let _ = build_index(workspace_dir);
+    Ok(())
+}
+
 fn is_cjk_char(c: char) -> bool {
     let u = c as u32;
     (0x3400..=0x4dbf).contains(&u)
@@ -324,7 +469,23 @@ pub fn search(workspace_dir: &str, query: &str, limit: usize) -> Vec<KnowledgeEn
         return Vec::new();
     }
     let tokens = query_tokens(query);
-    bm25_search(all, &tokens, limit)
+    // When the user has pinned specific files for priority retrieval, restrict
+    // the corpus to those files so only the chosen knowledge is searched.
+    let preferred = load_preferred(workspace_dir);
+    if preferred.is_empty() {
+        return bm25_search(all, &tokens, limit);
+    }
+    let corpus: Vec<KnowledgeEntry> = all
+        .into_iter()
+        .filter(|e| {
+            let rel = e.file.strip_prefix("knowledge/").unwrap_or(&e.file);
+            preferred.iter().any(|p| p == rel)
+        })
+        .collect();
+    if corpus.is_empty() {
+        return Vec::new();
+    }
+    bm25_search(corpus, &tokens, limit)
 }
 
 /// Group entries by their source file, preserving order.
@@ -746,6 +907,53 @@ mod tests {
 
         // Empty / too-short query -> no hits.
         assert!(search(ws.to_str().unwrap(), "zzzzqqqx", 5).is_empty() || true);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn preferred_filters_search() {
+        let ws = std::env::temp_dir().join(format!("rustagent_know_pref_{}", std::process::id()));
+        let kdir = ws.join("knowledge");
+        std::fs::create_dir_all(&kdir).unwrap();
+        std::fs::write(kdir.join("a.md"), "## Network\nhow to ping a host and test connectivity\n").unwrap();
+        std::fs::write(kdir.join("b.md"), "## Miner\nhow to remove miner persistence and self-heal\n").unwrap();
+
+        // No preferred set -> both files searchable.
+        assert_eq!(search(ws.to_str().unwrap(), "ping host", 5).len(), 1);
+
+        // Pin only b.md -> a network query must no longer match.
+        save_preferred(ws.to_str().unwrap(), &["b.md".to_string()]).unwrap();
+        assert!(search(ws.to_str().unwrap(), "ping host", 5).is_empty());
+        assert_eq!(search(ws.to_str().unwrap(), "miner", 5).len(), 1);
+
+        // Unpin -> full corpus search restored.
+        save_preferred(ws.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(search(ws.to_str().unwrap(), "ping host", 5).len(), 1);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn create_delete_files_safe() {
+        let ws = std::env::temp_dir().join(format!("rustagent_know_crud_{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+
+        // Create with a subfolder path.
+        let rel = create_file(ws.to_str().unwrap(), "ops/playbook.md", "Playbook", "## Playbook\ndo the thing\n").unwrap();
+        assert_eq!(rel, "ops/playbook.md");
+        assert!(knowledge_dir(ws.to_str().unwrap()).join("ops/playbook.md").is_file());
+        assert!(list_files(ws.to_str().unwrap()).iter().any(|f| f == "ops/playbook.md"));
+
+        // Path traversal rejected.
+        assert!(create_file(ws.to_str().unwrap(), "../evil.md", "x", "y").is_err());
+        assert!(delete_file(ws.to_str().unwrap(), "../../etc/passwd").is_err());
+
+        // Delete works and removes from preferred.
+        save_preferred(ws.to_str().unwrap(), &["ops/playbook.md".to_string()]).unwrap();
+        delete_file(ws.to_str().unwrap(), "ops/playbook.md").unwrap();
+        assert!(!knowledge_dir(ws.to_str().unwrap()).join("ops/playbook.md").exists());
+        assert!(load_preferred(ws.to_str().unwrap()).is_empty());
 
         let _ = std::fs::remove_dir_all(&ws);
     }

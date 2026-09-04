@@ -248,6 +248,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/agents/{id}", delete(agents_delete_handler))
         .route("/api/agents/{id}/toggle", post(agents_toggle_handler))
         .route("/api/notify", post(notify_handler))
+        .route("/api/knowledge", get(knowledge_list_handler))
+        .route("/api/knowledge", post(knowledge_create_handler))
+        .route("/api/knowledge/preferred", post(knowledge_preferred_handler))
+        .route("/api/knowledge/{name}", delete(knowledge_delete_handler))
         .route("/api/memory/dates", get(memory_dates_handler))
         .route("/api/memory/summaries", get(memory_summaries_handler))
         .route("/api/memory", get(memory_entries_handler))
@@ -323,6 +327,67 @@ async fn agents_toggle_handler(State(state): State<Arc<AppState>>, Path(id): Pat
     let mut store = state.agent_store.lock().await;
     let enabled = store.toggle(&id);
     Json(json!({ "success": enabled.is_some(), "enabled": enabled }))
+}
+
+async fn knowledge_list_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let ws = state.workspace_dir.clone();
+    let files = crate::knowledge::list_files(&ws);
+    let preferred = crate::knowledge::load_preferred(&ws);
+    let items: Vec<Value> = files
+        .into_iter()
+        .map(|rel| {
+            let pinned = preferred.iter().any(|p| p == &rel);
+            let title = std::path::Path::new(&rel)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| rel.clone());
+            json!({ "rel": rel, "title": title, "preferred": pinned })
+        })
+        .collect();
+    Json(json!({ "files": items, "preferred": preferred, "count": items.len() }))
+}
+
+async fn knowledge_create_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let ws = state.workspace_dir.clone();
+    let rel = body["rel"].as_str().unwrap_or("").to_string();
+    let title = body["title"].as_str().unwrap_or("").to_string();
+    let content = body["content"].as_str().unwrap_or("").to_string();
+    if rel.is_empty() || content.is_empty() {
+        return Json(json!({ "success": false, "error": "rel and content are required" }));
+    }
+    match crate::knowledge::create_file(&ws, &rel, &title, &content) {
+        Ok(path) => Json(json!({ "success": true, "path": path })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
+async fn knowledge_preferred_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let ws = state.workspace_dir.clone();
+    let files: Vec<String> = body["files"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    match crate::knowledge::save_preferred(&ws, &files) {
+        Ok(()) => Json(json!({ "success": true, "preferred": files })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
+async fn knowledge_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<Value> {
+    let ws = state.workspace_dir.clone();
+    match crate::knowledge::delete_file(&ws, &name) {
+        Ok(()) => Json(json!({ "success": true })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
 }
 
 async fn index_handler(State(state): State<Arc<AppState>>) -> Response {

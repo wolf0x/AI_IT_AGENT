@@ -728,6 +728,7 @@ input:checked+.slider:before{transform:translateX(20px)}
       <button class="nav-tab" onclick="switchPage('tools',this)">&#128295; <span>Tools</span></button>
       <button class="nav-tab" onclick="switchPage('cron',this)">&#9200; <span>CRON</span></button>
       <button class="nav-tab" onclick="switchPage('agents',this)">&#129302; <span>Agents</span></button>
+            <button class="nav-tab" onclick="switchPage('knowledge',this)">&#128218; <span>Knowledge</span></button>
       <button class="nav-tab" onclick="switchPage('dashboard',this)">&#128202; <span>Dashboard</span></button>
     </div>
     <div class="sidebar-ftr">
@@ -1113,6 +1114,32 @@ input:checked+.slider:before{transform:translateX(20px)}
       </div>
     </div>
 
+    <!-- Knowledge Page -->
+    <div id="knowledge" class="page">
+      <div class="settings-scroll modern-page">
+        <div class="settings-section">
+          <h3>&#128218; Knowledge Management</h3>
+          <p style="font-size:12px;color:var(--t2);margin:4px 0 12px">
+            Browse the local knowledge base. Toggle a file as <b>Preferred</b> so it is
+            prioritized for per-turn retrieval; create or delete documents below.
+          </p>
+
+          <div class="form-card" style="margin-bottom:14px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <input type="text" id="knRel" placeholder="filename.md (or sub/folder.md)" style="flex:1;min-width:180px">
+              <input type="text" id="knTitle" placeholder="Title (default from filename)" style="flex:1;min-width:180px">
+              <button class="btn btn-p" onclick="createKnowledge()">+ New Document</button>
+            </div>
+            <div style="margin-top:8px">
+              <textarea id="knContent" rows="5" placeholder="Document body in Markdown (starts with a ## heading)." style="width:100%;box-sizing:border-box"></textarea>
+            </div>
+          </div>
+
+          <div id="knowledgeList" style="font-size:13px;color:var(--t2)">Loading...</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Dashboard Page -->
     <div id="dashboard" class="page">
       <div class="dash-container">
@@ -1343,6 +1370,7 @@ function switchPage(name,btn){
   if(name==='agents')loadAgents();
   if(name==='settings'){loadProviders();loadConfigFiles();initHumanInterventionToggle();}
   if(name==='tools')loadTools();
+  if(name==='knowledge')loadKnowledge();
   if(name==='dashboard')loadDashboard();
   if(name==='chat')setTimeout(()=>scrollBottom(false),50);
 }
@@ -2477,6 +2505,69 @@ async function saveAgent(){
 }
 async function toggleAgent(id){try{await fetch('/api/agents/'+encodeURIComponent(id)+'/toggle',{method:'POST'});loadAgents();}catch(e){alert('Failed')}}
 async function deleteAgent(id){if(!confirm('Delete sub-agent?'))return;try{await fetch('/api/agents/'+encodeURIComponent(id),{method:'DELETE'});loadAgents();}catch(e){alert('Failed')}}
+
+// ── Knowledge CRUD + preferred pinning ──
+async function loadKnowledge(){
+  const el=document.getElementById('knowledgeList');
+  el.innerHTML='Loading...';
+  try{
+    const r=await fetch('/api/knowledge');const d=await r.json();
+    const list=d.files||[];
+    if(!list.length){el.innerHTML='<div class="cron-empty">No knowledge files yet. Create one above.</div>';return;}
+    el.innerHTML='<div class="cron-list">'+list.map(f=>{
+      const on=f.preferred?' on':'';
+      const status=f.preferred?'<span class="cron-status on">Preferred</span>':'<span class="cron-status off">Not pinned</span>';
+      return '<div class="cron-item'+on+'">'+
+        '<div class="cron-item-main">'+
+          '<div class="cron-item-head">'+
+            '<span class="cron-item-name">'+esc(f.title)+'</span>'+
+            '<span class="cron-badge">'+esc(f.rel)+'</span>'+
+            status+
+          '</div>'+
+          '<div class="cron-meta"><span>Priority search</span></div>'+
+        '</div>'+
+        '<div class="cron-actions">'+
+          '<button class="cron-act '+(f.preferred?'off':'on')+'" onclick="togglePreferred(\''+esc(f.rel)+'\','+(f.preferred?'false':'true')+')">'+(f.preferred?'Unpin':'Pin')+'</button>'+
+          '<button class="cron-act danger" onclick="deleteKnowledge(\''+esc(f.rel)+'\')">Delete</button>'+
+        '</div>'+
+      '</div>';
+    }).join('')+'</div>';
+  }catch(e){el.innerHTML='<div class="cron-empty">Failed to load knowledge</div>'}
+}
+async function togglePreferred(rel,pin){
+  try{
+    const d=await (await fetch('/api/knowledge')).json();
+    let prefs=(d.preferred||[]).filter(x=>x!==rel);
+    if(pin)prefs.push(rel);
+    await fetch('/api/knowledge/preferred',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:prefs})});
+    loadKnowledge();
+  }catch(e){alert('Failed to update preferred files')}
+}
+async function createKnowledge(){
+  const rel=document.getElementById('knRel').value.trim();
+  const content=document.getElementById('knContent').value;
+  const title=document.getElementById('knTitle').value.trim();
+  if(!rel||!content){alert('Filename and content are required');return;}
+  if(!/.md$/i.test(rel)){alert('Filename must end in .md');return;}
+  try{
+    const r=await fetch('/api/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rel,title,content})});
+    const d=await r.json();
+    if(!d.success){alert('Failed: '+(d.error||'unknown'));return;}
+    document.getElementById('knRel').value='';
+    document.getElementById('knTitle').value='';
+    document.getElementById('knContent').value='';
+    loadKnowledge();
+  }catch(e){alert('Failed to create knowledge file')}
+}
+async function deleteKnowledge(rel){
+  if(!confirm('Delete knowledge file "'+rel+'"?'))return;
+  try{
+    const r=await fetch('/api/knowledge/'+encodeURIComponent(rel),{method:'DELETE'});
+    const d=await r.json();
+    if(!d.success){alert('Failed: '+(d.error||'unknown'));return;}
+    loadKnowledge();
+  }catch(e){alert('Failed to delete knowledge file')}
+}
 
 async function loadMcp(){
   try{const r=await fetch('/api/mcp');const d=await r.json();
