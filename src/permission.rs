@@ -370,11 +370,121 @@ fn explain_shell_command(cmd: &str) -> String {
         ("git ", "执行 Git 操作"),
         ("dir ", "列出目录/文件"),
     ];
+    // Case-insensitive match: `PAIRS` needles (e.g. Get-NetTCPConnection) are
+    // compared against the lowercased command, so uppercase cmdlets actually hit.
     for (needle, purpose) in PAIRS {
-        if lower.contains(needle) {
+        if lower.contains(&needle.to_lowercase()) {
             return purpose.to_string();
         }
     }
+    // Fallback: derive a semantic purpose from the policy intent parser when no
+    // static keyword matched. Gives a meaningful one-liner for compound scripts
+    // (e.g. a multi-line Remove-Item cleanup) instead of "执行命令 <首个词>".
+    if let Some(purpose) = describe_shell_intent(c) {
+        return purpose;
+    }
+
     let first = c.split_whitespace().next().unwrap_or(c).to_string();
     format!("执行命令 {}", first)
+}
+
+/// Structured plain-language description built on the policy intent parser.
+fn describe_shell_intent(cmd: &str) -> Option<String> {
+    use crate::policy::parse::Verb;
+
+    let lower = cmd.to_lowercase();
+    let shell = if lower.contains("cmd.exe")
+        || lower.contains("cmd /c")
+        || lower.starts_with("del ")
+        || lower.starts_with("rmdir ")
+        || lower.starts_with("rd ")
+    {
+        "cmd"
+    } else {
+        "powershell"
+    };
+
+    let intent = crate::policy::parse::parse_intent(cmd, shell);
+    if intent.confidence < 0.6 || matches!(intent.verb, Verb::Unknown) {
+        return None;
+    }
+
+    let action = match intent.verb {
+        Verb::Delete => "删除",
+        Verb::Format => "格式化",
+        Verb::Stop => "停止",
+        Verb::Disable => "禁用",
+        Verb::Write => "写入/修改",
+        Verb::ClearLog => "清除日志",
+        Verb::Read => "查看",
+        Verb::Execute | Verb::Unknown => return None,
+    };
+
+    let mut seen = Vec::new();
+    let mut names = Vec::new();
+    for t in &intent.targets {
+        let name = readable_target(t);
+        let key = name.to_lowercase();
+        if name.is_empty() || seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        names.push(name);
+    }
+
+    if names.is_empty() {
+        return Some(format!("{}目标（未指明具体对象）", action));
+    }
+
+    if names.len() <= 3 {
+        Some(format!("{} {}", action, names.join("、")))
+    } else {
+        Some(format!("{} {} 等 {} 项", action, names[..3].join("、"), names.len()))
+    }
+}
+
+/// Reduce a raw target to a readable, human-friendly name.
+fn readable_target(t: &str) -> String {
+    let trimmed = t.trim().trim_matches('"').trim_matches('\'');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Keep the last meaningful segment when the target looks like a path.
+    let normalized = trimmed.replace('\\', "/");
+    let last = normalized.rsplit('/').next().unwrap_or(&normalized).trim();
+    if !last.is_empty() && last != &normalized {
+        last.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explain_delete_cleanup_script() {
+        // Multi-line Remove-Item cleanup should produce a semantic "删除 ..." line,
+        // not a raw "执行命令 $dirs" from the first token.
+        let cmd = "$dirs = @(\"$env:APPDATA\\Programs\\Zero Install\", \"$env:LOCALAPPDATA\\0install.net\", \"$env:APPDATA\\0install.net\"); foreach ($d in $dirs) { if (Test-Path $d) { Remove-Item $d -Recurse -Force } }; $logs = @(\"$env:TEMP\\0install Bbb Log.txt\"); foreach ($l in $logs) { if (Test-Path $l) { Remove-Item $l -Force } }";
+        let purpose = explain_shell_command(cmd);
+        assert!(purpose.contains("删除"), "got: {purpose}");
+        // The purpose should name the targeted software, not a shell variable.
+        assert!(!purpose.contains(r"\$dirs"), "got: {purpose}");
+        assert!(purpose.contains("Zero Install"), "got: {purpose}");
+    }
+
+    #[test]
+    fn explain_read_keeps_exact_pairs() {
+        assert_eq!(explain_shell_command("ipconfig /all"), "查看网络配置");
+        assert_eq!(explain_shell_command("Get-NetTCPConnection"), "查看网络连接");
+    }
+
+    #[test]
+    fn explain_unknown_falls_back() {
+        let p = explain_shell_command("some-obscure-tool --flag");
+        assert!(p.starts_with("执行命令"), "got: {p}");
+    }
 }
