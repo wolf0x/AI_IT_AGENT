@@ -75,6 +75,10 @@ pub enum AgentEvent {
         tool_name: String,
         category: String,
         args: Value,
+        /// Plain-language one-line description of what executing the tool does,
+        /// shown to the user when they are asked to approve/deny the action.
+        #[serde(default)]
+        explanation: String,
     },
 
     #[serde(rename = "permission_response")]
@@ -199,13 +203,14 @@ impl AgentEvent {
         }
     }
 
-    pub fn permission_request(request_id: &str, tool_name: &str, category: &str, args: Value, invocation_id: &str, author: &str) -> Self {
+    pub fn permission_request(request_id: &str, tool_name: &str, category: &str, args: Value, explanation: &str, invocation_id: &str, author: &str) -> Self {
         AgentEvent::PermissionRequest {
             meta: EventMeta::new(invocation_id, author),
             request_id: request_id.to_string(),
             tool_name: tool_name.to_string(),
             category: category.to_string(),
             args,
+            explanation: explanation.to_string(),
         }
     }
 

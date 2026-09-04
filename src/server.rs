@@ -154,6 +154,7 @@ pub struct AppState {
     pub max_iterations: Arc<AtomicUsize>,
     pub rabbit_hole_threshold: Arc<AtomicUsize>,
     pub trim_redundant_tool_calls: Arc<AtomicBool>,
+    pub knowledge_pre_retrieval: Arc<AtomicBool>,
     pub enable_context_scaling: Arc<AtomicBool>,
     pub max_inline_chars: Arc<AtomicUsize>,
     pub skill_listing_strategy: Arc<AtomicUsize>,
@@ -646,6 +647,7 @@ async fn models_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
         "max_iterations": state.max_iterations.load(Ordering::SeqCst),
         "rabbit_hole_threshold": state.rabbit_hole_threshold.load(Ordering::SeqCst),
         "trim_redundant_tool_calls": state.trim_redundant_tool_calls.load(Ordering::SeqCst),
+        "knowledge_pre_retrieval": state.knowledge_pre_retrieval.load(Ordering::SeqCst),
         "enable_context_scaling": state.enable_context_scaling.load(Ordering::SeqCst),
         "max_inline_chars": state.max_inline_chars.load(Ordering::SeqCst),
         "skill_listing_strategy": crate::skill::SkillListingStrategy::from_index(state.skill_listing_strategy.load(Ordering::SeqCst)).as_str().to_string(),
@@ -2316,6 +2318,9 @@ async fn agent_settings_save_handler(
     let trim_redundant_tool_calls = body.get("trim_redundant_tool_calls")
         .and_then(|v| v.as_bool())
         .unwrap_or(state.trim_redundant_tool_calls.load(Ordering::SeqCst));
+    let knowledge_pre_retrieval = body.get("knowledge_pre_retrieval")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(state.knowledge_pre_retrieval.load(Ordering::SeqCst));
     let enable_context_scaling = body.get("enable_context_scaling")
         .and_then(|v| v.as_bool())
         .unwrap_or(state.enable_context_scaling.load(Ordering::SeqCst));
@@ -2350,6 +2355,7 @@ async fn agent_settings_save_handler(
         tool_timeout_secs,
         max_tool_retries,
         trim_redundant_tool_calls,
+        knowledge_pre_retrieval,
         enable_context_scaling,
         max_inline_chars,
         skill_listing_strategy.as_str().to_string(),
@@ -2365,6 +2371,7 @@ async fn agent_settings_save_handler(
             state.tool_timeout_secs.store(tool_timeout_secs, Ordering::SeqCst);
             state.max_tool_retries.store(max_tool_retries, Ordering::SeqCst);
             state.trim_redundant_tool_calls.store(trim_redundant_tool_calls, Ordering::SeqCst);
+            state.knowledge_pre_retrieval.store(knowledge_pre_retrieval, Ordering::SeqCst);
             state.enable_context_scaling.store(enable_context_scaling, Ordering::SeqCst);
             state.max_inline_chars.store(max_inline_chars, Ordering::SeqCst);
             state.skill_listing_strategy.store(skill_listing_strategy.index(), Ordering::SeqCst);
@@ -2382,6 +2389,7 @@ async fn agent_settings_save_handler(
                 "tool_timeout_secs": tool_timeout_secs,
                 "max_tool_retries": max_tool_retries,
                 "trim_redundant_tool_calls": trim_redundant_tool_calls,
+                "knowledge_pre_retrieval": knowledge_pre_retrieval,
                 "enable_context_scaling": enable_context_scaling,
                 "max_inline_chars": max_inline_chars,
                 "skill_listing_strategy": skill_listing_strategy.as_str().to_string(),

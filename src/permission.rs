@@ -173,12 +173,16 @@ impl PermissionChecker {
             pending.insert(request_id.clone(), tx_resp);
         }
 
+        // Plain-language one-line explanation of what this action does, so the
+        // user can approve/deny without reading a wall of raw code.
+        let explanation = explain_tool_call(tool_name, &args);
         // Emit permission_request event to client
         let event = AgentEvent::permission_request(
             &request_id,
             tool_name,
             category,
             args.clone(),
+            &explanation,
             &self.invocation_id,
             &self.author,
         );
@@ -237,4 +241,140 @@ fn detect_intent_category(tool_name: &str, args: &Value) -> Option<&'static str>
         Verb::Format => Some("modify"),
         _ => None,
     }
+}
+
+/// Produce a concise, plain-language one-line explanation of what executing
+/// `tool_name` with `args` does, so a user reviewing a permission gate can
+/// approve/deny without reading a wall of raw code. Text is Chinese to match
+/// the default UI language.
+pub fn explain_tool_call(tool_name: &str, args: &Value) -> String {
+    let field = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    // ---------- Arbitrary code execution ----------
+    if tool_name == "shell_exec" || tool_name == "app_launch" {
+        let cmd = field("command")
+            .or_else(|| field("program"))
+            .or_else(|| field("app"))
+            .or_else(|| field("cmd"))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !cmd.is_empty() {
+            let purpose = explain_shell_command(&cmd);
+            return format!("用途：{}；命令：{}", purpose, trim_str(&cmd, 120));
+        }
+        let kind = if tool_name == "app_launch" { "程序" } else { "Shell 命令" };
+        return format!("执行一条 {}（参数未注明）", kind);
+    }
+
+    // ---------- File / path operations ----------
+    match tool_name {
+        "file_read" => return format!("读取文件：{}", field("path").as_deref().unwrap_or("?")),
+        "file_write" => return format!("写入文件：{}", field("path").as_deref().unwrap_or("?")),
+        "file_modify" => return format!("修改文件：{}", field("path").as_deref().unwrap_or("?")),
+        "file_delete" => return format!("删除文件：{}", field("path").as_deref().unwrap_or("?")),
+        "file_list" => return format!("列出目录：{}", field("path").as_deref().unwrap_or("?")),
+        _ => {}
+    }
+
+    // ---------- Network ----------
+    if tool_name == "web_fetch" || tool_name == "browser_open" || tool_name == "browser_cdp" {
+        if let Some(url) = field("url") {
+            if !url.trim().is_empty() {
+                return format!("访问网页：{}", trim_str(url.trim(), 140));
+            }
+        }
+    }
+
+    // ---------- Generic fallback ----------
+    let action = match tool_category(tool_name) {
+        "read" => "读取/查询",
+        "write" => "写入",
+        "delete" => "删除",
+        "modify" => "修改",
+        _ => "执行",
+    };
+    let tool = tool_name.replace('_', " ");
+    let details = summarize_args(args);
+    format!("{}操作：{}{}", action, tool, details)
+}
+
+fn trim_str(s: &str, n: usize) -> String {
+    if s.chars().count() > n {
+        let t: String = s.chars().take(n).collect();
+        format!("{}…", t)
+    } else {
+        s.to_string()
+    }
+}
+
+/// Summarize a couple of key (non-code) parameters for the fallback message.
+fn summarize_args(args: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(obj) = args.as_object() {
+        for (k, v) in obj.iter() {
+            if matches!(k.as_str(), "command" | "args" | "arguments" | "content" | "prompt") {
+                continue;
+            }
+            if let Some(s) = v.as_str() {
+                if !s.is_empty() {
+                    parts.push(format!("{}={}", k, trim_str(s, 60)));
+                    if parts.len() >= 2 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("（{}）", parts.join("，"))
+    }
+}
+
+/// Best-effort plain-language description of a shell command's purpose.
+/// Ordered longest/most-specific first so specific matches win.
+fn explain_shell_command(cmd: &str) -> String {
+    let c = cmd.trim();
+    let lower = c.to_lowercase();
+    const PAIRS: &[(&str, &str)] = &[
+        ("Get-NetIPConfiguration", "查看网络配置"),
+        ("Get-Volume", "查看磁盘卷信息"),
+        ("Get-PSDrive", "查看驱动器/磁盘容量信息"),
+        ("wmic logicaldisk", "查看磁盘容量信息"),
+        ("Get-NetTCPConnection", "查看网络连接"),
+        ("Get-ItemProperty", "读取注册表或对象属性"),
+        ("Get-WinEvent", "查询事件日志"),
+        ("wevtutil", "查询/导出事件日志"),
+        ("gpresult", "查看组策略结果"),
+        ("query user", "查看当前登录用户"),
+        ("ipconfig", "查看网络配置"),
+        ("netstat", "查看网络连接"),
+        ("Get-Process", "查看进程信息"),
+        ("tasklist", "查看进程列表"),
+        ("Get-Service", "查询服务状态"),
+        ("sc query", "查询服务状态"),
+        ("Get-ChildItem", "列出目录/文件"),
+        ("Get-Content", "读取文件内容"),
+        ("type ", "读取文件内容"),
+        ("systeminfo", "查看系统信息"),
+        ("whoami", "查看当前用户"),
+        ("Get-CimInstance", "查询系统/硬件信息"),
+        ("reg query", "查询注册表"),
+        ("quser", "查看登录用户"),
+        ("auditpol", "查看/修改审核策略"),
+        ("ping", "测试网络连通性"),
+        ("curl", "请求/抓取网页或接口"),
+        ("invoke-webrequest", "请求网页/接口"),
+        ("git ", "执行 Git 操作"),
+        ("dir ", "列出目录/文件"),
+    ];
+    for (needle, purpose) in PAIRS {
+        if lower.contains(needle) {
+            return purpose.to_string();
+        }
+    }
+    let first = c.split_whitespace().next().unwrap_or(c).to_string();
+    format!("执行命令 {}", first)
 }

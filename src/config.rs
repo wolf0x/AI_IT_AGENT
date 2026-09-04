@@ -33,6 +33,10 @@ pub struct AgentConfig {
     /// Narrow, conservative guard: only exact-duplicate calls are removed.
     #[serde(default = "default_trim_redundant_tool_calls")]
     pub trim_redundant_tool_calls: bool,
+    /// Pre-retrieve relevant knowledge pointers each turn and inject them into
+    /// the prompt so the model answers from stored knowledge (default on).
+    #[serde(default = "default_knowledge_pre_retrieval")]
+    pub knowledge_pre_retrieval: bool,
     /// Context window usage threshold percentage (default: 80 = trim at 80% of model context)
     #[serde(default = "default_context_window_threshold")]
     pub context_window_threshold: usize,
@@ -206,6 +210,7 @@ impl Default for Config {
                 max_iterations: default_max_iterations(),
                 rabbit_hole_threshold: default_rabbit_hole_threshold(),
                 trim_redundant_tool_calls: default_trim_redundant_tool_calls(),
+                knowledge_pre_retrieval: default_knowledge_pre_retrieval(),
                 context_window_threshold: default_context_window_threshold(),
                 enable_context_scaling: default_enable_context_scaling(),
                 max_inline_chars: default_max_inline_chars(),
@@ -244,7 +249,11 @@ fn default_workspace_dir() -> String {
 }
 fn default_max_iterations() -> usize { 100 }
 fn default_rabbit_hole_threshold() -> usize { 5 }
-fn default_trim_redundant_tool_calls() -> bool { true }
+    // Off by default: the "final text + trailing duplicate tool call" heuristic has
+    // mis-dropped legitimate continuation tool calls (e.g. safe retries after a state
+    // change or a failed read), ending a run early. Keep the Settings switch to opt in.
+fn default_trim_redundant_tool_calls() -> bool { false }
+fn default_knowledge_pre_retrieval() -> bool { true }
 fn default_context_window() -> usize { 128000 }
 fn default_context_window_threshold() -> usize { 80 }
 fn default_enable_context_scaling() -> bool { true }
@@ -418,7 +427,8 @@ workspace_dir = "%USERPROFILE%\\.RustAgent\\Workspace"
 working_dir = "."
 max_iterations = 100
 rabbit_hole_threshold = 5
-trim_redundant_tool_calls = true
+trim_redundant_tool_calls = false  # Off by default (see fn default_trim_redundant_tool_calls)
+knowledge_pre_retrieval = true   # per-turn knowledge pointer pre-injection (default on)
 context_window_threshold = 80
 # Raise per-tool inline caps with the model's context window (default: true)
 enable_context_scaling = true
@@ -481,6 +491,7 @@ timezone_offset = 8
         tool_timeout_secs: usize,
         max_tool_retries: usize,
         trim_redundant_tool_calls: bool,
+        knowledge_pre_retrieval: bool,
         enable_context_scaling: bool,
         max_inline_chars: usize,
         skill_listing_strategy: String,
@@ -498,6 +509,7 @@ timezone_offset = 8
         config.agent.tool_timeout_secs = tool_timeout_secs;
         config.agent.max_tool_retries = max_tool_retries;
         config.agent.trim_redundant_tool_calls = trim_redundant_tool_calls;
+        config.agent.knowledge_pre_retrieval = knowledge_pre_retrieval;
         config.agent.enable_context_scaling = enable_context_scaling;
         config.agent.max_inline_chars = max_inline_chars;
         config.agent.skill_listing_strategy = skill_listing_strategy;

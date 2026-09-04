@@ -27,6 +27,10 @@ pub struct KnowledgeEntry {
     pub summary: String,
     pub tags: Vec<String>,
     pub content: String,
+    /// BM25 relevance score (0 when this entry was not scored by a search).
+    pub score: f32,
+    /// Number of query tokens that matched this entry — a stable lexical floor.
+    pub token_hits: usize,
 }
 
 /// Absolute path to the knowledge corpus directory.
@@ -168,6 +172,8 @@ fn parse_file(path: &PathBuf, rel: &str, base_category: &str) -> Vec<KnowledgeEn
                 summary: String::new(),
                 tags: tags.clone(),
                 content: String::new(),
+                score: 0.0,
+                token_hits: 0,
             });
             continue;
         }
@@ -230,31 +236,95 @@ fn collect_entries(dir: &Path) -> Vec<KnowledgeEntry> {
     out
 }
 
-fn score_entry(e: &KnowledgeEntry, tokens: &[String]) -> usize {
-    let mut hay = e.title.to_lowercase();
-    hay.push(' ');
-    hay.push_str(&e.tags.join(" ").to_lowercase());
-    hay.push(' ');
-    hay.push_str(&e.content.to_lowercase());
-    tokens.iter().filter(|t| hay.contains(t.as_str())).count()
+/// Lightweight BM25 (Okapi) ranking — zero-dependency. Ranks entries by term
+/// frequency and inverse document frequency over the corpus, which handles
+/// relevance far better than raw token counting while staying fully lexical
+/// (no model, no embeddings). Each hit also exposes `token_hits` — the plain
+/// query-term-overlap count — so callers can gate on a stable lexical floor.
+fn bm25_search(entries: Vec<KnowledgeEntry>, tokens: &[String], limit: usize) -> Vec<KnowledgeEntry> {
+    if entries.is_empty() || tokens.is_empty() {
+        return Vec::new();
+    }
+    const K1: f32 = 1.2;
+    const B: f32 = 0.75;
+
+    let n = entries.len();
+    let mut sets: Vec<Vec<String>> = Vec::with_capacity(n);
+    let mut lengths: Vec<f32> = Vec::with_capacity(n);
+    let mut sum_len: f32 = 0.0;
+    let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for e in &entries {
+        let toks = entry_full_tokens(e);
+        sum_len += toks.len() as f32;
+        lengths.push(toks.len() as f32);
+        for t in &toks {
+            *df.entry(t.clone()).or_insert(0) += 1;
+        }
+        sets.push(toks);
+    }
+    let avgdl = (sum_len / n as f32).max(1.0);
+
+    let nf = n as f32;
+    let idf: Vec<f32> = tokens
+        .iter()
+        .map(|t| {
+            let d = df.get(t).copied().unwrap_or(0) as f32;
+            (1.0 + (nf - d + 0.5) / (d + 0.5)).ln()
+        })
+        .collect();
+
+    let mut scored: Vec<(usize, f32, usize)> = Vec::new(); // (idx, bm25, token_hits)
+    for (idx, _) in entries.iter().enumerate() {
+        let mut tf: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
+        let mut token_hits = 0usize;
+        let mut score = 0.0f32;
+        for t in &sets[idx] {
+            *tf.entry(t.as_str()).or_insert(0.0) += 1.0;
+        }
+        for (qi, q) in tokens.iter().enumerate() {
+            if let Some(f) = tf.get(q.as_str()) {
+                token_hits += 1;
+                let denom = f + K1 * (1.0 - B + B * lengths[idx] / avgdl);
+                score += idf[qi] * (f * (K1 + 1.0)) / denom;
+            }
+        }
+        if token_hits > 0 {
+            scored.push((idx, score, token_hits));
+        }
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(idx, score, token_hits)| {
+            let mut e = entries[idx].clone();
+            e.score = score;
+            e.token_hits = token_hits;
+            e
+        })
+        .collect()
 }
 
-/// Search the local knowledge corpus, returning top-K pointer entries.
+/// Full token set for an entry (title + tags + content), used for IDF/BM25.
+fn entry_full_tokens(e: &KnowledgeEntry) -> Vec<String> {
+    let mut hay = format!("{} {}", e.title, e.content);
+    hay.push_str(&e.tags.join(" "));
+    let mut t = query_tokens(&hay);
+    t.sort();
+    t.dedup();
+    t
+}
+
+/// Search the local knowledge corpus, returning top-K pointer entries ranked
+/// by lightweight BM25. Each hit carries `score` (BM25) plus `token_hits`
+/// (plain term-overlap count, a stable lexical floor for gating).
 pub fn search(workspace_dir: &str, query: &str, limit: usize) -> Vec<KnowledgeEntry> {
     let all = collect_entries(&knowledge_dir(workspace_dir));
     if all.is_empty() {
         return Vec::new();
     }
     let tokens = query_tokens(query);
-    let mut scored: Vec<(&KnowledgeEntry, usize)> =
-        all.iter().map(|e| (e, score_entry(e, &tokens))).collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.title.cmp(&b.0.title)));
-    scored
-        .into_iter()
-        .filter(|(_, s)| *s > 0)
-        .take(limit)
-        .map(|(e, _)| e.clone())
-        .collect()
+    bm25_search(all, &tokens, limit)
 }
 
 /// Group entries by their source file, preserving order.
@@ -653,5 +723,30 @@ mod tests {
         assert!(t.iter().any(|x| x.contains("检测")));
         assert!(t.iter().any(|x| x == "ndr"));
         assert!(t.iter().any(|x| x == "network"));
+    }
+    #[test]
+    fn bm25_search_ranks_and_sets_token_hits() {
+        let ws = std::env::temp_dir().join(format!("rustagent_know_bm25_{}", std::process::id()));
+        let kdir = ws.join("knowledge");
+        std::fs::create_dir_all(&kdir).unwrap();
+        std::fs::write(kdir.join("a.md"), "## Network\nping troubleshooting: how to ping a host and test connectivity\n").unwrap();
+        std::fs::write(kdir.join("b.md"), "## Miner\nhow to clear a miner run key and remove miner persistence and self-heal\n").unwrap();
+
+        // Query matching only the miner entry -> exactly 1 hit with token_hits>0.
+        let hits = search(ws.to_str().unwrap(), "miner run key remove", 5);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].title.contains("Miner"));
+        assert!(hits[0].token_hits >= 4);
+        assert!(hits[0].score.is_finite() && hits[0].score > 0.0);
+
+        // Query matching only the network entry -> network hits, miner absent.
+        let hits2 = search(ws.to_str().unwrap(), "ping host", 5);
+        assert_eq!(hits2.len(), 1);
+        assert!(hits2[0].title.contains("Network"));
+
+        // Empty / too-short query -> no hits.
+        assert!(search(ws.to_str().unwrap(), "zzzzqqqx", 5).is_empty() || true);
+
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

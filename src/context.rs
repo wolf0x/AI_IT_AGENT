@@ -212,6 +212,10 @@ pub struct InvocationContext {
     /// executed this session are dropped if the model has produced a final
     /// text answer (guarded by config).
     pub trim_redundant_tool_calls: bool,
+    /// When true, the agent pre-retrieves relevant knowledge pointers each
+    /// user turn and injects them so it answers from stored knowledge without
+    /// having to remember to call knowledge_search first (default on).
+    pub knowledge_pre_retrieval: bool,
     /// Model context window size in tokens
     pub context_window: usize,
     /// Context usage threshold percentage (e.g. 80 = trim at 80%)
@@ -279,7 +283,8 @@ impl InvocationContext {
             fallback_model: None,
             max_iterations,
             rabbit_hole_threshold: 5,
-            trim_redundant_tool_calls: true,
+            trim_redundant_tool_calls: false, // Off by default; opt in via Settings to avoid dropping legitimate follow-up tool calls
+            knowledge_pre_retrieval: true,
             context_window: 128000,
             context_window_threshold: 80,
             enable_context_scaling: true,
@@ -341,6 +346,12 @@ impl InvocationContext {
     /// text answer.
     pub fn with_trim_redundant_tool_calls(mut self, v: bool) -> Self {
         self.trim_redundant_tool_calls = v;
+        self
+    }
+
+    /// Enable/disable per-turn knowledge pre-retrieval pointer injection.
+    pub fn with_knowledge_pre_retrieval(mut self, v: bool) -> Self {
+        self.knowledge_pre_retrieval = v;
         self
     }
 

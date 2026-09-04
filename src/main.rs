@@ -488,6 +488,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // final text answer. Shared between the Runner and AppState so the Settings
     // toggle takes effect at runtime without a restart.
     let trim_redundant_tool_calls = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.trim_redundant_tool_calls));
+    // Per-turn knowledge pre-retrieval pointer injection (Settings toggle).
+    let knowledge_pre_retrieval = Arc::new(std::sync::atomic::AtomicBool::new(config.agent.knowledge_pre_retrieval));
 
     // Shared hot-reloadable settings for context-scaled inline result caps. Mirrored
     // into the RunnerBuilder and AppState so Settings changes apply at runtime.
@@ -509,6 +511,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .checkpointer(checkpointer)
         .app_name("RustAgent")
         .trim_redundant_tool_calls(trim_redundant_tool_calls.clone())
+        .knowledge_pre_retrieval(knowledge_pre_retrieval.clone())
         .enable_context_scaling(enable_context_scaling.clone())
         .max_inline_chars(max_inline_chars.clone())
         .skill_listing_strategy(skill_listing_strategy.clone())
@@ -667,6 +670,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tool_timeout_secs: Arc::new(AtomicUsize::new(config.agent.tool_timeout_secs)),
         max_tool_retries: Arc::new(AtomicUsize::new(config.agent.max_tool_retries)),
         trim_redundant_tool_calls: trim_redundant_tool_calls.clone(),
+        knowledge_pre_retrieval: knowledge_pre_retrieval.clone(),
         enable_context_scaling: enable_context_scaling.clone(),
         max_inline_chars: max_inline_chars.clone(),
         skill_listing_strategy: skill_listing_strategy.clone(),

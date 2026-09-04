@@ -34,6 +34,7 @@ pub struct Runner {
     app_name: String,
     checkpointer: Option<ATaskCheckpointer>,
     trim_redundant_tool_calls: Arc<AtomicBool>,
+    knowledge_pre_retrieval: Arc<AtomicBool>,
     enable_context_scaling: Arc<AtomicBool>,
     max_inline_chars: Arc<AtomicUsize>,
     skill_listing_strategy: Arc<AtomicUsize>,
@@ -49,6 +50,7 @@ pub struct RunnerBuilder {
     logger: Option<Arc<ConversationLogger>>,
     app_name: String,
     checkpointer: Option<ATaskCheckpointer>,
+    knowledge_pre_retrieval: Arc<AtomicBool>,
     trim_redundant_tool_calls: Arc<AtomicBool>,
     enable_context_scaling: Arc<AtomicBool>,
     max_inline_chars: Arc<AtomicUsize>,
@@ -67,6 +69,7 @@ impl RunnerBuilder {
             app_name: "RustAgent".to_string(),
             checkpointer: None,
             trim_redundant_tool_calls: Arc::new(AtomicBool::new(true)),
+            knowledge_pre_retrieval: Arc::new(AtomicBool::new(true)),
             enable_context_scaling: Arc::new(AtomicBool::new(true)),
             max_inline_chars: Arc::new(AtomicUsize::new(120_000)),
             skill_listing_strategy: Arc::new(AtomicUsize::new(0)),
@@ -103,6 +106,11 @@ impl RunnerBuilder {
 
     pub fn trim_redundant_tool_calls(mut self, v: Arc<AtomicBool>) -> Self {
         self.trim_redundant_tool_calls = v;
+        self
+    }
+
+    pub fn knowledge_pre_retrieval(mut self, v: Arc<AtomicBool>) -> Self {
+        self.knowledge_pre_retrieval = v;
         self
     }
 
@@ -150,6 +158,7 @@ impl RunnerBuilder {
             app_name: self.app_name,
             checkpointer: self.checkpointer,
             trim_redundant_tool_calls: self.trim_redundant_tool_calls,
+            knowledge_pre_retrieval: self.knowledge_pre_retrieval,
             enable_context_scaling: self.enable_context_scaling,
             max_inline_chars: self.max_inline_chars,
             skill_listing_strategy: self.skill_listing_strategy,
@@ -209,6 +218,7 @@ impl Runner {
          .with_fallback_model(fallback_model)
          .with_rabbit_hole_threshold(rabbit_hole_threshold)
          .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls.load(Ordering::SeqCst))
+         .with_knowledge_pre_retrieval(self.knowledge_pre_retrieval.load(Ordering::SeqCst))
          .with_context_window(context_window)
          .with_context_window_threshold(context_window_threshold)
          .with_enable_context_scaling(self.enable_context_scaling.load(Ordering::SeqCst))
@@ -277,6 +287,7 @@ impl Runner {
             .with_permission_pending(permission_pending)
             .with_rabbit_hole_threshold(params.rabbit_hole_threshold)
             .with_trim_redundant_tool_calls(self.trim_redundant_tool_calls.load(Ordering::SeqCst))
+            .with_knowledge_pre_retrieval(self.knowledge_pre_retrieval.load(Ordering::SeqCst))
             .with_context_window(params.context_window)
             .with_context_window_threshold(params.context_window_threshold)
             .with_enable_context_scaling(self.enable_context_scaling.load(Ordering::SeqCst))

@@ -313,6 +313,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 /* Permission Request Card */
 .perm-request{border:2px solid #e67e22;border-radius:var(--rs);margin:10px 0;overflow:visible;animation:fadeIn .3s;background:#fffaf3;display:block}
 .perm-request .perm-req-hdr{padding:10px 14px;background:linear-gradient(135deg,#fef5e7,#fdebd0);font-size:13px;font-weight:700;color:#c0702a;display:flex;align-items:center;gap:6px;border-bottom:1px solid #f5d6a8}
+.perm-request .perm-req-purpose{padding:8px 14px;font-size:12.5px;color:#8a5a12;background:#fef9ee;border-bottom:1px solid #f5d6a8;line-height:1.5}
 .perm-request .perm-req-body{padding:12px 14px;font-size:13px;color:var(--t1)}
 .perm-request .perm-req-body b{color:var(--t1);font-weight:700}
 .perm-request .perm-req-body .perm-cat{font-size:11px;background:#fdebd0;color:#c0702a;padding:2px 8px;border-radius:10px;margin-left:8px;font-weight:600}
@@ -841,6 +842,16 @@ input:checked+.slider:before{transform:translateX(20px)}
             </div>
             <label class="perm-toggle">
               <input type="checkbox" id="trimRedundantInput" onchange="saveAgentSettings()">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <label style="margin-bottom:0">Knowledge Pre-Retrieval</label>
+              <small style="color:var(--t3)">Auto-inject relevant knowledge pointers each turn so the agent answers from stored knowledge (default on)</small>
+            </div>
+            <label class="perm-toggle">
+              <input type="checkbox" id="knowledgePreInput" onchange="saveAgentSettings()">
               <span class="slider"></span>
             </label>
           </div>
@@ -2234,6 +2245,7 @@ async function loadModels(){
     if(d.rabbit_hole_threshold) document.getElementById('rabbitHoleInput').value = d.rabbit_hole_threshold;
     if(d.tool_timeout_secs) document.getElementById('toolTimeoutInput').value = d.tool_timeout_secs;
     if(typeof d.trim_redundant_tool_calls==='boolean') document.getElementById('trimRedundantInput').checked=d.trim_redundant_tool_calls;
+    if(typeof d.knowledge_pre_retrieval==='boolean') document.getElementById('knowledgePreInput').checked=d.knowledge_pre_retrieval;
     if(typeof d.enable_context_scaling==='boolean') document.getElementById('inlineScalingInput').checked=d.enable_context_scaling;
     if(d.max_inline_chars !== undefined) document.getElementById('maxInlineCharsInput').value = d.max_inline_chars;
     if(d.max_tool_retries !== undefined) document.getElementById('toolMaxRetriesInput').value = d.max_tool_retries;
@@ -3112,6 +3124,7 @@ function saveAgentSettings(){
   const toolTimeout=parseInt(document.getElementById('toolTimeoutInput').value)||300;
   const toolMaxRetries=parseInt(document.getElementById('toolMaxRetriesInput').value)||2;
   const trimRedundant=document.getElementById('trimRedundantInput').checked;
+  const knowledgePreRetrieval=document.getElementById('knowledgePreInput').checked;
   const enableContextScaling=document.getElementById('inlineScalingInput').checked;
   const maxInlineChars=parseInt(document.getElementById('maxInlineCharsInput').value)||120000;
   fetch('/api/settings/agent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
@@ -3121,6 +3134,7 @@ function saveAgentSettings(){
     tool_timeout_secs:toolTimeout,
     max_tool_retries:toolMaxRetries,
     trim_redundant_tool_calls:trimRedundant,
+    knowledge_pre_retrieval:knowledgePreRetrieval,
     enable_context_scaling:enableContextScaling,
     max_inline_chars:maxInlineChars
   })})
@@ -3216,6 +3230,7 @@ function renderPermRequest(msg){
       else if(argsObj.app||argsObj.program)summary+=' Application: <code>'+esc(argsObj.app||argsObj.program)+'</code>';
     }catch(e){}
   }
+  if(msg.explanation){summary+=' <span style="color:#8a5a12">—— '+esc(msg.explanation)+'</span>';}
   agentMsg.innerHTML=''+asstPrefix()+'<div class="msg-content md-content">'+summary+'</div><div class="msg-time">'+nowTimeStr()+'</div></div>';
   conv.appendChild(agentMsg);
   // Add permission card
@@ -3225,6 +3240,7 @@ function renderPermRequest(msg){
   const argsStr=typeof msg.args==='string'?msg.args:JSON.stringify(msg.args,null,2);
   card.innerHTML=
     '<div class="perm-req-hdr">&#9888;&#65039; Permission Required</div>'+
+    (msg.explanation?'<div class="perm-req-purpose">'+esc(msg.explanation)+'</div>':'')+
     '<div class="perm-req-body">'+
       '<div>Tool: <b>'+esc(msg.tool_name)+'</b><span class="perm-cat">'+esc(msg.category)+'</span></div>'+
       '<pre>'+esc(argsStr)+'</pre>'+

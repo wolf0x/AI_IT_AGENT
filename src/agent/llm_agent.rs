@@ -398,6 +398,46 @@ impl LlmAgent {
         out
     }
 
+    /// Deterministic per-turn knowledge pre-retrieval (thClaws-KMS pattern).
+    /// Searches the local knowledge base with the current user message and
+    /// returns a short pointer block (file + title + line + summary) for the
+    /// top matches, so the model answers from stored knowledge without needing
+    /// to remember to call `knowledge_search` first. Returns `None` when the
+    /// query is too short or nothing clears the relevance floor (token_hits).
+    fn build_knowledge_reminder(&self, query: &str) -> Option<String> {
+        let q: String = query.trim().chars().take(300).collect();
+        if q.chars().count() < 4 {
+            return None;
+        }
+        let hits = crate::knowledge::search(&self.workspace_dir, &q, 3);
+        if hits.is_empty() {
+            return None;
+        }
+        let list: Vec<String> = hits
+            .iter()
+            .map(|h| {
+                let loc = if h.line > 0 {
+                    format!(":{}", h.line)
+                } else {
+                    String::new()
+                };
+                let summ: String = if h.summary.is_empty() {
+                    h.title.clone()
+                } else {
+                    h.summary.chars().take(90).collect()
+                };
+                format!("- `{}{}` — {}", h.file, loc, summ)
+            })
+            .collect();
+        Some(format!(
+            "\n\n## Relevant knowledge (auto-matched to this message)\n\
+             These knowledge-base entries may cover the current task. **Before answering, \
+             read the most relevant one(s)** via `knowledge_search` / `file_read` and answer \
+             from them. If none actually apply, ignore this block and answer normally.\n\n{}",
+            list.join("\n")
+        ))
+    }
+
     fn build_system_prompt(&self, user_message: &str, history: &[ChatMessage], skill_strategy: crate::skill::SkillListingStrategy, skill_max_inline_chars: usize, skill_catalog_max: usize, skill_hot_top_k: usize) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d (%A)").to_string();
         
@@ -1042,6 +1082,12 @@ impl Agent for LlmAgent {
         let fallback_model = ctx.fallback_model.clone();
         let rabbit_hole_threshold = ctx.rabbit_hole_threshold;
         let trim_redundant_tool_calls = ctx.trim_redundant_tool_calls;
+        let knowledge_pre_retrieval = ctx.knowledge_pre_retrieval;
+        let knowledge_reminder: Option<String> = if knowledge_pre_retrieval {
+            self.build_knowledge_reminder(&user_message)
+        } else {
+            None
+        };
         let tool_timeout_secs = ctx.tool_timeout_secs;
         let max_tool_retries = ctx.max_tool_retries;
         let context_window = ctx.context_window;
@@ -1117,6 +1163,12 @@ impl Agent for LlmAgent {
                     effective_system_prompt.push_str(block);
                     effective_system_prompt.push_str("\n");
                 }
+            }
+
+            // ── Knowledge pre-retrieval (per user turn) ──
+            if let Some(ref kblock) = knowledge_reminder {
+                info!("[session:{}] Injected knowledge pre-retrieval pointers", session_id);
+                effective_system_prompt.push_str(kblock);
             }
 
             // Account for system prompt size in the token budget.
