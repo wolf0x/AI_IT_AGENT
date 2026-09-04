@@ -107,6 +107,25 @@ pub fn list_files(workspace_dir: &str) -> Vec<String> {
     out
 }
 
+/// Re-scan the knowledge directory and return a fresh (files, preferred)
+/// snapshot, pruning preferred entries that point at files which no longer
+/// exist. Returns the cleaned preferred list (and persists it when changed) so
+/// the Knowledge page `Refresh` action keeps the mount list consistent after
+/// files are added/removed externally.
+pub fn refresh(workspace_dir: &str) -> (Vec<String>, Vec<String>) {
+    let files = list_files(workspace_dir);
+    let orig = load_preferred(workspace_dir);
+    let cleaned: Vec<String> = orig
+        .iter()
+        .filter(|p| files.iter().any(|f| f == *p))
+        .cloned()
+        .collect();
+    if cleaned != orig {
+        let _ = save_preferred(workspace_dir, &cleaned);
+    }
+    (files, cleaned)
+}
+
 /// Whether the given relative knowledge file is pinned for priority retrieval.
 pub fn is_preferred(workspace_dir: &str, rel: &str) -> bool {
     load_preferred(workspace_dir).iter().any(|p| p == rel)
@@ -744,12 +763,36 @@ pub fn build_index(workspace_dir: &str) -> Result<String, String> {
         }
     }
 
+    // ── Clean stale sidecars (.idx.md) whose source file no longer exists ──
+    let mut removed = 0usize;
+    let mut clean_stack: Vec<PathBuf> = vec![dir.clone()];
+    while let Some(d) = clean_stack.pop() {
+        let Ok(read) = std::fs::read_dir(&d) else { continue };
+        for e in read.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                clean_stack.push(p);
+                continue;
+            }
+            let fname = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if !fname.ends_with(".idx.md") {
+                continue;
+            }
+            let src_name = fname.trim_end_matches(".idx.md").to_string() + ".md";
+            let src_exists = p.parent().map(|pp| pp.join(&src_name).exists()).unwrap_or(false);
+            if !src_exists && std::fs::remove_file(&p).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+
     info!(
-        "[knowledge] rebuilt index: {} entries, {} sidecar(s)",
+        "[knowledge] rebuilt index: {} entries, {} sidecar(s), {} stale sidecar(s) removed",
         entries.len(),
-        sidecars
+        sidecars,
+        removed
     );
-    Ok(format!("{} entries, {} sidecars", entries.len(), sidecars))
+    Ok(format!("{} entries, {} sidecars, {} stale removed", entries.len(), sidecars, removed))
 }
 
 /// Make a file-stem-safe name from a title.

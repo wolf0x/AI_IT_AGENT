@@ -252,6 +252,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/knowledge", post(knowledge_create_handler))
         .route("/api/knowledge/preferred", post(knowledge_preferred_handler))
         .route("/api/knowledge/upload", post(knowledge_upload_handler))
+        .route("/api/knowledge/rebuild", post(knowledge_rebuild_handler))
+        .route("/api/knowledge/refresh", post(knowledge_refresh_handler))
         .route("/api/knowledge/{name}", delete(knowledge_delete_handler))
         .route("/api/memory/dates", get(memory_dates_handler))
         .route("/api/memory/summaries", get(memory_summaries_handler))
@@ -407,6 +409,36 @@ async fn knowledge_upload_handler(
         Ok(path) => Json(json!({ "success": true, "path": path })),
         Err(e) => Json(json!({ "success": false, "error": e })),
     }
+}
+
+/// POST /api/knowledge/rebuild — regenerate the global index and per-file
+/// sidecars from the current files in the knowledge directory.
+async fn knowledge_rebuild_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let ws = state.workspace_dir.clone();
+    match crate::knowledge::build_index(&ws) {
+        Ok(summary) => Json(json!({ "success": true, "summary": summary })),
+        Err(e) => Json(json!({ "success": false, "error": e })),
+    }
+}
+
+/// POST /api/knowledge/refresh — re-scan the knowledge directory and return a
+/// fresh (files, preferred) snapshot, pruning stale mounts, so the Knowledge
+/// page mount list reflects files added/removed externally.
+async fn knowledge_refresh_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let ws = state.workspace_dir.clone();
+    let (files, preferred) = crate::knowledge::refresh(&ws);
+    let items: Vec<Value> = files
+        .iter()
+        .map(|rel| {
+            let pinned = preferred.iter().any(|p| p == rel);
+            let title = std::path::Path::new(rel)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| rel.clone());
+            json!({ "rel": rel, "title": title, "preferred": pinned })
+        })
+        .collect();
+    Json(json!({ "files": items, "preferred": preferred, "count": items.len() }))
 }
 
 async fn index_handler(State(state): State<Arc<AppState>>) -> Response {
