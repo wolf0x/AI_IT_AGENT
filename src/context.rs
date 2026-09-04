@@ -231,6 +231,9 @@ pub struct InvocationContext {
     pub skill_hot_top_k: usize,
     /// Tool execution timeout in seconds
     pub tool_timeout_secs: u64,
+    /// Per-TODO-item timeout in seconds: an item left 'in_progress' longer than
+    /// this is auto-marked 'skipped' by the watchdog so the task can move on.
+    pub todo_item_timeout_secs: u64,
     /// Maximum automatic retries for retryable tool failures
     pub max_tool_retries: usize,
     /// Optional system prompt override (used for sub-agents). None = default prompt.
@@ -286,6 +289,7 @@ impl InvocationContext {
             skill_catalog_max: 40,
             skill_hot_top_k: 3,
             tool_timeout_secs: 300,
+            todo_item_timeout_secs: 600,
             max_tool_retries: 2,
             system_prompt_override: None,
             conversation_history: Vec::new(),
@@ -390,6 +394,13 @@ impl InvocationContext {
     /// Set tool execution timeout in seconds.
     pub fn with_tool_timeout_secs(mut self, secs: u64) -> Self {
         self.tool_timeout_secs = secs;
+        self
+    }
+
+    /// Set per-TODO-item timeout in seconds. Items left 'in_progress' longer
+    /// than this are auto-marked 'skipped' so the task can advance.
+    pub fn with_todo_item_timeout_secs(mut self, secs: u64) -> Self {
+        self.todo_item_timeout_secs = secs;
         self
     }
 

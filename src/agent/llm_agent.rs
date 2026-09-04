@@ -572,9 +572,9 @@ You have TWO ways to create scheduled tasks. You MUST distinguish between them:\
 
         // ── TODO Task Planning ──
         prompt.push_str(
-            "\n## Task Planning with TODO Lists\n\
+            "\n## Task Planning with TODO Lists (STRICT SEQUENTIAL CONTRACT)\n\
 When you receive a **complex, multi-step request** (3+ distinct steps), use the `todo_update` tool \
-to create a TODO list BEFORE starting work. This helps you track progress and avoid forgetting steps.\n\n\
+to create a TODO list BEFORE starting work. THEN process the items STRICTLY ONE AT A TIME, in order.\n\n\
 ### When to use:\n\
 - User asks you to do multiple things in one message\n\
 - A task requires sequential tool calls with dependencies\n\
@@ -582,13 +582,20 @@ to create a TODO list BEFORE starting work. This helps you track progress and av
 ### When NOT to use:\n\
 - Simple single-step requests ('what time is it?', 'open calculator')\n\
 - Quick questions that need one tool call at most\n\n\
-### How to use:\n\
-1. At the START of a complex task: call `todo_update` with action='set' and an items array\n\
-2. As you complete each step: call `todo_update` with action='update' to mark it 'completed'\n\
-3. When starting a step: mark it 'in_progress'\n\
-4. When entirely done: call `todo_update` with action='clear'\n\n\
+### MANDATORY sequential protocol (do NOT batch):\n\
+1. At the START: call `todo_update` action='set' with ALL items, each status 'pending', in the user's intended order.\n\
+2. Each work round processes EXACTLY ONE item, in list order 0,1,2,... — never multiple items per round.\n\
+   a. Mark that item 'in_progress' via `todo_update` action='update' (index = its position).\n\
+   b. Do ONLY that item's work, then stop that round.\n\
+   c. Mark it 'completed' via `todo_update` action='update'.\n\
+3. Start item N+1 ONLY after item N is 'completed'. Never skip ahead or reorder.\n\
+4. If an item is blocked/impossible, or its per-item timeout (see Current TASKS) is exceeded, mark it \
+'cancelled' (or the watchdog auto-marks it 'skipped') and continue to the next item.\n\
+5. When the LAST item is completed (all terminal: completed/cancelled/skipped), call `todo_update` action='clear'.\n\
+NEVER work on several items or all items in a single turn and summarize at the end — the user expects \
+progress to be visible item-by-item, with state synced after EACH step.\n\n\
 Example:\n\
-```json\n{\"name\": \"todo_update\", \"arguments\": {\"action\": \"set\", \"items\": [\n  {\"description\": \"Check disk space\", \"status\": \"in_progress\"},\n  {\"description\": \"List large files\", \"status\": \"pending\"},\n  {\"description\": \"Generate cleanup report\", \"status\": \"pending\"}\n]}}\n```\n",
+```json\n{\"name\": \"todo_update\", \"arguments\": {\"action\": \"set\", \"items\": [\n  {\"description\": \"Check disk space\", \"status\": \"pending\"},\n  {\"description\": \"List large files\", \"status\": \"pending\"},\n  {\"description\": \"Generate cleanup report\", \"status\": \"pending\"}\n]}}\n```\n"
         );
 
         // ── Workspace Configuration Files ──
@@ -724,8 +731,159 @@ You may have desktop control capabilities (cu_* tools). Use them ONLY when CLI t
         context
     }
 
-    /// Read a file from the workspace directory. Returns None if missing or empty.
-    /// If the file exceeds `max_chars`, it is truncated and the flag is set.
+    /// Build the injected "Current TASKS" context block from `todos.json`.
+    /// Returns `None` when the workspace has no list, so nothing is injected.
+    /// The block makes the TODO list the main session's task contract and
+    /// embeds the three fuses (priority / continue-after-stop / auto-clear).
+    fn build_todo_context_block(workspace_dir: &str, todo_item_timeout_secs: u64) -> Option<String> {
+        if workspace_dir.is_empty() {
+            return None;
+        }
+        let path = std::path::Path::new(workspace_dir).join("todos.json");
+        let raw = std::fs::read_to_string(&path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let items = root.get("items")?.as_array()?;
+        if items.is_empty() {
+            return None;
+        }
+        let mut total: usize = 0;
+        let mut done: usize = 0;
+        let mut has_unfinished = false;
+        let mut lines = String::new();
+        for (i, item) in items.iter().enumerate() {
+            let desc = item.get("description").and_then(|d| d.as_str()).unwrap_or("");
+            let status = item.get("status").and_then(|s| s.as_str()).unwrap_or("pending");
+            total += 1;
+            if status == "completed" {
+                done += 1;
+            } else if status != "cancelled" && status != "skipped" {
+                has_unfinished = true;
+            }
+            lines.push_str(&format!("{}. [{}] {}\n", i, status, desc));
+        }
+        if total == 0 {
+            return None;
+        }
+        let mut s = format!(
+            "\n## Current TASKS (TODO — your active task contract)\n\
+            You are currently tracking a {} -item task list ({}/{} completed, {} unfinished). Process the items STRICTLY ONE AT A TIME, in list order, never batching them into a single round.\n{}",
+            total, done, total, total - done, lines
+        );
+        s.push_str(&format!("Rules:\n\
+1. The user's CURRENT message always has highest priority. If it clearly starts a new task (a different / much larger request, or an explicit 'stop TODO'/'new task'), treat the new message as the active task; handle it, then RETURN to this unfinished list unless you are told to detach.\n\
+2. Progress ONE item at a time, in list order: mark it 'in_progress' -> do its work -> mark it 'completed'. You MAY verify and mark a LATER item 'completed' if it is already fully done, but keep working on the current item in list order.\n\
+3. Start the next pending item only after the current one is 'completed'/'cancelled'/'skipped'; this allows marking an already-finished later step without skipping the current one.\n\
+4. Each item has a {}-second timeout. A still-'in_progress' item past that is auto-marked 'skipped' by the watchdog; if you deem an item blocked, mark it 'cancelled'. In both cases move on to the next item.\n\
+5. Before declaring the whole list finished, call `todo_update` action='list' and verify EVERY item actually delivered its intended output. If any is only partially done, set it back to 'pending'/'in_progress' and redo it. Only when all items are verified terminal (completed/cancelled/skipped) call `todo_update` action='clear' to close the contract. To permanently detach from the old list, 'clear' it or tell the user you are no longer following that TODO.\n", todo_item_timeout_secs));
+        if has_unfinished {
+            s.push_str("\n*[Note: the previous task was not completed — continue following it (item-by-item) unless the user's current message clearly overrides it.]*\n");
+        }
+        Some(s)
+    }
+
+
+    /// Per-item timeout watchdog. For the main session, scans `todos.json`
+    /// and marks the first still-'in_progress' item 'skipped' once it has been
+    /// running longer than `timeout_secs` (using its `started_at` stamp), then
+    /// returns a short note to inject into the next model turn so it advances.
+    fn apply_todo_timeout(workspace_dir: &str, timeout_secs: u64) -> Option<String> {
+        if workspace_dir.is_empty() {
+            return None;
+        }
+        let path = std::path::Path::new(workspace_dir).join("todos.json");
+        let raw = std::fs::read_to_string(&path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let items = root.get("items")?.as_array()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Scan for ALL still-'in_progress' items that have exceeded their timeout.
+        let mut overdue: Vec<(usize, String)> = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            let status = item.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if status == "in_progress" {
+                let started = item.get("started_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                if started > 0 && now.saturating_sub(started) >= timeout_secs {
+                    let desc = item.get("description").and_then(|d| d.as_str()).unwrap_or("(item)").to_string();
+                    overdue.push((i, desc));
+                }
+            }
+        }
+        if overdue.is_empty() {
+            return None;
+        }
+        // Re-open mutably to mark every overdue item 'skipped'.
+        if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(ref mut items) = root.get_mut("items").and_then(|v| v.as_array_mut()) {
+                for (idx, _) in &overdue {
+                    if let Some(it) = items.get_mut(*idx) {
+                        it["status"] = serde_json::json!("skipped");
+                        it["started_at"] = serde_json::Value::Null;
+                    }
+                }
+            }
+            if let Ok(ser) = serde_json::to_string_pretty(&root) {
+                let _ = std::fs::write(&path, ser);
+            }
+        }
+        let names: Vec<&str> = overdue.iter().map(|(_, d)| d.as_str()).collect();
+        Some(format!(
+            "[TODO watchdog] {} item(s) exceeded the {}-second timeout and were auto-marked 'skipped': {}. Continue with the next unfinished item.",
+            overdue.len(),
+            timeout_secs,
+            names.join("; ")
+        ))
+    }
+
+    /// True if the session history already contains a `todo_update` call/result
+    /// (assistant tool call or tool-result with that tool name). Used to avoid
+    /// re-injecting a full stale snapshot when the model already has live TODO
+    /// context, while still emitting a lightweight reminder on resume.
+    fn history_has_todo(history: &[ChatMessage]) -> bool {
+        history.iter().any(|m| {
+            if m.role == "tool" {
+                m.name.as_deref() == Some("todo_update")
+            } else if m.role == "assistant" {
+                m.tool_calls.as_ref().map_or(false, |calls| {
+                    calls.iter().any(|c| c.function.name.as_deref() == Some("todo_update"))
+                })
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Build a lightweight one-line reminder (no full item dump) when the model
+    /// already has TODO context but the list is still active. Returns None if
+    /// `todos.json` is absent/empty. Pointer
+    fn build_todo_reminder(workspace_dir: &str) -> Option<String> {
+        if workspace_dir.is_empty() {
+            return None;
+        }
+        let path = std::path::Path::new(workspace_dir).join("todos.json");
+        let raw = std::fs::read_to_string(&path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let items = root.get("items")?.as_array()?;
+        if items.is_empty() {
+            return None;
+        }
+        let total = items.len();
+        let unfinished_count = items.iter().filter(|it| {
+            let s = it.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            s != "completed" && s != "cancelled" && s != "skipped"
+        }).count();
+        Some(format!(
+            "\n## Current TASKS (active)\nYou have an active TODO list ({} items, {} unfinished). Reload via `todo_update` action='list' and continue finishing it.\n\
+            Rules:\n\
+            - Progress ONE item at a time, in list order; you MAY mark a LATER item 'completed' if you verify it is already fully done, but keep working on the current item.\n\
+            - Before declaring the whole list done, call `todo_update` 'list' and verify EVERY item actually delivered its intended output. If any is only partially done, set it back to 'pending'/'in_progress' and redo it.\n\
+            - If your current message is a tangent or a new task, handle it, then RETURN to this unfinished list. To permanently abandon it, call `todo_update` 'clear' or tell the user you are detaching.\n",
+            total,
+            unfinished_count
+        ))
+
+    }
     fn read_workspace_file(workspace_dir: &str, filename: &str, max_chars: usize) -> Option<(String, bool)> {
         let path = std::path::Path::new(workspace_dir).join(filename);
         match std::fs::read_to_string(&path) {
@@ -789,7 +947,7 @@ impl Agent for LlmAgent {
         let (tx, rx) = tokio::sync::mpsc::channel::<AgentResult<AgentEvent>>(200);
 
         // Build system prompt and history in the spawned task
-        let system_prompt = match &ctx.system_prompt_override {
+        let mut system_prompt = match &ctx.system_prompt_override {
             Some(p) if !p.trim().is_empty() => {
                 let lang_rule = self.resolve_language_rule(user_message);
                 let norms = self.sub_agent_norms_section();
@@ -797,6 +955,31 @@ impl Agent for LlmAgent {
             }
             _ => self.build_system_prompt(user_message, &ctx.conversation_history, skill_strategy, skill_max_inline_chars, skill_catalog_max, skill_hot_top_k),
         };
+        // Inject the active TODO list as the main-session task contract.
+        // Gated to main sessions only — sub/cron write to session-scoped files
+        // and must not see/pollute the main `todos.json`.
+        let session_id = ctx.base.session_id.clone();
+        let todo_item_timeout_secs = ctx.todo_item_timeout_secs;
+        let is_main_session = !session_id.is_empty()
+            && !session_id.starts_with("sub-")
+            && !session_id.starts_with("cron-");
+        if is_main_session {
+            // #3 (converged + resume-safe): always embed the full list/status
+            // dump on checkpoint resume (history may be stale/partial, the model
+            // needs the current truth from todos.json). For a fresh/normal run,
+            // embed the full block only when history carries no live `todo_update`
+            // results; otherwise inject a one-line reminder to reload instead of
+            // pasting a potentially stale snapshot.
+            let resumed = ctx.resume_history.is_some();
+            let todo_in_history = Self::history_has_todo(&ctx.conversation_history);
+            if resumed || !todo_in_history {
+                if let Some(todo_block) = Self::build_todo_context_block(&self.workspace_dir, todo_item_timeout_secs) {
+                    system_prompt.push_str(&todo_block);
+                }
+            } else if let Some(reminder) = Self::build_todo_reminder(&self.workspace_dir) {
+                system_prompt.push_str(&reminder);
+            }
+        }
         // Tool selectivity: core tools are always sent in full; peripheral tools
         // (MCP / external) are exposed on demand via `load_tool_schema`, and a
         // peripheral tool is re-added once loaded. This bounds the per-request
@@ -833,7 +1016,6 @@ impl Agent for LlmAgent {
             };
             (defs, ls)
         };
-        let session_id = ctx.base.session_id.clone();
         info!("[session:{}] Core tool set: {} tool(s), +{} peripheral on demand", session_id, core_tool_defs.len(), {
             let reg = self.tools.read().await;
             reg.peripheral_tools().len()
@@ -1009,6 +1191,15 @@ impl Agent for LlmAgent {
                     info!("[session:{}] Injecting {} interjection(s) into running context", session_id, interjections.len());
                     for msg in interjections {
                         history.push(ChatMessage::user(&msg));
+                    }
+                }
+                // Per-item TODO timeout watchdog (main session only): if the
+                // active item stalled past its timeout, auto-mark it 'skipped'
+                // and tell the model to advance to the next item.
+                if is_main_session {
+                    if let Some(note) = Self::apply_todo_timeout(&workspace_dir, todo_item_timeout_secs) {
+                        info!("[session:{}] {}", session_id, note);
+                        history.push(ChatMessage::system(&note));
                     }
                 }
                 // Trim history if approaching context limit using token-based budget
@@ -1394,14 +1585,14 @@ impl Agent for LlmAgent {
                                         &invocation_id, &author
                                     ))).await;
                                     let msgs = execute_tools_concurrent(
-                                        &tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars,
+                                        &tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &session_id, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     // Standard sequential execution
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars, event_log.as_mut(),
+                                            &tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &session_id, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1424,13 +1615,13 @@ impl Agent for LlmAgent {
                                 if all_read_only && tool_calls.len() > 1 {
                                     info!("[session:{}] Executing {} tool call(s) concurrently", session_id, tool_calls.len());
                                     let msgs = execute_tools_concurrent(
-                                        &*tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars,
+                                        &*tools, &tool_calls, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &session_id, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars,
                                     ).await;
                                     history.extend(msgs);
                                 } else {
                                     for tc in &tool_calls {
                                         let msg = execute_tool_call(
-                                            &*tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars, event_log.as_mut(),
+                                            &*tools, tc, &working_dir, &workspace_dir, &output_dir_override, &invocation_id, &author, &session_id, &tx, &checker, tool_timeout_secs, max_tool_retries, context_window, inline_scaling_enabled, max_inline_chars, event_log.as_mut(),
                                         ).await;
                                         history.push(msg);
                                     }
@@ -1880,6 +2071,7 @@ async fn execute_tool_call(
     output_dir: &str,
     invocation_id: &str,
     author: &str,
+    session_id: &str,
     tx: &tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
     permission: &PermissionChecker,
     tool_timeout_secs: u64,
@@ -1988,7 +2180,13 @@ async fn execute_tool_call(
                     
                     // Create progress channel for long-running tools
                     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<String>(32);
-                    let ctx = ToolContext::simple(working_dir.to_string(), workspace_dir.to_string())
+                    let base = crate::context::ReadonlyContext::new(
+                        invocation_id.to_string(), author.to_string(), session_id.to_string(),
+                    );
+                    let cb = crate::context::CallbackContext::new(base);
+                    let ctx = ToolContext::new(
+                        cb, tc.id.clone(), working_dir.to_string(), workspace_dir.to_string(),
+                    )
                         .with_output_dir(output_dir.to_string())
                         .with_progress(progress_tx)
                         .with_inline_limits(context_window, inline_scaling_enabled, max_inline_chars);
@@ -2202,6 +2400,7 @@ async fn execute_tools_concurrent<'a>(
     output_dir: &'a str,
     invocation_id: &'a str,
     author: &'a str,
+    session_id: &'a str,
     tx: &'a tokio::sync::mpsc::Sender<AgentResult<AgentEvent>>,
     permission: &'a PermissionChecker,
     tool_timeout_secs: u64,
@@ -2212,7 +2411,7 @@ async fn execute_tools_concurrent<'a>(
 ) -> Vec<ChatMessage> {
     use futures::future::join_all;
     let futs = tool_calls.iter().map(|tc| {
-        execute_tool_call(tools, tc, working_dir, workspace_dir, output_dir, invocation_id, author, tx, permission, tool_timeout_secs, max_retries, context_window, inline_scaling_enabled, max_inline_chars, None)
+        execute_tool_call(tools, tc, working_dir, workspace_dir, output_dir, invocation_id, author, session_id, tx, permission, tool_timeout_secs, max_retries, context_window, inline_scaling_enabled, max_inline_chars, None)
     });
     join_all(futs).await
 }
@@ -2369,4 +2568,120 @@ fn generate_static_summary(history: &[ChatMessage], iterations: usize) -> String
     }
 
     parts.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_ws(tag: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("rustagent_llm_todo_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn write_todos(ws: &str, items: Vec<(String, String)>) {
+        let arr: Vec<serde_json::Value> = items
+            .iter()
+            .map(|(d, s)| serde_json::json!({ "description": d, "status": s, "started_at": serde_json::Value::Null }))
+            .collect();
+        let v = serde_json::json!({ "items": arr });
+        let p = std::path::Path::new(ws).join("todos.json");
+        std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn todo_block_injected_with_items_and_rules() {
+        let ws = tmp_ws("block");
+        write_todos(&ws, vec![("a".into(), "pending".into()), ("b".into(), "completed".into())]);
+        let block = LlmAgent::build_todo_context_block(&ws, 600).unwrap();
+        assert!(block.contains("0. [pending] a"));
+        assert!(block.contains("1. [completed] b"));
+        assert!(block.contains("600-second timeout"));
+        assert!(block.contains("Progress ONE item at a time, in list order"));
+        assert!(block.contains("previous task was not completed"));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn todo_block_none_when_empty() {
+        let ws = tmp_ws("empty");
+        assert!(LlmAgent::build_todo_context_block(&ws, 600).is_none());
+        std::fs::write(std::path::Path::new(&ws).join("todos.json"), r#"{"items":[]}"#).unwrap();
+        assert!(LlmAgent::build_todo_context_block(&ws, 600).is_none());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn todo_watchdog_skips_stale_in_progress() {
+        let ws = tmp_ws("watch");
+        let v = serde_json::json!({ "items": [
+            {"description":"stuck","status":"in_progress","started_at": 1},
+            {"description":"next","status":"pending","started_at": serde_json::Value::Null},
+        ]});
+        let p = std::path::Path::new(&ws).join("todos.json");
+        std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        let note = LlmAgent::apply_todo_timeout(&ws, 600).unwrap();
+        assert!(note.contains("auto-marked 'skipped'"));
+        let raw = std::fs::read_to_string(&p).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(root["items"][0]["status"], "skipped");
+        assert!(root["items"][0]["started_at"].is_null());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn todo_watchdog_no_skip_when_within_timeout() {
+        let ws = tmp_ws("watch2");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let v = serde_json::json!({ "items": [
+            {"description":"fresh","status":"in_progress","started_at": now}
+        ]});
+        let p = std::path::Path::new(&ws).join("todos.json");
+        std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        assert!(LlmAgent::apply_todo_timeout(&ws, 600).is_none());
+        // still in_progress
+        let raw = std::fs::read_to_string(&p).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(root["items"][0]["status"], "in_progress");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn history_has_todo_detects_tool_call_and_result() {
+        // result message
+        let res = ChatMessage::tool_result("id1", "todo_update", "ok");
+        assert!(LlmAgent::history_has_todo(&[res]));
+
+        // assistant tool call
+        let call = ChatMessage::assistant_with_tool_calls(vec![
+            crate::model::ToolCallDelta {
+                id: "t1".into(),
+                call_type: "function".into(),
+                function: crate::model::FunctionCallDelta {
+                    name: Some("todo_update".into()),
+                    arguments: Some("{}".into()),
+                },
+            },
+        ]);
+        assert!(LlmAgent::history_has_todo(&[call]));
+
+        // unrelated tool / text -> false
+        let other = ChatMessage::tool_result("id2", "shell_exec", "x");
+        let text = ChatMessage::user("hi");
+        assert!(!LlmAgent::history_has_todo(&[other, text]));
+    }
+
+    #[test]
+    fn todo_reminder_emitted_when_list_active_and_absent_when_empty() {
+        let ws = tmp_ws("remind");
+        write_todos(&ws, vec![("a".into(), "in_progress".into())]);
+        let rem = LlmAgent::build_todo_reminder(&ws).unwrap();
+        assert!(rem.contains("action='list'"));
+        // empty -> None
+        std::fs::write(std::path::Path::new(&ws).join("todos.json"), r#"{"items":[]}"#).unwrap();
+        assert!(LlmAgent::build_todo_reminder(&ws).is_none());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
 }
